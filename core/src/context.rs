@@ -55,6 +55,7 @@ pub struct Context {
 pub struct PeerInfo {
     pub last_ts: u64,
     pub last_msg: String,
+    pub handshaked: bool,
 }
 
 impl Context {
@@ -225,6 +226,7 @@ impl Context {
                 let peer_info = PeerInfo {
                     last_ts: peer.last_seen,
                     last_msg: peer.last_msg_type.unwrap_or_else(|| "unknown".to_string()),
+                    handshaked: peer.handshaked,
                 };
                 result.insert(peer.ip.to_string(), peer_info);
             }
@@ -242,6 +244,11 @@ impl Context {
 
     pub async fn get_entries(&self) -> Vec<String> {
         vec![]
+    }
+
+    /// Set the handshaked status for a peer with the given public key
+    pub async fn set_peer_handshaked(&self, pk: &[u8]) -> Result<(), peers::Error> {
+        self.node_peers.set_handshaked(pk).await
     }
 
     /// register a UDP broadcaster implementation and start periodic ping/anr tasks

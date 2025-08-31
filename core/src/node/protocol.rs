@@ -682,9 +682,23 @@ impl Typename for NewPhoneWhoDis {
 #[async_trait::async_trait]
 impl Protocol for NewPhoneWhoDis {
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let anr = map.get_binary::<Vec<u8>>("anr").ok_or(Error::BadEtf("anr"))?;
+        // In Elixir, anr can be sent as either a map or a binary
+        // Check what type it is and handle accordingly
+        let anr_binary = if let Some(anr_map) = map.get_term_map("anr") {
+            // ANR is a map (from Elixir nodes) - serialize it
+            let anr_term = Term::from(eetf::Map { map: anr_map.0.clone() });
+            let mut encoded = Vec::new();
+            anr_term.encode(&mut encoded)?;
+            encoded
+        } else if let Some(anr_bin) = map.get_binary::<Vec<u8>>("anr") {
+            // ANR is already a binary (from Rust nodes)
+            anr_bin
+        } else {
+            return Err(Error::BadEtf("anr"));
+        };
+        
         let challenge = map.get_integer("challenge").ok_or(Error::BadEtf("challenge"))?;
-        Ok(Self { anr, challenge })
+        Ok(Self { anr: anr_binary, challenge })
     }
 
     async fn handle_inner(&self) -> Result<Instruction, Error> {
@@ -768,10 +782,24 @@ impl Typename for What {
 #[async_trait::async_trait]
 impl Protocol for What {
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let anr = map.get_binary::<Vec<u8>>("anr").ok_or(Error::BadEtf("anr"))?;
+        // In Elixir, anr can be sent as either a map or a binary
+        // Check what type it is and handle accordingly
+        let anr_binary = if let Some(anr_map) = map.get_term_map("anr") {
+            // ANR is a map (from Elixir nodes) - serialize it
+            let anr_term = Term::from(eetf::Map { map: anr_map.0.clone() });
+            let mut encoded = Vec::new();
+            anr_term.encode(&mut encoded)?;
+            encoded
+        } else if let Some(anr_bin) = map.get_binary::<Vec<u8>>("anr") {
+            // ANR is already a binary (from Rust nodes)
+            anr_bin
+        } else {
+            return Err(Error::BadEtf("anr"));
+        };
+        
         let challenge = map.get_integer("challenge").ok_or(Error::BadEtf("challenge"))?;
         let signature = map.get_binary::<Vec<u8>>("signature").ok_or(Error::BadEtf("signature"))?;
-        Ok(Self { anr, challenge, signature })
+        Ok(Self { anr: anr_binary, challenge, signature })
     }
 
     async fn handle_inner(&self) -> Result<Instruction, Error> {

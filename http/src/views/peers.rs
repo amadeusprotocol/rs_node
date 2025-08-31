@@ -116,7 +116,7 @@ pub fn page(peers: &HashMap<String, PeerInfo>) -> String {
         <div class="table-container">
             <table>
                 <thead>
-                    <tr><th>Address</th><th>Role</th><th>Last Message</th><th>Last Seen</th></tr>
+                    <tr><th>Address</th><th>Status</th><th>Last Message</th><th>Last Seen</th></tr>
                 </thead>
                 <tbody id="peer-tbody">
                     {rows}
@@ -152,9 +152,12 @@ function renderPeers() {{
     
     for (const [addr, info] of sortedPeers) {{
         const timeAgo = getTimeAgo(info.last_ts || 0);
+        const status = info.handshaked ? 
+            '<span class="pill" style="background: #00ff0020; color: #00ff00;">✓ handshaked</span>' : 
+            '<span class="pill" style="background: #ffaa0020; color: #ffaa00;">⏳ pending</span>';
         html += `<tr>
             <td>${{esc(addr)}}</td>
-            <td><span class="pill">peer</span></td>
+            <td>${{status}}</td>
             <td>${{esc(info.last_msg || 'N/A')}}</td>
             <td>${{timeAgo}}</td>
         </tr>`;
@@ -203,15 +206,21 @@ pub fn rows(peers: &HashMap<String, PeerInfo>) -> String {
     for (addr, info) in v {
         use std::fmt::Write;
         let time_ago = get_time_ago(info.last_ts);
+        let status_html = if info.handshaked {
+            "<span class=\"pill\" style=\"background: #00ff0020; color: #00ff00;\">✓ handshaked</span>"
+        } else {
+            "<span class=\"pill\" style=\"background: #ffaa0020; color: #ffaa00;\">⏳ pending</span>"
+        };
         let _ = write!(
             s,
             "<tr>\
                <td>{}</td>\
-               <td><span class=\"pill\">peer</span></td>\
+               <td>{}</td>\
                <td>{}</td>\
                <td>{}</td>\
              </tr>",
             esc(addr),
+            status_html,
             esc(&info.last_msg),
             time_ago,
         );

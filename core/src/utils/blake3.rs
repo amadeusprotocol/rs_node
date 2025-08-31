@@ -239,12 +239,14 @@ pub fn freivalds_inner(
 #[inline(always)]
 unsafe fn hsum256_epi32(v: __m256i) -> i32 {
     // reduce 8 × i32 → scalar
-    let hi = _mm256_extracti128_si256(v, 1);
-    let lo = _mm256_castsi256_si128(v);
-    let sum128 = _mm_add_epi32(lo, hi); // 4 lanes
-    let sum64 = _mm_add_epi32(sum128, _mm_srli_si128(sum128, 8));
-    let sum32 = _mm_add_epi32(sum64, _mm_srli_si128(sum64, 4));
-    _mm_cvtsi128_si32(sum32)
+    unsafe {
+        let hi = _mm256_extracti128_si256(v, 1);
+        let lo = _mm256_castsi256_si128(v);
+        let sum128 = _mm_add_epi32(lo, hi); // 4 lanes
+        let sum64 = _mm_add_epi32(sum128, _mm_srli_si128(sum128, 8));
+        let sum32 = _mm_add_epi32(sum64, _mm_srli_si128(sum64, 4));
+        _mm_cvtsi128_si32(sum32)
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -259,10 +261,12 @@ struct I32x16 {
 #[inline(always)]
 unsafe fn load_i8x16_as_i32(ptr: *const i8) -> I32x16 {
     // load 16 bytes
-    let v = _mm_loadu_si128(ptr as *const __m128i);
-    let lo = _mm256_cvtepi8_epi32(v); // first 8
-    let hi = _mm256_cvtepi8_epi32(_mm_srli_si128(v, 8));
-    I32x16 { lo, hi }
+    unsafe {
+        let v = _mm_loadu_si128(ptr as *const __m128i);
+        let lo = _mm256_cvtepi8_epi32(v); // first 8
+        let hi = _mm256_cvtepi8_epi32(_mm_srli_si128(v, 8));
+        I32x16 { lo, hi }
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -276,6 +280,7 @@ pub unsafe fn freivalds_inner_avx2(
     // the *body* is exactly what we previously had in `freivalds_inner_avx2`
     // (helpers like `hsum256_epi32` go below, unchanged)
     // ------------------------------------------------------------------ //
+    unsafe {
     const N: usize = 50_240;
     let mut U = [[0i32; 16]; 3];
 
@@ -336,6 +341,7 @@ pub unsafe fn freivalds_inner_avx2(
         }
     }
     true
+}
 }
 
 fn freivalds_inner_scalar(

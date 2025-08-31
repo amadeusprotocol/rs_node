@@ -87,6 +87,7 @@ pub struct Peer {
     pub rooted: Option<RootedInfo>,
     pub last_seen: u64,
     pub last_msg_type: Option<String>,
+    pub handshaked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,6 +213,7 @@ impl NodePeers {
                     rooted: None,
                     last_seen: ts_m,
                     last_msg_type: None,
+                    handshaked: false,
                 })
                 .await;
         }
@@ -250,6 +252,7 @@ impl NodePeers {
                 rooted: None,
                 last_seen: get_unix_millis_now() as u64,
                 last_msg_type: None,
+                handshaked: false,
             });
         }
 
@@ -650,10 +653,53 @@ impl NodePeers {
                 rooted: None,
                 last_seen: current_time,
                 last_msg_type: Some(last_msg_type.to_string()),
+                handshaked: false,
             };
             self.insert_new_peer(new_peer).await?;
         }
 
+        Ok(())
+    }
+
+    /// Set the handshaked status for a peer with the given public key
+    pub async fn set_handshaked(&self, pk: &[u8]) -> Result<(), Error> {
+        // Find and update the peer with matching public key
+        let mut found = false;
+        self.peers
+            .scan(|_ip, peer| {
+                if let Some(ref peer_pk) = peer.pk {
+                    if peer_pk == pk {
+                        found = true;
+                    }
+                }
+            })
+            .await;
+
+        if found {
+            // Update all peers with this public key
+            let ips_to_update: Vec<Ipv4Addr> = {
+                let mut ips = Vec::new();
+                self.peers
+                    .scan(|ip, peer| {
+                        if let Some(ref peer_pk) = peer.pk {
+                            if peer_pk == pk {
+                                ips.push(*ip);
+                            }
+                        }
+                    })
+                    .await;
+                ips
+            };
+
+            for ip in ips_to_update {
+                self.peers
+                    .update(&ip, |_key, peer| {
+                        peer.handshaked = true;
+                    })
+                    .await;
+            }
+        }
+        
         Ok(())
     }
 }
@@ -699,6 +745,7 @@ mod tests {
             rooted: None,
             last_seen: get_unix_millis_now() as u64,
             last_msg_type: Some("ping".to_string()),
+            handshaked: false,
         };
 
         // Test insert

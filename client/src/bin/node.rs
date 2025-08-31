@@ -144,6 +144,9 @@ async fn handle_instruction(ctx: &Context, instruction: Instruction, src: Socket
             // insert the responder's ANR and mark as handshaked
             anr::insert(responder_anr.clone()).await?;
             anr::set_handshaked(&responder_anr.pk).await?;
+            
+            // update peer's handshaked status in NodePeers
+            ctx.set_peer_handshaked(&responder_anr.pk).await?;
 
             println!("peer {} is now handshaked", bs58::encode(&responder_anr.pk).into_string());
         }
@@ -154,6 +157,9 @@ async fn handle_instruction(ctx: &Context, instruction: Instruction, src: Socket
             println!("handshake completed with {:?}, pk: {}", src, bs58::encode(&anr.pk).into_string());
             anr::insert(anr.clone()).await?;
             anr::set_handshaked(&anr.pk).await?;
+            
+            // update peer's handshaked status in NodePeers
+            ctx.set_peer_handshaked(&anr.pk).await?;
         }
 
         Instruction::ReplyPong { ts_m: _ } => {
