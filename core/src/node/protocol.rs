@@ -465,8 +465,9 @@ impl Typename for TxPool {
 #[async_trait::async_trait]
 impl Protocol for TxPool {
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let txs = map.get_binary("txs_packed").ok_or(Error::BadEtf("txs_packed"))?;
-        let valid_txs = TxPool::get_valid_txs(txs)?;
+        // txs_packed is a list of binary transaction packets, not a single binary
+        let txs_list = map.get_list("txs_packed").ok_or(Error::BadEtf("txs_packed"))?;
+        let valid_txs = TxPool::get_valid_txs_from_list(txs_list)?;
         Ok(Self { valid_txs })
     }
 
@@ -480,18 +481,13 @@ impl TxPool {
     pub const NAME: &'static str = "txpool";
 
     pub fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
-        // create list of transaction binaries
+        // create list of transaction binaries (txs_packed is directly a list of binaries)
         let tx_terms: Vec<Term> = self.valid_txs.iter().map(|tx| Term::from(Binary { bytes: tx.clone() })).collect();
-
-        let txs_list = Term::from(List { elements: tx_terms });
-
-        // encode the list to binary for txs_packed field
-        let mut txs_packed = Vec::new();
-        txs_list.encode(&mut txs_packed).map_err(Error::EtfEncode)?;
 
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
-        m.insert(Term::Atom(Atom::from("txs_packed")), Term::from(Binary { bytes: txs_packed }));
+        // txs_packed is directly a list of binary terms, not a binary containing an encoded list
+        m.insert(Term::Atom(Atom::from("txs_packed")), Term::from(List { elements: tx_terms }));
 
         let term = Term::from(Map { map: m });
         let mut etf_data = Vec::new();
@@ -502,19 +498,11 @@ impl TxPool {
         Ok(compressed)
     }
 
-    fn get_valid_txs(txs_packed: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
-        let term = Term::decode(txs_packed)?;
+    fn get_valid_txs_from_list(txs_list: &[Term]) -> Result<Vec<Vec<u8>>, Error> {
+        let mut good: Vec<Vec<u8>> = Vec::with_capacity(txs_list.len());
 
-        let list = if let Some(l) = TryAsRef::<List>::try_as_ref(&term) {
-            &l.elements
-        } else {
-            return Err(Error::BadEtf("txs_packed must be list"));
-        };
-
-        let mut good: Vec<Vec<u8>> = Vec::with_capacity(list.len());
-
-        for t in list {
-            // each item must be a binary
+        for t in txs_list {
+            // each item must be a binary (a packed transaction)
             let bin = if let Some(b) = TryAsRef::<Binary>::try_as_ref(t) {
                 b.bytes.as_slice()
             } else {

@@ -18,6 +18,8 @@ pub const QUORUM_SINGLE: usize = 1; // quorum size for single shard
 
 pub const VERSION: [u8; 3] = parse_version();
 
+pub const SEED_NODES: &[&str] = &["104.218.45.23", "72.9.144.110"];
+
 const fn parse_version() -> [u8; 3] {
     const S: &str = env!("CRATE_VERSION");
     let bytes = S.as_bytes();
@@ -163,7 +165,7 @@ impl Config {
         let udp_port = 36969;
 
         // node discovery
-        let seed_nodes = vec!["104.218.45.23".to_string(), "72.9.144.110".to_string()];
+        let seed_nodes = SEED_NODES.iter().map(|s| s.to_string()).collect();
         let other_nodes =
             std::env::var("OTHERNODES").map(|s| s.split(',').map(String::from).collect()).unwrap_or_else(|_| vec![]);
         let trust_factor = std::env::var("TRUSTFACTOR").ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.8);

@@ -75,6 +75,8 @@ RUSTFLAGS="--cfg tokio_unstable" RUST_LOG=debug cargo node --features tokio-trac
 tokio-console # in another terminal
 # for memory leaks analysis
 leaks -nocontext $(pgrep -f "target/debug/node")
+# for network analysis
+sudo tcpdump -i any -nnvv -e 'udp and port 36969'
 ```
 
 ### Node simulation (NATIVE)
