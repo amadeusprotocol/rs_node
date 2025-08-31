@@ -221,6 +221,10 @@ impl TermMap {
     pub fn get_atom(&self, key: &str) -> Option<&Atom> {
         self.0.get(&Term::Atom(Atom::from(key))).and_then(TermExt::as_atom)
     }
+
+    pub fn get_string(&self, key: &str) -> Option<String> {
+        self.0.get(&Term::Atom(Atom::from(key))).and_then(TermExt::get_string)
+    }
 }
 
 pub fn bools_to_bitvec(mask: &[bool]) -> Vec<u8> {
