@@ -62,6 +62,21 @@ cargo cli build-tx Contract test "[]" --sk sk.local --send
 UDP_ADDR=167.99.137.218:36969 cargo cli deploy-tx contracts/simple_counter.wasm --sk sk.local --send
 ```
 
+### Node debugging
+
+The node can be debugged using tokio-console (`cargo install tokio-console`)
+and logs that are printed to the output. Alternatively you can use gdb/lldb
+and leaks/heap.
+
+```bash
+cargo node
+# for tokio console debugging
+RUSTFLAGS="--cfg tokio_unstable" RUST_LOG=debug cargo node --features tokio-tracing
+tokio-console # in another terminal
+# for memory leaks analysis
+leaks -nocontext $(pgrep -f "target/debug/node")
+```
+
 ### Node simulation (NATIVE)
 
 The client library has the implementation of a traffic capturing

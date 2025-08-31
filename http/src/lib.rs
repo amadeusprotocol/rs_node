@@ -17,11 +17,6 @@ use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 
 pub async fn serve(socket: TcpListener, ctx: Arc<Context>) -> anyhow::Result<()> {
-    info!(
-        "http server starting on {}",
-        socket.local_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".into())
-    );
-
     let app = routes::app(ctx.clone())
         .route(
             "/",
@@ -42,10 +37,12 @@ pub async fn serve(socket: TcpListener, ctx: Arc<Context>) -> anyhow::Result<()>
         .layer(TimeoutLayer::new(Duration::from_secs(30)))
         .layer(TraceLayer::new_for_http());
 
-    // Configure server with connection limits
-    let serve_future = axum::serve(socket, app).with_graceful_shutdown(shutdown_signal());
+    info!(
+        "http server listening on {}",
+        socket.local_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".into())
+    );
 
-    if let Err(e) = serve_future.await {
+    if let Err(e) = axum::serve(socket, app).with_graceful_shutdown(shutdown_signal()).await {
         error!("http server error: {}", e);
     }
     Ok(())

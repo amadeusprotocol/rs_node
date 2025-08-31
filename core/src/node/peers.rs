@@ -1,10 +1,61 @@
 use crate::consensus;
 use crate::node::anr;
 use crate::utils::misc::get_unix_millis_now;
-use scc::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use tokio::sync::RwLock;
+use tokio::task::spawn_blocking;
+use tracing::warn;
+
+// minimal concurrent map wrapper to mimic scc::HashMap APIs used in this module
+#[derive(Debug)]
+struct ConcurrentMap<K, V> {
+    inner: RwLock<HashMap<K, V>>,
+}
+
+impl<K: Eq + Hash + Clone, V: Clone> ConcurrentMap<K, V> {
+    fn new() -> Self {
+        Self { inner: RwLock::new(HashMap::new()) }
+    }
+    async fn len(&self) -> usize {
+        self.inner.read().await.len()
+    }
+    async fn insert(&self, key: K, value: V) -> Result<(), ()> {
+        let mut map = self.inner.write().await;
+        if map.contains_key(&key) {
+            Err(())
+        } else {
+            map.insert(key, value);
+            Ok(())
+        }
+    }
+    async fn remove(&self, key: &K) -> Option<V> {
+        self.inner.write().await.remove(key)
+    }
+    async fn read<R>(&self, key: &K, f: impl FnOnce(&K, &V) -> R) -> Option<R> {
+        let v = {
+            let map = self.inner.read().await;
+            map.get(key).cloned()
+        };
+        v.as_ref().map(|vv| f(key, vv))
+    }
+    async fn scan(&self, mut f: impl FnMut(&K, &V)) {
+        let snapshot: Vec<(K, V)> = {
+            let map = self.inner.read().await;
+            map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        };
+        for (k, v) in snapshot.iter() {
+            f(k, v);
+        }
+    }
+    async fn update<R>(&self, key: &K, mut f: impl FnMut(&K, &mut V) -> R) -> Option<R> {
+        let mut map = self.inner.write().await;
+        if let Some(v) = map.get_mut(key) { Some(f(key, v)) } else { None }
+    }
+}
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
 pub enum Error {
@@ -57,14 +108,14 @@ pub struct HeaderInfo {
 /// NodePeers structure managing the peer database
 #[derive(Debug, Clone)]
 pub struct NodePeers {
-    peers: Arc<HashMap<Ipv4Addr, Peer>>,
+    peers: Arc<ConcurrentMap<Ipv4Addr, Peer>>,
     max_peers: usize,
 }
 
 impl NodePeers {
     /// Create a new NodePeers instance
     pub fn new(max_peers: usize) -> Self {
-        Self { peers: Arc::new(HashMap::new()), max_peers }
+        Self { peers: Arc::new(ConcurrentMap::new()), max_peers }
     }
 
     /// Create with default max_peers of 100
@@ -72,8 +123,12 @@ impl NodePeers {
         Self::new(100)
     }
 
+    pub async fn clear_stale(&self) -> usize {
+        self.clear_stale_inner().await.inspect_err(|e| warn!("peer cleanup error: {}", e)).unwrap_or(0)
+    }
+
     /// Clear stale peers and add missing validators/handshaked nodes
-    pub fn clear_stale(&self) -> Result<(), Error> {
+    pub async fn clear_stale_inner(&self) -> Result<usize, Error> {
         let ts_m = get_unix_millis_now() as u64;
 
         // Get validators for current height + 1
@@ -81,32 +136,41 @@ impl NodePeers {
         let validators = consensus::trainers_for_height(height + 1).unwrap_or_default();
         let validators: Vec<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();
 
-        let validator_anr_ips = anr::by_pks_ip(&validators)?;
+        let validator_anr_ips = anr::by_pks_ip(&validators).await?;
         let validators_map: std::collections::HashSet<Vec<u8>> = validators.into_iter().collect();
 
-        let handshaked_ips = anr::handshaked_pk_ip4()?;
+        let handshaked_ips = anr::handshaked_pk_ip4().await?;
 
         let mut cur_ips = Vec::new();
         let mut cur_val_ips = Vec::new();
 
         // Clean stale peers and collect current IPs
-        self.peers.scan(|ip, peer| {
-            // Remove peers that haven't sent messages in 60 seconds (60*1000 ms)
-            if ts_m > (peer.last_msg + 60_000) {
-                let _ = self.peers.remove(ip);
-                return;
-            }
+        let mut to_remove = Vec::new();
+        self.peers
+            .scan(|ip, peer| {
+                // Remove peers that haven't sent messages in 60 seconds (60*1000 ms)
+                if ts_m > (peer.last_msg + 60_000) {
+                    to_remove.push(*ip);
+                    return;
+                }
 
-            if let Some(ref pk) = peer.pk {
-                if validators_map.contains(pk) {
-                    cur_val_ips.push(*ip);
+                if let Some(ref pk) = peer.pk {
+                    if validators_map.contains(pk) {
+                        cur_val_ips.push(*ip);
+                    } else {
+                        cur_ips.push(*ip);
+                    }
                 } else {
                     cur_ips.push(*ip);
                 }
-            } else {
-                cur_ips.push(*ip);
-            }
-        });
+            })
+            .await;
+
+        // Remove stale peers after scanning
+        let cleared_count = to_remove.len();
+        for ip in to_remove {
+            let _ = self.peers.remove(&ip).await;
+        }
 
         // Find missing validators and handshaked peers
         let missing_vals: Vec<_> = validator_anr_ips.iter().filter(|ip| !cur_val_ips.contains(ip)).cloned().collect();
@@ -116,54 +180,61 @@ impl NodePeers {
         // Get max_peers config
         let add_size = self
             .max_peers
-            .saturating_sub(self.size())
+            .saturating_sub(self.size().await)
             .saturating_sub(cur_val_ips.len())
             .saturating_sub(missing_vals.len());
 
-        // Shuffle and take limited missing IPs
-        let mut missing_ips = missing_ips;
-        use rand::seq::SliceRandom;
-        let mut rng = rand::thread_rng();
-        missing_ips.shuffle(&mut rng);
-        missing_ips.truncate(add_size);
+        let missing_ips = spawn_blocking(move || {
+            // Shuffle and take limited missing IPs
+            let mut missing_ips = missing_ips;
+            use rand::seq::SliceRandom;
+            let mut rng = rand::thread_rng();
+            missing_ips.shuffle(&mut rng);
+            missing_ips.truncate(add_size);
+            missing_ips
+        })
+        .await
+        .unwrap_or_default();
 
         // Add missing validators and peers
         for ip in missing_vals.iter().chain(missing_ips.iter()) {
-            let _ = self.insert_new_peer(Peer {
-                ip: *ip,
-                pk: None,
-                version: None,
-                latency: None,
-                last_msg: ts_m,
-                last_ping: None,
-                last_pong: None,
-                shared_secret: None,
-                temporal: None,
-                rooted: None,
-                last_seen: ts_m,
-                last_msg_type: None,
-            });
+            let _ = self
+                .insert_new_peer(Peer {
+                    ip: *ip,
+                    pk: None,
+                    version: None,
+                    latency: None,
+                    last_msg: ts_m,
+                    last_ping: None,
+                    last_pong: None,
+                    shared_secret: None,
+                    temporal: None,
+                    rooted: None,
+                    last_seen: ts_m,
+                    last_msg_type: None,
+                })
+                .await;
         }
 
-        Ok(())
+        Ok(cleared_count)
     }
 
     /// Insert a new peer if it doesn't already exist
-    pub fn insert_new_peer(&self, mut peer: Peer) -> Result<bool, Error> {
+    pub async fn insert_new_peer(&self, mut peer: Peer) -> Result<bool, Error> {
         if peer.last_msg == 0 {
             peer.last_msg = get_unix_millis_now() as u64;
         }
 
-        Ok(self.peers.insert(peer.ip, peer).is_ok())
+        Ok(self.peers.insert(peer.ip, peer).await.is_ok())
     }
 
     /// Seed initial peers with validators
-    pub fn seed(&self, my_ip: Ipv4Addr) -> Result<(), Error> {
+    pub async fn seed(&self, my_ip: Ipv4Addr) -> Result<(), Error> {
         let height = consensus::chain_height();
         let validators = consensus::trainers_for_height(height + 1).unwrap_or_default();
         let validators: Vec<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();
 
-        let validator_ips: Vec<_> = anr::by_pks_ip(&validators)?.into_iter().filter(|ip| *ip != my_ip).collect();
+        let validator_ips: Vec<_> = anr::by_pks_ip(&validators).await?.into_iter().filter(|ip| *ip != my_ip).collect();
 
         for ip in validator_ips {
             let _ = self.insert_new_peer(Peer {
@@ -186,13 +257,13 @@ impl NodePeers {
     }
 
     /// Get number of peers
-    pub fn size(&self) -> usize {
-        self.peers.len()
+    pub async fn size(&self) -> usize {
+        self.peers.len().await
     }
 
     /// Get random online peers
-    pub fn random(&self, no: usize) -> Result<Vec<Peer>, Error> {
-        let online_peers = self.online()?;
+    pub async fn random(&self, no: usize) -> Result<Vec<Peer>, Error> {
+        let online_peers = self.online().await?;
         if online_peers.is_empty() {
             return Ok(vec![]);
         }
@@ -207,23 +278,27 @@ impl NodePeers {
     }
 
     /// Get all peers
-    pub fn all(&self) -> Result<Vec<Peer>, Error> {
+    pub async fn all(&self) -> Result<Vec<Peer>, Error> {
         let mut peers = Vec::new();
-        self.peers.scan(|_, peer| {
-            peers.push(peer.clone());
-        });
+        self.peers
+            .scan(|_, peer| {
+                peers.push(peer.clone());
+            })
+            .await;
         Ok(peers)
     }
 
     /// Get all online peers
-    pub fn online(&self) -> Result<Vec<Peer>, Error> {
+    pub async fn online(&self) -> Result<Vec<Peer>, Error> {
         let mut online_peers = Vec::new();
 
-        self.peers.scan(|_, peer| {
-            if Self::is_online(peer, None) {
-                online_peers.push(peer.clone());
-            }
-        });
+        self.peers
+            .scan(|_, peer| {
+                if Self::is_online(peer, None) {
+                    online_peers.push(peer.clone());
+                }
+            })
+            .await;
 
         Ok(online_peers)
     }
@@ -250,35 +325,39 @@ impl NodePeers {
     }
 
     /// Get all trainer peers for given height
-    pub fn all_trainers(&self, height: Option<u64>) -> Result<Vec<Peer>, Error> {
+    pub async fn all_trainers(&self, height: Option<u64>) -> Result<Vec<Peer>, Error> {
         let height = height.unwrap_or_else(|| consensus::chain_height());
         let pks = consensus::trainers_for_height(height + 1).unwrap_or_default();
         let pks: Vec<Vec<u8>> = pks.iter().map(|pk| pk.to_vec()).collect();
 
         let mut trainers = Vec::new();
         for pk in pks {
-            self.peers.scan(|_, peer| {
-                if let Some(ref peer_pk) = peer.pk {
-                    if *peer_pk == pk {
-                        trainers.push(peer.clone());
+            self.peers
+                .scan(|_, peer| {
+                    if let Some(ref peer_pk) = peer.pk {
+                        if *peer_pk == pk {
+                            trainers.push(peer.clone());
+                        }
                     }
-                }
-            });
+                })
+                .await;
         }
 
         Ok(trainers)
     }
 
     /// Get summary of all peers
-    pub fn summary(&self) -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u64>, Option<u64>)>, Error> {
+    pub async fn summary(&self) -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u64>, Option<u64>)>, Error> {
         let mut summary = Vec::new();
 
-        self.peers.scan(|_, peer| {
-            let temporal_height = peer.temporal.as_ref().map(|t| t.header_unpacked.height);
-            let rooted_height = peer.rooted.as_ref().map(|r| r.header_unpacked.height);
+        self.peers
+            .scan(|_, peer| {
+                let temporal_height = peer.temporal.as_ref().map(|t| t.header_unpacked.height);
+                let rooted_height = peer.rooted.as_ref().map(|r| r.header_unpacked.height);
 
-            summary.push((peer.ip, peer.latency, temporal_height, rooted_height));
-        });
+                summary.push((peer.ip, peer.latency, temporal_height, rooted_height));
+            })
+            .await;
 
         // Sort by IP
         summary.sort_by_key(|(ip, _, _, _)| ip.octets());
@@ -287,8 +366,8 @@ impl NodePeers {
     }
 
     /// Get summary of online peers only
-    pub fn summary_online(&self) -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u64>, Option<u64>)>, Error> {
-        let online_peers = self.online()?;
+    pub async fn summary_online(&self) -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u64>, Option<u64>)>, Error> {
+        let online_peers = self.online().await?;
         let mut summary = Vec::new();
 
         for peer in online_peers {
@@ -302,19 +381,21 @@ impl NodePeers {
     }
 
     /// Get shared secret for a peer by public key
-    pub fn get_shared_secret(&self, pk: &[u8]) -> Result<Vec<u8>, Error> {
+    pub async fn get_shared_secret(&self, pk: &[u8]) -> Result<Vec<u8>, Error> {
         if pk.is_empty() {
             return Ok(vec![]);
         }
 
         let mut found_secret = None;
-        self.peers.scan(|_, peer| {
-            if let Some(ref peer_pk) = peer.pk {
-                if peer_pk == pk {
-                    found_secret = peer.shared_secret.clone();
+        self.peers
+            .scan(|_, peer| {
+                if let Some(ref peer_pk) = peer.pk {
+                    if peer_pk == pk {
+                        found_secret = peer.shared_secret.clone();
+                    }
                 }
-            }
-        });
+            })
+            .await;
 
         if let Some(secret) = found_secret {
             return Ok(secret);
@@ -326,91 +407,101 @@ impl NodePeers {
     }
 
     /// Get peer by IP address
-    pub fn by_ip(&self, ip: Ipv4Addr) -> Result<Option<Peer>, Error> {
-        Ok(self.peers.read(&ip, |_, peer| peer.clone()))
+    pub async fn by_ip(&self, ip: Ipv4Addr) -> Result<Option<Peer>, Error> {
+        Ok(self.peers.read(&ip, |_, peer| peer.clone()).await)
     }
 
     /// Get IP addresses for a given public key
-    pub fn ips_by_pk(&self, pk: &[u8]) -> Result<Vec<Ipv4Addr>, Error> {
+    pub async fn ips_by_pk(&self, pk: &[u8]) -> Result<Vec<Ipv4Addr>, Error> {
         let mut ips = Vec::new();
 
-        self.peers.scan(|ip, peer| {
-            if let Some(ref peer_pk) = peer.pk {
-                if peer_pk == pk {
-                    ips.push(*ip);
+        self.peers
+            .scan(|ip, peer| {
+                if let Some(ref peer_pk) = peer.pk {
+                    if peer_pk == pk {
+                        ips.push(*ip);
+                    }
                 }
-            }
-        });
+            })
+            .await;
 
         Ok(ips)
     }
 
     /// Get first peer by public key
-    pub fn by_pk(&self, pk: &[u8]) -> Result<Option<Peer>, Error> {
+    pub async fn by_pk(&self, pk: &[u8]) -> Result<Option<Peer>, Error> {
         let mut found_peer = None;
 
-        self.peers.scan(|_, peer| {
-            if let Some(ref peer_pk) = peer.pk {
-                if peer_pk == pk && found_peer.is_none() {
-                    found_peer = Some(peer.clone());
+        self.peers
+            .scan(|_, peer| {
+                if let Some(ref peer_pk) = peer.pk {
+                    if peer_pk == pk && found_peer.is_none() {
+                        found_peer = Some(peer.clone());
+                    }
                 }
-            }
-        });
+            })
+            .await;
 
         Ok(found_peer)
     }
 
     /// Get peers by multiple public keys
-    pub fn by_pks(&self, pks: &[Vec<u8>]) -> Result<Vec<Peer>, Error> {
+    pub async fn by_pks(&self, pks: &[Vec<u8>]) -> Result<Vec<Peer>, Error> {
         let pks_set: std::collections::HashSet<_> = pks.iter().collect();
         let mut peers = Vec::new();
 
-        self.peers.scan(|_, peer| {
-            if let Some(ref peer_pk) = peer.pk {
-                if pks_set.contains(peer_pk) {
-                    peers.push(peer.clone());
+        self.peers
+            .scan(|_, peer| {
+                if let Some(ref peer_pk) = peer.pk {
+                    if pks_set.contains(peer_pk) {
+                        peers.push(peer.clone());
+                    }
                 }
-            }
-        });
+            })
+            .await;
 
         Ok(peers)
     }
 
     /// Get peers for a specific height (trainers)
-    pub fn for_height(&self, height: u64) -> Result<Vec<Peer>, Error> {
+    pub async fn for_height(&self, height: u64) -> Result<Vec<Peer>, Error> {
         let trainers = consensus::trainers_for_height(height).unwrap_or_default();
         let trainers: Vec<Vec<u8>> = trainers.iter().map(|pk| pk.to_vec()).collect();
 
         let trainers_set: std::collections::HashSet<_> = trainers.iter().collect();
         let mut peers = Vec::new();
 
-        self.peers.scan(|_, peer| {
-            if let Some(ref pk) = peer.pk {
-                if trainers_set.contains(pk) {
-                    peers.push(peer.clone());
+        self.peers
+            .scan(|_, peer| {
+                if let Some(ref pk) = peer.pk {
+                    if trainers_set.contains(pk) {
+                        peers.push(peer.clone());
+                    }
                 }
-            }
-        });
+            })
+            .await;
 
         Ok(peers)
     }
 
     /// Get all peer IPs as strings
-    pub fn get_all_ips(&self) -> Result<Vec<String>, Error> {
+    pub async fn get_all_ips(&self) -> Result<Vec<String>, Error> {
         let mut ips = Vec::new();
-        self.peers.scan(|_key, peer| {
-            ips.push(peer.ip.to_string());
-        });
+        self.peers
+            .scan(|_key, peer| {
+                ips.push(peer.ip.to_string());
+            })
+            .await;
         Ok(ips)
     }
 
     /// Get peer IPs by who specification
-    pub fn by_who(&self, who: Who) -> Result<Vec<Ipv4Addr>, Error> {
+    pub async fn by_who(&self, who: Who) -> Result<Vec<Ipv4Addr>, Error> {
         match who {
             Who::Some(peer_ips) => Ok(peer_ips),
             Who::Trainers => {
                 let height = consensus::chain_height();
-                let trainer_peers = self.for_height(height + 1)?;
+                let trainer_peers = self.for_height(height + 1).await?;
                 let mut ips: Vec<_> = trainer_peers.iter().map(|p| p.ip).collect();
 
                 if ips.is_empty() {
@@ -424,10 +515,10 @@ impl NodePeers {
             }
             Who::NotTrainers(cnt) => {
                 let height = consensus::chain_height();
-                let trainer_peers = self.for_height(height + 1)?;
+                let trainer_peers = self.for_height(height + 1).await?;
                 let trainer_ips: std::collections::HashSet<_> = trainer_peers.iter().map(|p| p.ip).collect();
 
-                let all_peers = self.all()?;
+                let all_peers = self.all().await?;
                 let not_trainer_ips: Vec<_> =
                     all_peers.iter().map(|p| p.ip).filter(|ip| !trainer_ips.contains(ip)).collect();
 
@@ -443,15 +534,15 @@ impl NodePeers {
                 Ok(ips)
             }
             Who::Random(no) => {
-                let random_peers = self.random(no)?;
+                let random_peers = self.random(no).await?;
                 Ok(random_peers.iter().map(|p| p.ip).collect())
             }
         }
     }
 
     /// Get highest heights from online peers with filtering
-    pub fn highest_height(&self, filter: HeightFilter) -> Result<Vec<u64>, Error> {
-        let summary = self.summary_online()?;
+    pub async fn highest_height(&self, filter: HeightFilter) -> Result<Vec<u64>, Error> {
+        let summary = self.summary_online().await?;
 
         let min_temporal = filter.min_temporal.unwrap_or(0);
         let min_rooted = filter.min_rooted.unwrap_or(0);
@@ -530,7 +621,7 @@ impl NodePeers {
     }
 
     /// Update peer activity and last message type
-    pub fn update_peer_activity(&self, ip: Ipv4Addr, last_msg_type: &str) -> Result<(), Error> {
+    pub async fn update_peer_activity(&self, ip: Ipv4Addr, last_msg_type: &str) -> Result<(), Error> {
         let current_time = get_unix_millis_now() as u64;
 
         // Try to update existing peer first
@@ -541,6 +632,7 @@ impl NodePeers {
                 peer.last_msg = current_time;
                 peer.last_msg_type = Some(last_msg_type.to_string());
             })
+            .await
             .is_some();
 
         if !updated {
@@ -559,7 +651,7 @@ impl NodePeers {
                 last_seen: current_time,
                 last_msg_type: Some(last_msg_type.to_string()),
             };
-            self.insert_new_peer(new_peer)?;
+            self.insert_new_peer(new_peer).await?;
         }
 
         Ok(())
@@ -583,121 +675,6 @@ pub struct HeightFilter {
     pub latency: Option<u64>,
     pub latency1: Option<u64>,
     pub latency2: Option<u64>,
-}
-
-// Compatibility layer: Global functions that use a default instance
-use once_cell::sync::Lazy;
-
-static DEFAULT_NODE_PEERS: Lazy<NodePeers> = Lazy::new(NodePeers::default);
-
-/// Clear stale peers using default instance
-pub fn clear_stale() -> Result<(), Error> {
-    DEFAULT_NODE_PEERS.clear_stale()
-}
-
-/// Insert a new peer using default instance
-pub fn insert_new_peer(peer: Peer) -> Result<bool, Error> {
-    DEFAULT_NODE_PEERS.insert_new_peer(peer)
-}
-
-/// Seed initial peers using default instance
-pub fn seed(my_ip: Ipv4Addr) -> Result<(), Error> {
-    DEFAULT_NODE_PEERS.seed(my_ip)
-}
-
-/// Get number of peers using default instance
-pub fn size() -> usize {
-    DEFAULT_NODE_PEERS.size()
-}
-
-/// Get random online peers using default instance
-pub fn random(no: usize) -> Result<Vec<Peer>, Error> {
-    DEFAULT_NODE_PEERS.random(no)
-}
-
-/// Get all peers using default instance
-pub fn all() -> Result<Vec<Peer>, Error> {
-    DEFAULT_NODE_PEERS.all()
-}
-
-/// Get all online peers using default instance
-pub fn online() -> Result<Vec<Peer>, Error> {
-    DEFAULT_NODE_PEERS.online()
-}
-
-/// Check if a peer is online using default instance
-pub fn is_online(peer: &Peer) -> bool {
-    NodePeers::is_online(peer, None)
-}
-
-/// Get all trainer peers using default instance
-pub fn all_trainers(height: Option<u64>) -> Result<Vec<Peer>, Error> {
-    DEFAULT_NODE_PEERS.all_trainers(height)
-}
-
-/// Get summary of all peers using default instance
-pub fn summary() -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u64>, Option<u64>)>, Error> {
-    DEFAULT_NODE_PEERS.summary()
-}
-
-/// Get summary of online peers using default instance
-pub fn summary_online() -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u64>, Option<u64>)>, Error> {
-    DEFAULT_NODE_PEERS.summary_online()
-}
-
-/// Get shared secret for a peer using default instance
-pub fn get_shared_secret(pk: &[u8]) -> Result<Vec<u8>, Error> {
-    DEFAULT_NODE_PEERS.get_shared_secret(pk)
-}
-
-/// Get peer by IP using default instance
-pub fn by_ip(ip: Ipv4Addr) -> Result<Option<Peer>, Error> {
-    DEFAULT_NODE_PEERS.by_ip(ip)
-}
-
-/// Get IP addresses for a given public key using default instance
-pub fn ips_by_pk(pk: &[u8]) -> Result<Vec<Ipv4Addr>, Error> {
-    DEFAULT_NODE_PEERS.ips_by_pk(pk)
-}
-
-/// Get first peer by public key using default instance
-pub fn by_pk(pk: &[u8]) -> Result<Option<Peer>, Error> {
-    DEFAULT_NODE_PEERS.by_pk(pk)
-}
-
-/// Get peers by multiple public keys using default instance
-pub fn by_pks(pks: &[Vec<u8>]) -> Result<Vec<Peer>, Error> {
-    DEFAULT_NODE_PEERS.by_pks(pks)
-}
-
-/// Get peers for a specific height using default instance
-pub fn for_height(height: u64) -> Result<Vec<Peer>, Error> {
-    DEFAULT_NODE_PEERS.for_height(height)
-}
-
-/// Get all peer IPs as strings using default instance
-pub fn get_all_ips() -> Result<Vec<String>, Error> {
-    DEFAULT_NODE_PEERS.get_all_ips()
-}
-
-/// Get peer IPs by who specification using default instance
-pub fn by_who(who: Who) -> Result<Vec<Ipv4Addr>, Error> {
-    DEFAULT_NODE_PEERS.by_who(who)
-}
-
-/// Get highest heights from online peers using default instance
-pub fn highest_height(filter: HeightFilter) -> Result<Vec<u64>, Error> {
-    DEFAULT_NODE_PEERS.highest_height(filter)
-}
-
-/// Update peer activity using default instance
-pub fn update_activity(ip: Ipv4Addr, last_msg_type: &str) -> Result<(), Error> {
-    DEFAULT_NODE_PEERS.update_peer_activity(ip, last_msg_type)
-}
-
-/// Get peer by IP using default instance
-pub fn get_by_ip(ip: Ipv4Addr) -> Option<Peer> {
-    DEFAULT_NODE_PEERS.by_ip(ip).unwrap_or(None)
 }
 
 #[cfg(test)]
@@ -725,46 +702,18 @@ mod tests {
         };
 
         // Test insert
-        assert!(node_peers.insert_new_peer(peer.clone()).unwrap());
+        assert!(node_peers.insert_new_peer(peer.clone()).await.unwrap());
 
         // Test size
-        assert_eq!(node_peers.size(), 1);
+        assert_eq!(node_peers.size().await, 1);
 
         // Test by_ip
-        let retrieved = node_peers.by_ip(ip).unwrap();
+        let retrieved = node_peers.by_ip(ip).await.unwrap();
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().ip, ip);
 
         // Test is_online
-        let retrieved = node_peers.by_ip(ip).unwrap().unwrap();
+        let retrieved = node_peers.by_ip(ip).await.unwrap().unwrap();
         assert!(NodePeers::is_online(&retrieved, None));
-    }
-
-    #[tokio::test]
-    async fn test_default_instance_compatibility() {
-        // Test that the default instance functions still work
-        let ip = Ipv4Addr::new(192, 168, 1, 1);
-
-        let peer = Peer {
-            ip,
-            pk: Some(vec![4, 5, 6]),
-            version: Some("1.0.1".to_string()),
-            latency: Some(50),
-            last_msg: get_unix_millis_now() as u64,
-            last_ping: Some(get_unix_millis_now() as u64),
-            last_pong: None,
-            shared_secret: None,
-            temporal: None,
-            rooted: None,
-            last_seen: get_unix_millis_now() as u64,
-            last_msg_type: Some("pong".to_string()),
-        };
-
-        // Use global functions
-        assert!(insert_new_peer(peer.clone()).unwrap());
-        assert!(size() >= 1);
-
-        let retrieved = by_ip(ip).unwrap();
-        assert!(retrieved.is_some());
     }
 }

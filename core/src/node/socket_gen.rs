@@ -151,7 +151,7 @@ impl NodeGenSocketGen {
                         return Err(Error::InvalidSignature);
                     }
 
-                    let _has_permission = anr::handshaked_and_valid_ip4(&msg_v2.pk, &peer_ip).unwrap_or(false);
+                    let _has_permission = anr::handshaked_and_valid_ip4(&msg_v2.pk, &peer_ip).await.unwrap_or(false);
 
                     // decompress and parse payload
                     if let Ok(decompressed) = miniz_oxide::inflate::decompress_to_vec(&msg_v2.payload) {
@@ -167,7 +167,7 @@ impl NodeGenSocketGen {
                     }
                 } else {
                     // multi-shard message - handle reassembly
-                    let has_permission = anr::handshaked_and_valid_ip4(&msg_v2.pk, &peer_ip).unwrap_or(false);
+                    let has_permission = anr::handshaked_and_valid_ip4(&msg_v2.pk, &peer_ip).await.unwrap_or(false);
 
                     if has_permission {
                         debug!(

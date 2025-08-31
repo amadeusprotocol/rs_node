@@ -26,6 +26,8 @@ pub enum Error {
     Anr(#[from] anr::Error),
     #[error(transparent)]
     Peers(#[from] peers::Error),
+    #[error("{0}")]
+    String(String),
 }
 
 

@@ -87,14 +87,21 @@ impl NodeState {
     }
 
     /// Handle incoming protocol messages
-    pub async fn handle(&mut self, msg: StateMessage, peer: &PeerInfo) -> Result<Option<Vec<u8>>, Error> {
+    pub async fn handle(
+        &mut self,
+        msg: StateMessage,
+        peer: &PeerInfo,
+        node_peers: &peers::NodePeers,
+    ) -> Result<Option<Vec<u8>>, Error> {
         match msg {
             StateMessage::NewPhoneWhoDis { anr, challenge } => {
                 self.handle_new_phone_who_dis(anr, challenge, peer).await
             }
             StateMessage::What { anr, challenge, signature } => self.handle_what(anr, challenge, signature, peer).await,
-            StateMessage::Ping { temporal, rooted, ts_m } => self.handle_ping(temporal, rooted, ts_m, peer).await,
-            StateMessage::Pong { ts_m } => self.handle_pong(ts_m, peer).await,
+            StateMessage::Ping { temporal, rooted, ts_m } => {
+                self.handle_ping(temporal, rooted, ts_m, peer, node_peers).await
+            }
+            StateMessage::Pong { ts_m } => self.handle_pong(ts_m, peer, node_peers).await,
             StateMessage::TxPool { txs_packed } => self.handle_txpool(txs_packed).await,
             StateMessage::PeersV2 { anrs } => self.handle_peers_v2(anrs).await,
             StateMessage::Sol { sol } => self.handle_sol(sol, peer).await,
@@ -141,7 +148,7 @@ impl NodeState {
         let _signature = vec![0u8; 96]; // placeholder signature
 
         // Store ANR
-        anr::insert(verified_anr)?;
+        anr::insert(verified_anr).await?;
 
         // Create what? message
         // TODO: Create proper protocol message
@@ -180,8 +187,8 @@ impl NodeState {
 
         // Store ANR and mark as handshaked
         let pk = verified_anr.pk.clone();
-        anr::insert(verified_anr)?;
-        anr::set_handshaked(&pk)?;
+        anr::insert(verified_anr).await?;
+        anr::set_handshaked(&pk).await?;
 
         Ok(None)
     }
@@ -193,6 +200,7 @@ impl NodeState {
         rooted: Vec<u8>,
         ts_m: u128,
         peer: &PeerInfo,
+        node_peers: &peers::NodePeers,
     ) -> Result<Option<Vec<u8>>, Error> {
         // TODO: Unpack and validate entries
         // For now, just check that entries are not empty
@@ -201,11 +209,11 @@ impl NodeState {
         }
 
         // Check if peer has permission (is handshaked)
-        let has_permission = anr::handshaked_and_valid_ip4(&peer.signer, &peer.ip)?;
+        let has_permission = anr::handshaked_and_valid_ip4(&peer.signer, &peer.ip).await?;
 
         if has_permission {
             // Send random verified ANRs to peer
-            let anrs = anr::get_random_verified(3)?;
+            let anrs = anr::get_random_verified(3).await?;
             if !anrs.is_empty() {
                 // TODO: Send peers_v2 message to peer
                 tracing::debug!("Sending peers_v2 to {}", peer.ip);
@@ -229,7 +237,7 @@ impl NodeState {
         };
 
         // Get or generate shared secret
-        if let Ok(secret) = peers::get_shared_secret(&peer.signer) {
+        if let Ok(secret) = node_peers.get_shared_secret(&peer.signer).await {
             if !secret.is_empty() {
                 peer_data.shared_secret = Some(secret);
             } else {
@@ -238,7 +246,7 @@ impl NodeState {
             }
         }
 
-        peers::insert_new_peer(peer_data)?;
+        node_peers.insert_new_peer(peer_data).await?;
 
         // Send pong response
         let pong_data = ts_m.to_le_bytes().to_vec();
@@ -246,18 +254,23 @@ impl NodeState {
     }
 
     /// Handle pong message
-    async fn handle_pong(&mut self, ts_m: u128, peer: &PeerInfo) -> Result<Option<Vec<u8>>, Error> {
+    async fn handle_pong(
+        &mut self,
+        ts_m: u128,
+        peer: &PeerInfo,
+        node_peers: &peers::NodePeers,
+    ) -> Result<Option<Vec<u8>>, Error> {
         let seen_time = get_unix_millis_now() as u64;
         let latency = seen_time - (ts_m as u64);
 
         // Update peer latency and last_pong
-        if let Ok(Some(mut peer_data)) = peers::by_ip(peer.ip) {
+        if let Ok(Some(mut peer_data)) = node_peers.by_ip(peer.ip).await {
             peer_data.latency = Some(latency);
             peer_data.last_pong = Some(seen_time);
             peer_data.last_msg = get_unix_millis_now() as u64;
             peer_data.pk = Some(peer.signer.clone());
 
-            peers::insert_new_peer(peer_data)?;
+            node_peers.insert_new_peer(peer_data).await?;
         }
 
         Ok(None)
@@ -290,7 +303,7 @@ impl NodeState {
         }
 
         for anr in valid_anrs {
-            anr::insert(anr)?;
+            anr::insert(anr).await?;
         }
 
         Ok(None)

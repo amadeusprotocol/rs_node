@@ -1,17 +1,17 @@
+use ama_core::consensus::DST_ANR_CHALLENGE;
+use ama_core::node::anr;
+use ama_core::node::protocol::{Instruction, What};
+use ama_core::utils::bls12_381 as bls;
+use ama_core::{Context, read_udp_packet};
 use client::{DumpReplaySocket, get_http_port, init_tracing};
+use http::serve;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::spawn;
 use tokio::time::timeout;
-
-use ama_core::{Context, read_udp_packet};
-use ama_core::node::protocol::{Instruction, What};
-use ama_core::node::anr;
-use ama_core::utils::bls12_381 as bls;
-use ama_core::consensus::DST_ANR_CHALLENGE;
-use http::serve;
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -47,6 +47,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn recv_loop(socket: UdpSocket, ctx: Arc<Context>) -> anyhow::Result<()> {
+    info!(
+        "udp server listening on {}",
+        socket.local_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".into())
+    );
+
     let mut buf = vec![0u8; 65_535];
     let timeout_secs = Duration::from_secs(10);
 
@@ -73,9 +78,11 @@ async fn handle_instruction(ctx: &Context, instruction: Instruction, src: Socket
         Instruction::ReplyWhatChallenge { anr, challenge } => {
             // received NewPhoneWhoDis, reply with What message containing challenge signature
             println!("received new_phone_who_dis from {:?}, challenge {}, replying with what", src, challenge);
-            
+
             // Get our own ANR to include in the What response
-            let my_ip = ctx.get_config().public_ipv4
+            let my_ip = ctx
+                .get_config()
+                .public_ipv4
                 .as_ref()
                 .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok())
                 .unwrap_or_else(|| std::net::Ipv4Addr::new(127, 0, 0, 1));
@@ -86,12 +93,13 @@ async fn handle_instruction(ctx: &Context, instruction: Instruction, src: Socket
                 &ctx.get_config().trainer_pop,
                 my_ip,
                 ctx.get_config().get_ver(),
-            ).map_err(|e| anyhow::anyhow!("failed to build ANR: {}", e))?;
-            
+            )
+            .map_err(|e| anyhow::anyhow!("failed to build ANR: {}", e))?;
+
             // sign the challenge: signature = BLS(sender_pk || challenge) with OUR private key
             let mut challenge_msg = anr.pk.clone();
             challenge_msg.extend_from_slice(&challenge.to_be_bytes());
-            
+
             let signature = bls::sign(&ctx.get_config().trainer_sk, &challenge_msg, DST_ANR_CHALLENGE)
                 .map_err(|e| anyhow::anyhow!("failed to sign challenge: {}", e))?;
 
@@ -100,44 +108,43 @@ async fn handle_instruction(ctx: &Context, instruction: Instruction, src: Socket
                 .map_err(|e| anyhow::anyhow!("failed to create What message: {}", e))?;
 
             // serialize and send
-            let payload = what_msg.to_etf_bin()
-                .map_err(|e| anyhow::anyhow!("failed to serialize What message: {}", e))?;
+            let payload =
+                what_msg.to_etf_bin().map_err(|e| anyhow::anyhow!("failed to serialize What message: {}", e))?;
 
             let shards = ama_core::node::ReedSolomonReassembler::build_shards(ctx.get_config(), payload)
                 .map_err(|e| anyhow::anyhow!("failed to build shards: {}", e))?;
 
-            let sock = UdpSocket::bind("0.0.0.0:0").await
-                .map_err(|e| anyhow::anyhow!("failed to bind socket: {}", e))?;
+            let sock =
+                UdpSocket::bind("0.0.0.0:0").await.map_err(|e| anyhow::anyhow!("failed to bind socket: {}", e))?;
 
             for shard in shards {
-                sock.send_to(&shard, src).await
-                    .map_err(|e| anyhow::anyhow!("failed to send shard: {}", e))?;
+                sock.send_to(&shard, src).await.map_err(|e| anyhow::anyhow!("failed to send shard: {}", e))?;
             }
 
             // insert the sender's ANR into our store
-            anr::insert(anr)?;
+            anr::insert(anr).await?;
         }
 
         Instruction::ReceivedWhatResponse { responder_anr, challenge, their_signature } => {
             // received What response to our new_phone_who_dis
             println!("received what response from {:?}, verifying signature", src);
-            
+
             // verify the signature: they signed (our_pk || challenge) with their private key
             let mut challenge_msg = ctx.get_config().trainer_pk.to_vec();
             challenge_msg.extend_from_slice(&challenge.to_be_bytes());
-            
+
             // verify using the responder's public key from their ANR
             if let Err(e) = bls::verify(&responder_anr.pk, &their_signature, &challenge_msg, DST_ANR_CHALLENGE) {
                 println!("signature verification failed: {}", e);
                 return Ok(());
             }
-            
+
             println!("handshake completed with {:?}, pk: {}", src, bs58::encode(&responder_anr.pk).into_string());
-            
+
             // insert the responder's ANR and mark as handshaked
-            anr::insert(responder_anr.clone())?;
-            anr::set_handshaked(&responder_anr.pk)?;
-            
+            anr::insert(responder_anr.clone()).await?;
+            anr::set_handshaked(&responder_anr.pk).await?;
+
             println!("peer {} is now handshaked", bs58::encode(&responder_anr.pk).into_string());
         }
 
@@ -145,8 +152,8 @@ async fn handle_instruction(ctx: &Context, instruction: Instruction, src: Socket
             // This instruction is no longer used in the new flow
             // Keep for backward compatibility
             println!("handshake completed with {:?}, pk: {}", src, bs58::encode(&anr.pk).into_string());
-            anr::insert(anr.clone())?;
-            anr::set_handshaked(&anr.pk)?;
+            anr::insert(anr.clone()).await?;
+            anr::set_handshaked(&anr.pk).await?;
         }
 
         Instruction::ReplyPong { ts_m: _ } => {

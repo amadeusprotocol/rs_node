@@ -2,10 +2,11 @@ use crate::utils::bls12_381::{sign, verify};
 use crate::utils::misc::{get_unix_millis_now, get_unix_secs_now};
 use eetf::{Atom, Binary, FixInteger, Map, Term};
 use once_cell::sync::Lazy;
-use scc::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
 pub enum Error {
@@ -36,7 +37,7 @@ impl crate::utils::misc::Typename for Error {
 }
 
 // global in-memory storage for anrs
-static ANR_STORE: Lazy<Arc<HashMap<Vec<u8>, ANR>>> = Lazy::new(|| Arc::new(HashMap::new()));
+static ANR_STORE: Lazy<Arc<RwLock<HashMap<Vec<u8>, ANR>>>> = Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
 
 // ama node record
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, bincode::Encode, bincode::Decode)]
@@ -225,7 +226,7 @@ impl ANR {
 // storage functions using scc hashmap
 
 // insert or update anr
-pub fn insert(anr: ANR) -> Result<(), Error> {
+pub async fn insert(anr: ANR) -> Result<(), Error> {
     // check if we have chain pop for this pk (would need consensus module)
     // let hasChainPop = consensus::chain_pop(&anr.pk).is_some();
     let mut anr = anr;
@@ -234,8 +235,8 @@ pub fn insert(anr: ANR) -> Result<(), Error> {
     let pk = anr.pk.clone();
 
     // check if anr already exists and update accordingly
-    ANR_STORE
-        .entry(pk.clone())
+    let mut map = ANR_STORE.write().await;
+    map.entry(pk.clone())
         .and_modify(|old| {
             // only update if newer timestamp
             if anr.ts > old.ts {
@@ -267,72 +268,76 @@ pub fn insert(anr: ANR) -> Result<(), Error> {
 }
 
 // get anr by public key
-pub fn get(pk: &[u8]) -> Result<Option<ANR>, Error> {
-    Ok(ANR_STORE.read(pk, |_, v| v.clone()))
+pub async fn get(pk: &[u8]) -> Result<Option<ANR>, Error> {
+    let map = ANR_STORE.read().await;
+    Ok(map.get(pk).cloned())
 }
 
 // get all anrs
-pub fn get_all() -> Result<Vec<ANR>, Error> {
-    let mut anrs = Vec::new();
-    ANR_STORE.scan(|_k, v| {
-        anrs.push(v.clone());
-    });
+pub async fn get_all() -> Result<Vec<ANR>, Error> {
+    let map = ANR_STORE.read().await;
+    let anrs: Vec<ANR> = map.values().cloned().collect();
     Ok(anrs)
 }
 
 // set handshaked status
-pub fn set_handshaked(pk: &[u8]) -> Result<(), Error> {
-    let _ = ANR_STORE.entry(pk.to_vec()).and_modify(|anr| {
+pub async fn set_handshaked(pk: &[u8]) -> Result<(), Error> {
+    let mut map = ANR_STORE.write().await;
+    if let Some(anr) = map.get_mut(pk) {
         anr.handshaked = true;
-    });
+    }
     Ok(())
 }
 
 // query functions
 
 // get all handshaked node public keys
-pub fn handshaked() -> Result<Vec<Vec<u8>>, Error> {
+pub async fn handshaked() -> Result<Vec<Vec<u8>>, Error> {
+    let map = ANR_STORE.read().await;
     let mut pks = Vec::new();
-    ANR_STORE.scan(|k, v| {
+    for (k, v) in map.iter() {
         if v.handshaked {
             pks.push(k.clone());
         }
-    });
+    }
     Ok(pks)
 }
 
 // get all not handshaked (pk, ip4) pairs
-pub fn not_handshaked_pk_ip4() -> Result<Vec<(Vec<u8>, Ipv4Addr)>, Error> {
+pub async fn not_handshaked_pk_ip4() -> Result<Vec<(Vec<u8>, Ipv4Addr)>, Error> {
+    let map = ANR_STORE.read().await;
     let mut results = Vec::new();
-    ANR_STORE.scan(|k, v| {
+    for (k, v) in map.iter() {
         if !v.handshaked {
             results.push((k.clone(), v.ip4));
         }
-    });
+    }
     Ok(results)
 }
 
 // check if node is handshaked
-pub fn is_handshaked(pk: &[u8]) -> Result<bool, Error> {
-    Ok(ANR_STORE.read(pk, |_, v| v.handshaked).unwrap_or(false))
+pub async fn is_handshaked(pk: &[u8]) -> Result<bool, Error> {
+    let map = ANR_STORE.read().await;
+    Ok(map.get(pk).map(|v| v.handshaked).unwrap_or(false))
 }
 
 // check if node is handshaked with valid ip4
-pub fn handshaked_and_valid_ip4(pk: &[u8], ip4: &Ipv4Addr) -> Result<bool, Error> {
-    Ok(ANR_STORE.read(pk, |_, v| v.handshaked && v.ip4 == *ip4).unwrap_or(false))
+pub async fn handshaked_and_valid_ip4(pk: &[u8], ip4: &Ipv4Addr) -> Result<bool, Error> {
+    let map = ANR_STORE.read().await;
+    Ok(map.get(pk).map(|v| v.handshaked && v.ip4 == *ip4).unwrap_or(false))
 }
 
 // get random verified nodes
-pub fn get_random_verified(count: usize) -> Result<Vec<ANR>, Error> {
+pub async fn get_random_verified(count: usize) -> Result<Vec<ANR>, Error> {
     use rand::seq::SliceRandom;
 
-    let pks = handshaked()?;
+    let pks = handshaked().await?;
     let mut rng = rand::thread_rng();
     let selected: Vec<_> = pks.choose_multiple(&mut rng, count).cloned().collect();
 
     let mut anrs = Vec::new();
     for pk in selected {
-        if let Some(anr) = get(&pk)? {
+        if let Some(anr) = get(&pk).await? {
             anrs.push(anr.pack());
         }
     }
@@ -341,11 +346,11 @@ pub fn get_random_verified(count: usize) -> Result<Vec<ANR>, Error> {
 }
 
 // get random unverified nodes
-pub fn get_random_unverified(count: usize) -> Result<Vec<(Vec<u8>, Ipv4Addr)>, Error> {
+pub async fn get_random_unverified(count: usize) -> Result<Vec<(Vec<u8>, Ipv4Addr)>, Error> {
     use rand::seq::SliceRandom;
     use std::collections::HashSet;
 
-    let pairs = not_handshaked_pk_ip4()?;
+    let pairs = not_handshaked_pk_ip4().await?;
 
     // deduplicate by ip4
     let mut seen_ips = HashSet::new();
@@ -363,14 +368,14 @@ pub fn get_random_unverified(count: usize) -> Result<Vec<(Vec<u8>, Ipv4Addr)>, E
 }
 
 // get all validators from handshaked nodes
-pub fn all_validators() -> Result<Vec<ANR>, Error> {
+pub async fn all_validators() -> Result<Vec<ANR>, Error> {
     // this would need integration with consensus module to get validator set
     // for now, return all handshaked nodes
-    let pks = handshaked()?;
+    let pks = handshaked().await?;
     let mut anrs = Vec::new();
 
     for pk in pks {
-        if let Some(anr) = get(&pk)? {
+        if let Some(anr) = get(&pk).await? {
             anrs.push(anr);
         }
     }
@@ -379,34 +384,36 @@ pub fn all_validators() -> Result<Vec<ANR>, Error> {
 }
 
 // get all handshaked (pk, ip4) pairs
-pub fn handshaked_pk_ip4() -> Result<Vec<(Vec<u8>, Ipv4Addr)>, Error> {
+pub async fn handshaked_pk_ip4() -> Result<Vec<(Vec<u8>, Ipv4Addr)>, Error> {
+    let map = ANR_STORE.read().await;
     let mut results = Vec::new();
-    ANR_STORE.scan(|k, v| {
+    for (k, v) in map.iter() {
         if v.handshaked {
             results.push((k.clone(), v.ip4));
         }
-    });
+    }
     Ok(results)
 }
 
 // get ip addresses for given public keys
-pub fn by_pks_ip<T: AsRef<[u8]>>(pks: &[T]) -> Result<Vec<Ipv4Addr>, Error> {
+pub async fn by_pks_ip<T: AsRef<[u8]>>(pks: &[T]) -> Result<Vec<Ipv4Addr>, Error> {
     // build a set of owned pk bytes for efficient lookup
     let pk_set: std::collections::HashSet<Vec<u8>> = pks.iter().map(|p| p.as_ref().to_vec()).collect();
     let mut ips = Vec::new();
 
-    ANR_STORE.scan(|_, v| {
+    let map = ANR_STORE.read().await;
+    for v in map.values() {
         if pk_set.contains(&v.pk) {
             ips.push(v.ip4);
         }
-    });
+    }
 
     Ok(ips)
 }
 
 // seed initial anrs (called on startup)
 /// my_ip: Optional node IPv4 to use for self-ANR; when None, falls back to PUBLIC_UDP_IPV4 env or 0.0.0.0
-pub fn seed(
+pub async fn seed(
     seed_anrs: Vec<ANR>,
     my_sk: &[u8],
     my_pk: &[u8],
@@ -416,40 +423,35 @@ pub fn seed(
 ) -> Result<(), Error> {
     // insert seed anrs
     for anr in seed_anrs {
-        insert(anr)?;
+        insert(anr).await?;
     }
 
     // build and insert our own anr using provided IP when available
     let my_ip4 = my_ip.unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
 
     if let Ok(my_anr) = ANR::build(my_sk, my_pk, my_pop, my_ip4, version) {
-        insert(my_anr)?;
-        set_handshaked(my_pk)?;
+        insert(my_anr).await?;
+        set_handshaked(my_pk).await?;
     }
 
     Ok(())
 }
 
 // clear all anrs (useful for testing)
-pub fn clear_all() -> Result<(), Error> {
-    ANR_STORE.clear();
+pub async fn clear_all() -> Result<(), Error> {
+    ANR_STORE.write().await.clear();
     Ok(())
 }
 
 // get count of anrs
-pub fn count() -> usize {
-    ANR_STORE.len()
+pub async fn count() -> usize {
+    ANR_STORE.read().await.len()
 }
 
 // get count of handshaked anrs
-pub fn count_handshaked() -> usize {
-    let mut count = 0;
-    ANR_STORE.scan(|_, v| {
-        if v.handshaked {
-            count += 1;
-        }
-    });
-    count
+pub async fn count_handshaked() -> usize {
+    let map = ANR_STORE.read().await;
+    map.values().filter(|v| v.handshaked).count()
 }
 
 #[cfg(test)]
@@ -489,39 +491,39 @@ mod tests {
         };
 
         // test insert
-        insert(anr.clone()).unwrap();
+        insert(anr.clone()).await.unwrap();
 
         // test get
-        let retrieved = get(&pk).unwrap().unwrap();
+        let retrieved = get(&pk).await.unwrap().unwrap();
         assert_eq!(retrieved.pk, pk);
         assert!(!retrieved.handshaked, "Expected handshaked to be false after insert, got true");
 
         // test set_handshaked
-        set_handshaked(&pk).unwrap();
-        let retrieved = get(&pk).unwrap().unwrap();
+        set_handshaked(&pk).await.unwrap();
+        let retrieved = get(&pk).await.unwrap().unwrap();
         assert!(retrieved.handshaked, "Expected handshaked to be true after set_handshaked");
 
         // test handshaked query
-        let handshaked_pks = handshaked().unwrap();
+        let handshaked_pks = handshaked().await.unwrap();
         assert!(handshaked_pks.iter().any(|p| p == &pk), "pk should be in handshaked list");
 
         // test is_handshaked
-        assert!(is_handshaked(&pk).unwrap(), "is_handshaked should return true");
+        assert!(is_handshaked(&pk).await.unwrap(), "is_handshaked should return true");
 
         // test get_all
-        let all = get_all().unwrap();
+        let all = get_all().await.unwrap();
         assert!(!all.is_empty());
         assert!(all.iter().any(|a| a.pk == pk));
 
         // test count functions - since tests run in parallel, we can't assume exact counts
-        let total_count = count();
+        let total_count = count().await;
         assert!(total_count >= 1, "Expected at least 1 ANR, got {}", total_count);
 
         // cleanup - remove only our test anr
-        let _ = ANR_STORE.remove(&pk);
+        let _ = ANR_STORE.write().await.remove(&pk);
 
         // verify our pk was removed
-        assert!(get(&pk).unwrap().is_none(), "Our pk should be removed");
+        assert!(get(&pk).await.unwrap().is_none(), "Our pk should be removed");
     }
 
     #[tokio::test]
@@ -552,8 +554,8 @@ mod tests {
             error_tries: 0,
             next_check: 1003,
         };
-        insert(anr1).unwrap();
-        set_handshaked(&pk).unwrap();
+        insert(anr1).await.unwrap();
+        set_handshaked(&pk).await.unwrap();
 
         // try to insert older anr (should not update)
         let anr2 = ANR {
@@ -570,10 +572,10 @@ mod tests {
             error_tries: 0,
             next_check: 1002,
         };
-        insert(anr2).unwrap();
+        insert(anr2).await.unwrap();
 
         // verify old anr was not updated
-        let retrieved = get(&pk).unwrap().unwrap();
+        let retrieved = get(&pk).await.unwrap().unwrap();
         assert_eq!(retrieved.ip4, Ipv4Addr::new(192, 168, 1, 1));
         assert_eq!(retrieved.ts, 1000);
         assert!(retrieved.handshaked);
@@ -593,9 +595,9 @@ mod tests {
             error_tries: 0,
             next_check: 2003,
         };
-        insert(anr3).unwrap();
+        insert(anr3).await.unwrap();
 
-        let retrieved = get(&pk).unwrap().unwrap();
+        let retrieved = get(&pk).await.unwrap().unwrap();
         assert_eq!(retrieved.ts, 2000);
         assert_eq!(retrieved.version, "2.0.0");
         assert!(retrieved.handshaked); // should be preserved
@@ -615,9 +617,9 @@ mod tests {
             error_tries: 5,
             next_check: 3003,
         };
-        insert(anr4).unwrap();
+        insert(anr4).await.unwrap();
 
-        let retrieved = get(&pk).unwrap().unwrap();
+        let retrieved = get(&pk).await.unwrap().unwrap();
         assert_eq!(retrieved.ts, 3000);
         assert_eq!(retrieved.ip4, Ipv4Addr::new(10, 0, 0, 1));
         assert!(!retrieved.handshaked); // should be reset
@@ -625,6 +627,6 @@ mod tests {
         assert_eq!(retrieved.error_tries, 0); // should be reset
 
         // cleanup - remove only our test anr
-        let _ = ANR_STORE.remove(&pk);
+        let _ = ANR_STORE.write().await.remove(&pk);
     }
 }

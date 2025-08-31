@@ -4,21 +4,20 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-eetf = "0.10.0" # used to talk with erlang/elixir instances through the network
-num-traits = "0.2.19"
-flate2 = { version = "1.0.25", features = ["zlib"] }
-miniz_oxide = "0.8.9"
-ratatui = "0.29.0"
 tokio = { version = "1.47.1", features = ["full"] }
 bs58 = "0.5.1"
-anyhow = "1.0.98"
+anyhow = "1.0.99"
 ama_core = { workspace = true }
 http = { workspace = true }
 hex = "0.4.3"
-tracing-subscriber = "0.3.19"
-serde_json = "1.0"
-wasmer = { version = "4", features = ["cranelift"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+console-subscriber = { version = "0.4", optional = true }
+serde_json = "1.0.143"
 bincode = "2.0.1"
-clap = { version = "4.4", features = ["derive"] }
-rand = "0.8"
-async-trait = "0.1"
+clap = { version = "4.5.46", features = ["derive"] }
+async-trait = "0.1.89"
+tracing = "0.1.41"
+
+[features]
+default = []
+tokio-tracing = ["dep:console-subscriber", "tokio/tracing"]

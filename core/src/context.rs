@@ -16,7 +16,7 @@ pub async fn read_udp_packet(ctx: &Context, src: SocketAddr, buf: &[u8]) -> Opti
     use crate::node::protocol::from_etf_bin;
     ctx.metrics.add_v2_udp_packet(buf.len());
 
-    match ctx.reassembler.add_shard(buf) {
+    match ctx.reassembler.add_shard(buf).await {
         Ok(Some(packet)) => match from_etf_bin(&packet) {
             Ok(proto) => {
                 let _last_ts = get_unix_secs_now();
@@ -39,16 +39,13 @@ pub async fn read_udp_packet(ctx: &Context, src: SocketAddr, buf: &[u8]) -> Opti
 }
 
 /// Runtime container for config, metrics, reassembler, and node state.
-/// Note: Peer management lives in crate::node::peers via a global DEFAULT_NODE_PEERS.
-/// Context interacts with peers using the peers::* free functions to avoid duplication.
 pub struct Context {
     pub(crate) config: config::Config,
     pub(crate) metrics: metrics::Metrics,
     pub(crate) reassembler: Arc<node::ReedSolomonReassembler>,
+    pub(crate) node_peers: Arc<peers::NodePeers>,
     node_state: Arc<RwLock<NodeState>>,
     broadcaster: Option<Arc<dyn node::Broadcaster>>,
-    // handle for the periodic task
-    pub periodic_handle: tokio::task::JoinHandle<()>,
     // optional handles for broadcast tasks
     pub ping_handle: Option<tokio::task::JoinHandle<()>>,
     pub anr_handle: Option<tokio::task::JoinHandle<()>>,
@@ -71,7 +68,6 @@ impl Context {
         use crate::utils::archiver::init_storage;
         use metrics::Metrics;
         use node::reassembler::ReedSolomonReassembler as Reassembler;
-        use tokio::spawn;
         use tokio::time::{Duration, interval};
 
         assert_ne!(config.work_folder, "");
@@ -110,8 +106,11 @@ impl Context {
         let my_pk = config.trainer_pk;
         let my_pop = config.trainer_pop.clone();
 
-        anr::seed(seed_anrs, &my_sk, &my_pk, &my_pop, config.get_ver(), Some(my_ip))?;
-        peers::seed(my_ip)?;
+        anr::seed(seed_anrs, &my_sk, &my_pk, &my_pop, config.get_ver(), Some(my_ip)).await?;
+
+        // create node peers instance
+        let node_peers = Arc::new(peers::NodePeers::default());
+        node_peers.seed(my_ip).await?;
 
         // send initial bootstrap handshake to seed nodes (new_phone_who_dis)
         {
@@ -169,21 +168,24 @@ impl Context {
                         }
                     }
                 }
+                info!("sent bootstrap new_phone_who_dis, exiting bootstrap task");
             });
         }
 
         let node_state = Arc::new(RwLock::new(NodeState::init()));
+        let reassembler = Arc::new(Reassembler::new());
 
         const CLEANUP_SECS: u64 = 8;
-        let reassembler = Arc::new(Reassembler::new());
-        let reassembler_ref = reassembler.clone();
-        let periodic_handle = spawn(async move {
+        let reassembler_local = reassembler.clone();
+        let node_peers_local = node_peers.clone();
+        tokio::spawn(async move {
+            use tracing::info;
             let mut ticker = interval(Duration::from_secs(CLEANUP_SECS));
             loop {
                 ticker.tick().await;
-                reassembler_ref.clear_stale(CLEANUP_SECS);
-                // Run peer cleanup in blocking task to avoid runtime starvation
-                let _ = tokio::task::spawn_blocking(move || peers::clear_stale()).await;
+                let cleared_shards = reassembler_local.clear_stale(CLEANUP_SECS).await;
+                let cleared_peers = node_peers_local.clear_stale().await;
+                info!("cleanup: cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
             }
         });
 
@@ -192,9 +194,9 @@ impl Context {
             config,
             metrics,
             reassembler,
+            node_peers,
             node_state,
             broadcaster: None,
-            periodic_handle,
             ping_handle: None,
             anr_handle: None,
         })
@@ -209,29 +211,24 @@ impl Context {
     }
 
     pub async fn update_peer_activity(&self, ip: Ipv4Addr, last_msg: &str) -> Result<(), Error> {
-        // Update peer activity using the proper peer management system
-        peers::update_activity(ip, last_msg)?;
+        // Update peer activity using the node_peers instance
+        self.node_peers.update_peer_activity(ip, last_msg).await.map_err(|e| Error::String(e.to_string()))?;
         Ok(())
     }
 
     pub async fn get_peers(&self) -> HashMap<String, PeerInfo> {
         // Run peer scan in a blocking task to avoid starving the async runtime
-        let result = tokio::task::spawn_blocking(move || {
-            let mut result = HashMap::new();
-            if let Ok(all_peers) = peers::all() {
-                for peer in all_peers {
-                    let peer_info = PeerInfo {
-                        last_ts: peer.last_seen,
-                        last_msg: peer.last_msg_type.unwrap_or_else(|| "unknown".to_string()),
-                    };
-                    result.insert(peer.ip.to_string(), peer_info);
-                }
+        let node_peers = self.node_peers.clone();
+        let mut result = HashMap::new();
+        if let Ok(all_peers) = node_peers.all().await {
+            for peer in all_peers {
+                let peer_info = PeerInfo {
+                    last_ts: peer.last_seen,
+                    last_msg: peer.last_msg_type.unwrap_or_else(|| "unknown".to_string()),
+                };
+                result.insert(peer.ip.to_string(), peer_info);
             }
-            result
-        })
-        .await
-        .unwrap_or_default();
-
+        }
         result
     }
 
@@ -257,13 +254,14 @@ impl Context {
 
         // ping loop every 500ms
         let b1 = broadcaster.clone();
+        let node_peers1 = self.node_peers.clone();
         self.ping_handle = Some(spawn(async move {
             let mut ticker = interval(Duration::from_millis(500));
             loop {
                 ticker.tick().await;
                 // placeholder ping payload
                 let payload = Vec::new();
-                if let Ok(ips) = peers::get_all_ips() {
+                if let Ok(ips) = node_peers1.get_all_ips().await {
                     debug!("broadcast ping to {} peers", ips.len());
                     b1.send_to(ips, payload);
                 }
@@ -277,7 +275,7 @@ impl Context {
             let mut ticker = interval(Duration::from_secs(1));
             loop {
                 ticker.tick().await;
-                if let Ok(list) = anr::get_random_unverified(3) {
+                if let Ok(list) = anr::get_random_unverified(3).await {
                     for (pk, ip) in list {
                         if pk != my_pk_copy {
                             let payload = Vec::new(); // placeholder new_phone_who_dis
@@ -290,19 +288,19 @@ impl Context {
     }
 
     /// manual trigger for ping broadcast (optional helper)
-    pub fn broadcast_ping(&self) {
+    pub async fn broadcast_ping(&self) {
         if let Some(b) = &self.broadcaster {
-            if let Ok(ips) = peers::get_all_ips() {
+            if let Ok(ips) = self.node_peers.get_all_ips().await {
                 b.send_to(ips, Vec::new());
             }
         }
     }
 
     /// manual trigger for ANR check broadcast (optional helper)
-    pub fn broadcast_check_anr(&self) {
+    pub async fn broadcast_check_anr(&self) {
         if let Some(b) = &self.broadcaster {
             let my_pk = self.config.trainer_pk.to_vec();
-            if let Ok(list) = anr::get_random_unverified(3) {
+            if let Ok(list) = anr::get_random_unverified(3).await {
                 for (pk, ip) in list {
                     if pk != my_pk {
                         b.send_to(vec![ip.to_string()], Vec::new());
@@ -312,7 +310,6 @@ impl Context {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

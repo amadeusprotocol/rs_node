@@ -5,11 +5,12 @@ use crate::utils::misc::get_unix_nanos_now;
 use crate::utils::reed_solomon;
 use crate::utils::reed_solomon::ReedSolomonResource;
 use crate::utils::{blake3, bls12_381};
-use scc::HashMap as SccHashMap;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use tokio::sync::RwLock;
 
 pub struct ReedSolomonReassembler {
-    reorg: SccHashMap<ReassemblyKey, EntryState>,
+    reorg: RwLock<HashMap<ReassemblyKey, EntryState>>, // protected in-memory reassembly state
 }
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
@@ -71,7 +72,7 @@ impl Default for ReedSolomonReassembler {
 
 impl ReedSolomonReassembler {
     pub fn new() -> Self {
-        Self { reorg: SccHashMap::new() }
+        Self { reorg: RwLock::new(HashMap::new()) }
     }
 
     /// Creates signed MessageV2 shards from payload
@@ -131,22 +132,18 @@ impl ReedSolomonReassembler {
         Ok(shards)
     }
 
-    pub fn clear_stale(&self, seconds: u64) {
+    pub async fn clear_stale(&self, seconds: u64) -> usize {
         let threshold = get_unix_nanos_now().saturating_sub(seconds as u128 * 1_000_000_000);
-        let size_before = self.reorg.len();
-
-        // use retain to efficiently remove stale entries
-        self.reorg.retain(|k, _v| (k.ts_nano as u128) > threshold);
-
-        let size_after = self.reorg.len();
-        if size_before > size_after {
-            println!("cleared {}", size_before - size_after);
-        }
+        let mut map = self.reorg.write().await;
+        let size_before = map.len();
+        map.retain(|k, _v| (k.ts_nano as u128) > threshold);
+        let size_after = map.len();
+        size_before - size_after
     }
 
     /// Adds a shard to the reassembly buffer, and when enough
     /// shards collected, reconstructs
-    pub fn add_shard(&self, bin: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+    pub async fn add_shard(&self, bin: &[u8]) -> Result<Option<Vec<u8>>, Error> {
         let message = MessageV2::try_from(bin)?;
         let key = ReassemblyKey::from(&message);
         let shard = &message.payload;
@@ -159,46 +156,44 @@ impl ReedSolomonReassembler {
 
         let data_shards = (key.shard_total / 2) as usize;
 
-        // try insert first (for new keys)
-        let mut new_state = std::collections::HashMap::new();
-        new_state.insert(message.shard_index, shard.clone());
-        match self.reorg.insert(key.clone(), EntryState::Collecting(new_state)) {
-            Ok(_) => {} // successfully inserted new key
-            Err((key, _)) => {
-                // key already exists, try to update it
-                let result = self.reorg.update(&key, |_k, v| {
-                    match v {
+        // insert-or-update under lock; if threshold met, collect shards and mark Spent
+        let mut maybe_shards: Option<Vec<(usize, Vec<u8>)>> = None;
+        {
+            let mut map = self.reorg.write().await;
+            use std::collections::hash_map::Entry;
+            match map.entry(key.clone()) {
+                Entry::Vacant(v) => {
+                    let mut state_map = HashMap::new();
+                    state_map.insert(message.shard_index, shard.clone());
+                    v.insert(EntryState::Collecting(state_map));
+                }
+                Entry::Occupied(mut occ) => {
+                    match occ.get_mut() {
                         EntryState::Spent => {
-                            None // don't change, return None to indicate no action
+                            // nothing to do
                         }
-                        EntryState::Collecting(map) => {
-                            map.insert(message.shard_index, shard.clone());
-
-                            if map.len() >= data_shards {
-                                // collect all shards for reassembly
+                        EntryState::Collecting(shards_map) => {
+                            shards_map.insert(message.shard_index, shard.clone());
+                            if shards_map.len() >= data_shards {
                                 let shards: Vec<(usize, Vec<u8>)> =
-                                    map.iter().map(|(idx, bytes)| (*idx as usize, bytes.clone())).collect();
-                                Some(shards)
-                            } else {
-                                None // still collecting
+                                    shards_map.iter().map(|(idx, bytes)| (*idx as usize, bytes.clone())).collect();
+                                // mark as spent to avoid reuse and release memory
+                                *occ.get_mut() = EntryState::Spent;
+                                maybe_shards = Some(shards);
                             }
                         }
                     }
-                });
-
-                if let Some(Some(shards)) = result {
-                    // mark as spent in a separate operation
-                    let _ = self.reorg.update(&key, |_k, v| *v = EntryState::Spent);
-
-                    // now decode
-                    let msg_size = message.original_size as usize;
-                    let mut rs_res = ReedSolomonResource::new(data_shards, data_shards)?;
-                    let payload = rs_res.decode_shards(shards, data_shards + data_shards, msg_size)?;
-
-                    Self::verify_msg_sig(&key, &message.signature, payload.as_slice())?;
-                    return Ok(Some(payload));
                 }
             }
+        }
+
+        if let Some(shards) = maybe_shards {
+            // decode outside the lock
+            let msg_size = message.original_size as usize;
+            let mut rs_res = ReedSolomonResource::new(data_shards, data_shards)?;
+            let payload = rs_res.decode_shards(shards, data_shards + data_shards, msg_size)?;
+            Self::verify_msg_sig(&key, &message.signature, payload.as_slice())?;
+            return Ok(Some(payload));
         }
 
         Ok(None)
@@ -308,7 +303,7 @@ mod tests {
 
         let reassembler = ReedSolomonReassembler::new();
         let msg_bytes: Vec<u8> = messages[0].clone().try_into().unwrap();
-        let result = reassembler.add_shard(&msg_bytes).unwrap();
+        let result = reassembler.add_shard(&msg_bytes).await.unwrap();
         assert_eq!(result, Some(payload));
     }
 
@@ -338,7 +333,7 @@ mod tests {
         // add shards one by one
         for msg in &messages {
             let msg_bytes: Vec<u8> = msg.clone().try_into().unwrap();
-            if let Some(restored) = reassembler.add_shard(&msg_bytes).unwrap() {
+            if let Some(restored) = reassembler.add_shard(&msg_bytes).await.unwrap() {
                 result = Some(restored);
                 break;
             }
@@ -366,7 +361,7 @@ mod tests {
         let mut restored = None;
         for (_i, msg) in messages.iter().enumerate().take(data_shards + 1) {
             let msg_bytes: Vec<u8> = msg.clone().try_into().unwrap();
-            if let Some(result) = reassembler.add_shard(&msg_bytes).unwrap() {
+            if let Some(result) = reassembler.add_shard(&msg_bytes).await.unwrap() {
                 restored = Some(result);
                 break;
             }

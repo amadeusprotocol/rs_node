@@ -25,10 +25,11 @@ pub struct NodeGen {
     ip: Ipv4Addr,
     port: u16,
     socket_gens: Vec<Arc<NodeGenSocketGen>>,
+    node_peers: Arc<peers::NodePeers>,
 }
 
 impl NodeGen {
-    pub async fn new(ip: Ipv4Addr, port: u16) -> Result<Self, Error> {
+    pub async fn new(ip: Ipv4Addr, port: u16, node_peers: Arc<peers::NodePeers>) -> Result<Self, Error> {
         // create multiple socket generators (8 as in Elixir)
         let mut socket_gens = Vec::new();
         for i in 0..8 {
@@ -43,7 +44,7 @@ impl NodeGen {
             socket_gens.push(Arc::new(socket_gen));
         }
 
-        Ok(Self { ip, port, socket_gens })
+        Ok(Self { ip, port, socket_gens, node_peers })
     }
 
     pub async fn start(&self) -> Result<(), Error> {
@@ -61,7 +62,6 @@ impl NodeGen {
 
         Ok(())
     }
-
 
     /// Get socket generator by index
     pub fn get_socket_gen(&self) -> Arc<NodeGenSocketGen> {
@@ -83,7 +83,7 @@ impl NodeGen {
         // TODO: create ping message using protocol module
         let msg_compressed = vec![]; // placeholder
 
-        let all_ips = peers::get_all_ips()?;
+        let all_ips = self.node_peers.get_all_ips().await?;
         let socket_gen = self.get_socket_gen();
 
         socket_gen.send_to_some(all_ips, msg_compressed).await.map_err(|e| Error::SocketError(e.to_string()))?;
@@ -97,7 +97,7 @@ impl NodeGen {
         // use provided trainer pk
         let my_pk = trainer_pk.to_vec();
 
-        let random_unverified = anr::get_random_unverified(3)?;
+        let random_unverified = anr::get_random_unverified(3).await?;
 
         for (pk, ip) in random_unverified {
             if pk != my_pk {
@@ -133,11 +133,11 @@ impl NodeGen {
         let msg_compressed = vec![]; // placeholder
 
         let ips = match who {
-            PeerSelector::All => peers::get_all_ips()?,
+            PeerSelector::All => self.node_peers.get_all_ips().await?,
             PeerSelector::ByWho(_who_type) => {
                 // TODO: convert who_type string to appropriate Who enum variant
                 // For now, just return all IPs
-                peers::get_all_ips()?
+                self.node_peers.get_all_ips().await?
             }
         };
 
@@ -146,14 +146,14 @@ impl NodeGen {
 
         Ok(())
     }
-
-    async fn tick(&self) -> Result<(), Error> {
-        debug!("Node tick - clearing stale peers");
-        peers::clear_stale()?;
-        Ok(())
-    }
+    //
+    // async fn tick(&self) -> Result<(), Error> {
+    //     debug!("Node tick - clearing stale peers");
+    //     let cleared_count = self.node_peers.clear_stale_inner().await?;
+    //     debug!("cleared {} stale peers", cleared_count);
+    //     Ok(())
+    // }
 }
-
 
 #[derive(Debug, Clone)]
 pub enum BroadcastType {

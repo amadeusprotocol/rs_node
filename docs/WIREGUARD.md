@@ -1,13 +1,15 @@
-# Cheat Sheet for Developers
+# WireGuard setup
 
-```bash
-leaks -nocontext $(pgrep -f "target/debug/node")
-sudo tcpdump -i any -nnvv -e 'udp and port 36969'
-```
+Following are configs to create a wireguard tunnel to get a public IP address for local
+Amadeus node development, testing and hosting. Note the `PostUp` and `PostDown` rules, first
+three are needed so that your laptop can access the internet through the VPN, second two
+are needed to hole-punch the `<server-ip>:36969` UDP port into the local laptop.
+
+Server config (`/etc/wireguard/wg0.conf`):
 
 ```bash
 [Interface]
-PrivateKey = ...
+PrivateKey = <server-private-key>
 Address = 10.0.0.1/24
 ListenPort = 51820
 
@@ -27,19 +29,31 @@ PostDown = iptables -t nat -D PREROUTING -i eth0 -p udp --dport 36969 -j DNAT --
 PostDown = iptables -D FORWARD -p udp -d 10.0.0.2 --dport 36969 -j ACCEPT
 
 [Peer]
-PublicKey = ...
+PublicKey = <client-public-key>
 AllowedIPs = 10.0.0.2/32
 ```
 
+Client config (`/etc/wireguard/server.conf`):
+
 ```bash
 [Interface]
-PrivateKey = ...
+PrivateKey = <client-private-key>
 Address = 10.0.0.2/24
 DNS = 1.1.1.1
 
 [Peer]
-PublicKey = ...
+PublicKey = <server-public-key>
 AllowedIPs = 0.0.0.0/0
-Endpoint = faychuk.com:51820
+Endpoint = <server-ip>:51820
 PersistentKeepalive = 25
+```
+
+To generate the wireguard keypair and to start/stop the server on both server/laptop, run:
+
+```bash
+wg genkey # will print the private key
+echo "<private-key>"| wg pubkey # will print the public key
+# don't forget to replace keys and server ip in configs above
+sudo wg-quick up wg0
+sudo wg-quick down wg0
 ```

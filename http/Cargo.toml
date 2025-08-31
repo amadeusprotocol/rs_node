@@ -9,15 +9,11 @@ path = "src/lib.rs"
 crate-type = ["rlib"]
 
 [dependencies]
-axum = { version = "0.7.9", features = ["macros", "json"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+axum = { version = "0.8.4", features = ["macros", "json"] }
+tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio-stream = "0.1"
-async-stream = "0.3"
-futures-core = "0.3"
 anyhow = "1.0.98"
-tracing = "0.1"
-    tower = { version = "0.5", features = ["timeout"] }
+tracing = "0.1.41"
 tower-http = { version = "0.6", features = ["fs", "trace", "timeout"] }
-    ama_core = { path = "../core" }
+ama_core = { path = "../core" }
