@@ -111,6 +111,7 @@ dependencies = [
  "eetf",
  "flate2",
  "group",
+ "indexmap 2.10.0",
  "miniz_oxide",
  "num-traits",
  "once_cell",

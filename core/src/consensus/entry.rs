@@ -211,7 +211,7 @@ impl Protocol for Entry {
         Entry::from_etf_bin_validated(bin, ENTRY_SIZE).map_err(Into::into)
     }
 
-    async fn handle_inner(&self) -> Result<protocol::Instruction, protocol::Error> {
+    async fn handle_inner(&self, _src: std::net::SocketAddr) -> Result<protocol::Instruction, protocol::Error> {
         self.handle_inner().await.map_err(Into::into)
     }
 }

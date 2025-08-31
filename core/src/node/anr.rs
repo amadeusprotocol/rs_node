@@ -1,6 +1,6 @@
 use crate::utils::bls12_381::{sign, verify};
 use crate::utils::misc::{get_unix_millis_now, get_unix_secs_now};
-use eetf::{Atom, Binary, FixInteger, Map, Term};
+use eetf::{Atom, BigInteger, Binary, FixInteger, Map, Term, Tuple};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -97,17 +97,18 @@ impl ANR {
     // convert to erlang term format for signing (excludes signature field)
     // matches elixir :erlang.term_to_binary([:deterministic])
     fn to_erlang_term_for_signing(&self) -> Result<Vec<u8>, Error> {
-        // create map with fields in same order as elixir: [:ip4, :pk, :pop, :port, :ts, :version]
-        let map = Map::from([
-            (Term::Atom(Atom::from("ip4")), Term::Binary(Binary::from(self.ip4.octets().to_vec()))),
-            (Term::Atom(Atom::from("pk")), Term::Binary(Binary::from(self.pk.clone()))),
-            (Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone()))),
-            (Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32))),
-            (Term::Atom(Atom::from("ts")), Term::FixInteger(FixInteger::from(self.ts as i32))),
-            (Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec()))),
+        // create a tuple instead of map for deterministic ordering
+        // order: ip4, pk, pop, port, ts, version
+        let tuple = Tuple::from(vec![
+            Term::Binary(Binary::from(self.ip4.octets().to_vec())),
+            Term::Binary(Binary::from(self.pk.clone())),
+            Term::Binary(Binary::from(self.pop.clone())),
+            Term::FixInteger(FixInteger::from(self.port as i32)),
+            Term::BigInteger(BigInteger::from(self.ts as i64)),
+            Term::Binary(Binary::from(self.version.as_bytes().to_vec())),
         ]);
 
-        let term = Term::Map(map);
+        let term = Term::Tuple(tuple);
         let mut buf = Vec::new();
         term.encode(&mut buf)?;
         Ok(buf)
@@ -161,16 +162,19 @@ impl ANR {
     // convert full anr to erlang term format for size validation
     // matches elixir :erlang.term_to_binary(anr, [:deterministic])
     fn to_erlang_term_binary(&self) -> Result<Vec<u8>, Error> {
-        let map = Map::from([
-            (Term::Atom(Atom::from("ip4")), Term::Binary(Binary::from(self.ip4.octets().to_vec()))),
-            (Term::Atom(Atom::from("pk")), Term::Binary(Binary::from(self.pk.clone()))),
-            (Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone()))),
-            (Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32))),
-            (Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone()))),
-            (Term::Atom(Atom::from("ts")), Term::FixInteger(FixInteger::from(self.ts as i32))),
-            (Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec()))),
-        ]);
+        // create map with fields in deterministic order using IndexMap
+        use indexmap::IndexMap;
+        let mut index_map = IndexMap::new();
+        // alphabetical order: ip4, pk, pop, port, signature, ts, version
+        index_map.insert(Term::Atom(Atom::from("ip4")), Term::Binary(Binary::from(self.ip4.octets().to_vec())));
+        index_map.insert(Term::Atom(Atom::from("pk")), Term::Binary(Binary::from(self.pk.clone())));
+        index_map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
+        index_map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
+        index_map.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
+        index_map.insert(Term::Atom(Atom::from("ts")), Term::BigInteger(BigInteger::from(self.ts as i64)));
+        index_map.insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec())));
 
+        let map = Map { map: index_map.into_iter().collect() };
         let term = Term::Map(map);
         let mut buf = Vec::new();
         term.encode(&mut buf)?;

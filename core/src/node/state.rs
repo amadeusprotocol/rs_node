@@ -234,7 +234,7 @@ impl NodeState {
             rooted: None,   // TODO: Parse rooted entry
             last_seen: get_unix_millis_now() as u64,
             last_msg_type: Some("pong".to_string()),
-            handshaked: false, // Will be updated when handshake completes
+            handshake_status: crate::node::peers::HandshakeStatus::None, // Will be updated when handshake completes
         };
 
         // Get or generate shared secret

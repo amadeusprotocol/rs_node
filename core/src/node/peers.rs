@@ -10,6 +10,22 @@ use tokio::sync::RwLock;
 use tokio::task::spawn_blocking;
 use tracing::warn;
 
+/// Represents the different stages of the handshake process
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HandshakeStatus {
+    /// No handshake initiated
+    None,
+    /// Sent new_phone_who_dis message, waiting for what response
+    SentNewPhoneWhoDis,
+    /// Sent what message response (handshake success from our side)
+    SentWhat,
+    /// Received what message response (handshake completed successfully)
+    ReceivedWhat,
+    /// Handshake failed (signature verification, timeout, etc.)
+    Failed,
+}
+
 // minimal concurrent map wrapper to mimic scc::HashMap APIs used in this module
 #[derive(Debug)]
 struct ConcurrentMap<K, V> {
@@ -87,7 +103,14 @@ pub struct Peer {
     pub rooted: Option<RootedInfo>,
     pub last_seen: u64,
     pub last_msg_type: Option<String>,
-    pub handshaked: bool,
+    pub handshake_status: HandshakeStatus,
+}
+
+impl Peer {
+    /// Check if the handshake is completed (either we sent what or received what)
+    pub fn is_handshaked(&self) -> bool {
+        matches!(self.handshake_status, HandshakeStatus::SentWhat | HandshakeStatus::ReceivedWhat)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -213,7 +236,7 @@ impl NodePeers {
                     rooted: None,
                     last_seen: ts_m,
                     last_msg_type: None,
-                    handshaked: false,
+                    handshake_status: HandshakeStatus::None,
                 })
                 .await;
         }
@@ -252,7 +275,7 @@ impl NodePeers {
                 rooted: None,
                 last_seen: get_unix_millis_now() as u64,
                 last_msg_type: None,
-                handshaked: false,
+                handshake_status: HandshakeStatus::None,
             });
         }
 
@@ -653,7 +676,7 @@ impl NodePeers {
                 rooted: None,
                 last_seen: current_time,
                 last_msg_type: Some(last_msg_type.to_string()),
-                handshaked: false,
+                handshake_status: HandshakeStatus::None,
             };
             self.insert_new_peer(new_peer).await?;
         }
@@ -694,10 +717,47 @@ impl NodePeers {
             for ip in ips_to_update {
                 self.peers
                     .update(&ip, |_key, peer| {
-                        peer.handshaked = true;
+                        peer.handshake_status = HandshakeStatus::ReceivedWhat;
                     })
                     .await;
             }
+        }
+        
+        Ok(())
+    }
+
+    /// Set handshake status for a specific IP
+    pub async fn set_handshake_status(&self, ip: Ipv4Addr, status: HandshakeStatus) -> Result<(), Error> {
+        self.peers
+            .update(&ip, |_key, peer| {
+                peer.handshake_status = status.clone();
+            })
+            .await;
+        Ok(())
+    }
+
+    /// Set handshake status for peers with matching public key
+    pub async fn set_handshake_status_by_pk(&self, pk: &[u8], status: HandshakeStatus) -> Result<(), Error> {
+        let ips_to_update: Vec<Ipv4Addr> = {
+            let mut ips = Vec::new();
+            self.peers
+                .scan(|ip, peer| {
+                    if let Some(ref peer_pk) = peer.pk {
+                        if peer_pk == pk {
+                            ips.push(*ip);
+                        }
+                    }
+                })
+                .await;
+            ips
+        };
+
+        for ip in ips_to_update {
+            self.peers
+                .update(&ip, |_key, peer| {
+                    peer.handshake_status = status.clone();
+                })
+                .await;
         }
         
         Ok(())
@@ -745,7 +805,7 @@ mod tests {
             rooted: None,
             last_seen: get_unix_millis_now() as u64,
             last_msg_type: Some("ping".to_string()),
-            handshaked: false,
+            handshake_status: HandshakeStatus::None,
         };
 
         // Test insert

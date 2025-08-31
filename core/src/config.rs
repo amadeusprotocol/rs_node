@@ -142,7 +142,7 @@ impl Config {
         // work folder from env or default
         let work_folder = std::env::var("WORKFOLDER").unwrap_or_else(|_| {
             let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
-            format!("{}/.cache/amadeusd", home)
+            format!("{}/.cache/rs_amadeusd", home)
         });
 
         // override with provided root if given
@@ -288,7 +288,7 @@ impl Config {
             .unwrap_or_else(|_| vec![0u8; 96]);
 
         Self {
-            work_folder: ".config/amadeusd".to_string(),
+            work_folder: ".config/rs-amadeusd".to_string(),
             version_3b: VERSION,
             offline: false,
             http_ipv4: Ipv4Addr::new(0, 0, 0, 0),

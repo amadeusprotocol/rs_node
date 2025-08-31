@@ -73,7 +73,7 @@ impl Protocol for Solution {
         Solution::from_etf_validated(bin).map_err(Into::into)
     }
 
-    async fn handle_inner(&self) -> Result<protocol::Instruction, protocol::Error> {
+    async fn handle_inner(&self, _src: std::net::SocketAddr) -> Result<protocol::Instruction, protocol::Error> {
         // cache the solution
         Ok(protocol::Instruction::Noop)
     }

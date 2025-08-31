@@ -76,7 +76,7 @@ impl Protocol for AttestationBulk {
     }
 
     #[instrument(skip(self), name = "AttestationBulk::handle", err)]
-    async fn handle_inner(&self) -> Result<protocol::Instruction, protocol::Error> {
+    async fn handle_inner(&self, _src: std::net::SocketAddr) -> Result<protocol::Instruction, protocol::Error> {
         // TODO: handle the attestation bulk
         Ok(protocol::Instruction::Noop)
     }

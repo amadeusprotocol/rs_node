@@ -61,7 +61,7 @@ async fn recv_loop(socket: UdpSocket, ctx: Arc<Context>) -> anyhow::Result<()> {
             Ok(Err(e)) => return Err(e.into()),
             Ok(Ok((len, src))) => match read_udp_packet(&ctx, src, &buf[..len]).await {
                 Some(proto) => {
-                    if let Ok(instruction) = proto.handle(&ctx).await {
+                    if let Ok(instruction) = proto.handle(&ctx, src).await {
                         handle_instruction(&ctx, instruction, src).await?;
                     }
                 }
@@ -122,7 +122,12 @@ async fn handle_instruction(ctx: &Context, instruction: Instruction, src: Socket
             }
 
             // insert the sender's ANR into our store
-            anr::insert(anr).await?;
+            anr::insert(anr.clone()).await?;
+            
+            // set handshake status to sent_what (we completed the handshake from our side)
+            if let std::net::IpAddr::V4(sender_ip) = src.ip() {
+                let _ = ctx.set_peer_handshake_status(sender_ip, ama_core::node::peers::HandshakeStatus::SentWhat).await;
+            }
         }
 
         Instruction::ReceivedWhatResponse { responder_anr, challenge, their_signature } => {
@@ -145,8 +150,9 @@ async fn handle_instruction(ctx: &Context, instruction: Instruction, src: Socket
             anr::insert(responder_anr.clone()).await?;
             anr::set_handshaked(&responder_anr.pk).await?;
             
-            // update peer's handshaked status in NodePeers
+            // update peer's handshaked status in NodePeers to received_what (handshake completed)
             ctx.set_peer_handshaked(&responder_anr.pk).await?;
+            ctx.set_peer_handshake_status_by_pk(&responder_anr.pk, ama_core::node::peers::HandshakeStatus::ReceivedWhat).await?;
 
             println!("peer {} is now handshaked", bs58::encode(&responder_anr.pk).into_string());
         }
@@ -158,8 +164,9 @@ async fn handle_instruction(ctx: &Context, instruction: Instruction, src: Socket
             anr::insert(anr.clone()).await?;
             anr::set_handshaked(&anr.pk).await?;
             
-            // update peer's handshaked status in NodePeers
+            // update peer's handshaked status in NodePeers (backward compatibility case)
             ctx.set_peer_handshaked(&anr.pk).await?;
+            ctx.set_peer_handshake_status_by_pk(&anr.pk, ama_core::node::peers::HandshakeStatus::ReceivedWhat).await?;
         }
 
         Instruction::ReplyPong { ts_m: _ } => {

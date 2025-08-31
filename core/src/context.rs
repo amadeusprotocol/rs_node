@@ -55,7 +55,8 @@ pub struct Context {
 pub struct PeerInfo {
     pub last_ts: u64,
     pub last_msg: String,
-    pub handshaked: bool,
+    pub handshake_status: crate::node::peers::HandshakeStatus,
+    pub version: Option<String>,
 }
 
 impl Context {
@@ -226,7 +227,8 @@ impl Context {
                 let peer_info = PeerInfo {
                     last_ts: peer.last_seen,
                     last_msg: peer.last_msg_type.unwrap_or_else(|| "unknown".to_string()),
-                    handshaked: peer.handshaked,
+                    handshake_status: peer.handshake_status.clone(),
+                    version: peer.version.clone(),
                 };
                 result.insert(peer.ip.to_string(), peer_info);
             }
@@ -249,6 +251,16 @@ impl Context {
     /// Set the handshaked status for a peer with the given public key
     pub async fn set_peer_handshaked(&self, pk: &[u8]) -> Result<(), peers::Error> {
         self.node_peers.set_handshaked(pk).await
+    }
+
+    /// Set handshake status for a peer by IP address
+    pub async fn set_peer_handshake_status(&self, ip: std::net::Ipv4Addr, status: peers::HandshakeStatus) -> Result<(), peers::Error> {
+        self.node_peers.set_handshake_status(ip, status).await
+    }
+
+    /// Set handshake status for a peer by public key
+    pub async fn set_peer_handshake_status_by_pk(&self, pk: &[u8], status: peers::HandshakeStatus) -> Result<(), peers::Error> {
+        self.node_peers.set_handshake_status_by_pk(pk, status).await
     }
 
     /// register a UDP broadcaster implementation and start periodic ping/anr tasks

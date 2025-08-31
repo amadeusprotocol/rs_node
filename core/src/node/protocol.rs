@@ -13,7 +13,7 @@ use crate::utils::reed_solomon::ReedSolomonResource;
 use crate::utils::{bls12_381 as bls, reed_solomon};
 use crate::{Context, config};
 use eetf::convert::TryAsRef;
-use eetf::{Atom, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, FixInteger, List, Map, Term};
+use eetf::{Atom, BigInteger, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, List, Map, Term};
 use miniz_oxide::deflate::{CompressionLevel, compress_to_vec};
 use miniz_oxide::inflate::{DecompressError, decompress_to_vec};
 use std::collections::HashMap;
@@ -29,11 +29,11 @@ pub trait Protocol: Typename + Send + Sync {
         Self: Sized;
     /// Handle a message returning instructions for upper layers
     #[instrument(skip(self, ctx), fields(proto = %self.typename()), name = "Proto::handle")]
-    async fn handle(&self, ctx: &Context) -> Result<Instruction, Error> {
+    async fn handle(&self, ctx: &Context, src: std::net::SocketAddr) -> Result<Instruction, Error> {
         ctx.metrics.add_handled_proto_by_name(self.typename());
-        self.handle_inner().await.inspect_err(|e| ctx.metrics.add_error(e))
+        self.handle_inner(src).await.inspect_err(|e| ctx.metrics.add_error(e))
     }
-    async fn handle_inner(&self) -> Result<Instruction, Error>;
+    async fn handle_inner(&self, src: std::net::SocketAddr) -> Result<Instruction, Error>;
 }
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
@@ -228,7 +228,7 @@ impl Protocol for Ping {
         let ts_m = map.get_integer("ts_m").ok_or(Error::BadEtf("ts_m"))?;
         Ok(Self { temporal, rooted, ts_m })
     }
-    async fn handle_inner(&self) -> Result<Instruction, Error> {
+    async fn handle_inner(&self, _src: std::net::SocketAddr) -> Result<Instruction, Error> {
         Ok(Instruction::ReplyPong { ts_m: self.ts_m })
     }
 }
@@ -432,7 +432,7 @@ impl Protocol for Pong {
         Ok(Self { ts_m, seen_time_ms })
     }
 
-    async fn handle_inner(&self) -> Result<Instruction, Error> {
+    async fn handle_inner(&self, _src: std::net::SocketAddr) -> Result<Instruction, Error> {
         // TODO: update ETS-like peer table with latency now_ms - p.ts_m
         Ok(Instruction::Noop)
     }
@@ -471,7 +471,7 @@ impl Protocol for TxPool {
         Ok(Self { valid_txs })
     }
 
-    async fn handle_inner(&self) -> Result<Instruction, Error> {
+    async fn handle_inner(&self, _src: std::net::SocketAddr) -> Result<Instruction, Error> {
         // TODO: update ETS-like tx pool with valid_txs
         Ok(Instruction::Noop)
     }
@@ -538,7 +538,7 @@ impl Protocol for Peers {
         Ok(Self { ips })
     }
 
-    async fn handle_inner(&self) -> Result<Instruction, Error> {
+    async fn handle_inner(&self, _src: std::net::SocketAddr) -> Result<Instruction, Error> {
         // TODO: update ETS-like peer table with new IPs
         Ok(Instruction::Noop)
     }
@@ -617,6 +617,121 @@ mod tests {
         let result = from_etf_bin(&compressed_bin).expect("should deserialize");
 
         assert_eq!(result.typename(), "peers");
+    }
+
+    #[tokio::test]
+    async fn test_new_phone_who_dis_roundtrip_and_handle() {
+        use crate::node::anr;
+        use crate::utils::{bls12_381 as bls, misc::get_unix_secs_now};
+        use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+
+        // build a valid ANR for 127.0.0.1
+        let sk = bls::generate_sk();
+        let pk = bls::get_public_key(&sk).expect("pk");
+        let pop = bls::sign(&sk, &pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("pop");
+        let ip = Ipv4Addr::new(127, 0, 0, 1);
+        let my_anr = anr::ANR::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
+        
+
+        // construct message
+        let challenge = get_unix_secs_now();
+        let msg = NewPhoneWhoDis::new(my_anr.clone(), challenge).expect("npwd new");
+
+        // roundtrip serialize/deserialize
+        let bin = msg.to_etf_bin().expect("serialize");
+        let parsed = from_etf_bin(&bin).expect("deserialize");
+        assert_eq!(parsed.typename(), "new_phone_who_dis");
+
+        // verify handle returns expected instruction
+        let src = SocketAddr::V4(SocketAddrV4::new(ip, 36969));
+        let instr = <NewPhoneWhoDis as Protocol>::handle_inner(&msg, src).await.expect("handle");
+        match instr {
+            Instruction::ReplyWhatChallenge { anr, challenge: ch } => {
+                assert!(anr.verify_signature());
+                assert_eq!(anr.ip4, ip);
+                assert_eq!(ch, challenge);
+            }
+            other => panic!("unexpected instruction: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_new_phone_who_dis_ip_mismatch_noop() {
+        use crate::node::anr;
+        use crate::utils::{bls12_381 as bls, misc::get_unix_secs_now};
+        use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+
+        let sk = bls::generate_sk();
+        let pk = bls::get_public_key(&sk).expect("pk");
+        let pop = bls::sign(&sk, &pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("pop");
+        let ip = Ipv4Addr::new(127, 0, 0, 1);
+        let my_anr = anr::ANR::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
+        let challenge = get_unix_secs_now();
+        let msg = NewPhoneWhoDis::new(my_anr, challenge).expect("npwd new");
+
+        // mismatch source ip
+        let wrong_ip = Ipv4Addr::new(127, 0, 0, 2);
+        let src = SocketAddr::V4(SocketAddrV4::new(wrong_ip, 36969));
+        let instr = <NewPhoneWhoDis as Protocol>::handle_inner(&msg, src).await.expect("handle");
+        assert!(matches!(instr, Instruction::Noop));
+    }
+
+    #[tokio::test]
+    async fn test_what_roundtrip_and_handle() {
+        use crate::node::anr;
+        use crate::utils::{bls12_381 as bls, misc::get_unix_secs_now};
+        use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+
+        // responder ANR
+        let sk = bls::generate_sk();
+        let pk = bls::get_public_key(&sk).expect("pk");
+        let pop = bls::sign(&sk, &pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("pop");
+        let ip = Ipv4Addr::new(127, 0, 0, 1);
+        let responder_anr = anr::ANR::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
+
+        // fresh challenge within 6s window
+        let challenge = get_unix_secs_now();
+        // produce some signature bytes (protocol layer doesn't verify it)
+        let sig = bls::sign(&sk, &pk, b"AMA_ANR_CHALLENGE").expect("sig").to_vec();
+        let msg = What::new(responder_anr.clone(), challenge, sig.clone()).expect("what new");
+
+        let bin = msg.to_etf_bin().expect("serialize");
+        let parsed = from_etf_bin(&bin).expect("deserialize");
+        assert_eq!(parsed.typename(), "what?");
+
+        let src = SocketAddr::V4(SocketAddrV4::new(ip, 36969));
+        let instr = <What as Protocol>::handle_inner(&msg, src).await.expect("handle");
+        match instr {
+            Instruction::ReceivedWhatResponse { responder_anr: anr2, challenge: ch, their_signature } => {
+                assert!(anr2.verify_signature());
+                assert_eq!(anr2.ip4, ip);
+                assert_eq!(ch, challenge);
+                assert_eq!(their_signature, sig);
+            }
+            other => panic!("unexpected instruction: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_what_stale_challenge_noop() {
+        use crate::node::anr;
+        use crate::utils::bls12_381 as bls;
+        use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+
+        let sk = bls::generate_sk();
+        let pk = bls::get_public_key(&sk).expect("pk");
+        let pop = bls::sign(&sk, &pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("pop");
+        let ip = Ipv4Addr::new(127, 0, 0, 1);
+        let responder_anr = anr::ANR::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
+
+        // challenge far in the past (>6s)
+        let challenge = crate::utils::misc::get_unix_secs_now().saturating_sub(10);
+        let sig = vec![1u8; 96];
+        let msg = What::new(responder_anr, challenge, sig).expect("what new");
+
+        let src = SocketAddr::V4(SocketAddrV4::new(ip, 36969));
+        let instr = <What as Protocol>::handle_inner(&msg, src).await.expect("handle");
+        matches!(instr, Instruction::Noop);
     }
 
     fn create_dummy_entry_summary() -> EntrySummary {
@@ -701,22 +816,22 @@ impl Protocol for NewPhoneWhoDis {
         Ok(Self { anr: anr_binary, challenge })
     }
 
-    async fn handle_inner(&self) -> Result<Instruction, Error> {
+    async fn handle_inner(&self, src: std::net::SocketAddr) -> Result<Instruction, Error> {
         // deserialize the sender's ANR from binary
         let anr_term = Term::decode(&self.anr[..])?;
         let anr_map = anr_term.get_term_map().ok_or(Error::BadEtf("anr_map"))?;
         
         // extract ANR fields
-        // IP4 can be either a string (Elixir format) or 4-byte binary (Rust format)
-        let ip4 = if let Some(ip4_str) = anr_map.get_string("ip4") {
-            // Elixir format: IP as string like "127.0.0.1"
-            ip4_str.parse::<std::net::Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse"))?
-        } else if let Some(ip4_bytes) = anr_map.get_binary::<Vec<u8>>("ip4") {
+        // IP4 can be either a 4-byte binary (Rust format) or string (Elixir format)
+        let ip4 = if let Some(ip4_bytes) = anr_map.get_binary::<Vec<u8>>("ip4") {
             // Rust format: IP as 4-byte binary
             if ip4_bytes.len() != 4 {
                 return Err(Error::BadEtf("ip4_len"));
             }
             std::net::Ipv4Addr::new(ip4_bytes[0], ip4_bytes[1], ip4_bytes[2], ip4_bytes[3])
+        } else if let Some(ip4_str) = anr_map.get_string("ip4") {
+            // Elixir format: IP as string like "127.0.0.1"
+            ip4_str.parse::<std::net::Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse"))?
         } else {
             return Err(Error::BadEtf("ip4"));
         };
@@ -744,8 +859,19 @@ impl Protocol for NewPhoneWhoDis {
             next_check: ts + 3,
         };
 
+
         // validate ANR signature
         if !sender_anr.verify_signature() {
+            return Ok(Instruction::Noop);
+        }
+
+        // Validate that sender's IP matches ANR's IP4 field (security requirement)
+        if std::net::IpAddr::V4(ip4) != src.ip() {
+            return Ok(Instruction::Noop);
+        }
+
+        // Validate challenge is a reasonable integer
+        if self.challenge == 0 {
             return Ok(Instruction::Noop);
         }
 
@@ -759,7 +885,7 @@ impl NewPhoneWhoDis {
     pub const NAME: &'static str = "new_phone_who_dis";
 
     pub fn new(anr: anr::ANR, challenge: u64) -> Result<Self, Error> {
-        // pack ANR to binary
+        // serialize ANR to binary for internal storage
         let anr_binary = anr.to_etf_binary()?;
         Ok(Self { anr: anr_binary, challenge })
     }
@@ -768,7 +894,7 @@ impl NewPhoneWhoDis {
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
         m.insert(Term::Atom(Atom::from("anr")), Term::Binary(Binary::from(self.anr.clone())));
-        m.insert(Term::Atom(Atom::from("challenge")), Term::FixInteger(FixInteger::from(self.challenge as i32)));
+        m.insert(Term::Atom(Atom::from("challenge")), Term::BigInteger(BigInteger::from(self.challenge as i64)));
 
         let term = Term::from(Map { map: m });
         let mut etf_data = Vec::new();
@@ -809,22 +935,22 @@ impl Protocol for What {
         Ok(Self { anr: anr_binary, challenge, signature })
     }
 
-    async fn handle_inner(&self) -> Result<Instruction, Error> {
+    async fn handle_inner(&self, src: std::net::SocketAddr) -> Result<Instruction, Error> {
         // deserialize the responder's ANR from binary (this is THEIR ANR, not ours)
         let anr_term = Term::decode(&self.anr[..])?;
         let anr_map = anr_term.get_term_map().ok_or(Error::BadEtf("anr_map"))?;
         
         // extract ANR fields (responder's ANR)
-        // IP4 can be either a string (Elixir format) or 4-byte binary (Rust format)
-        let ip4 = if let Some(ip4_str) = anr_map.get_string("ip4") {
-            // Elixir format: IP as string like "127.0.0.1"
-            ip4_str.parse::<std::net::Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse"))?
-        } else if let Some(ip4_bytes) = anr_map.get_binary::<Vec<u8>>("ip4") {
+        // IP4 can be either a 4-byte binary (Rust format) or string (Elixir format)
+        let ip4 = if let Some(ip4_bytes) = anr_map.get_binary::<Vec<u8>>("ip4") {
             // Rust format: IP as 4-byte binary
             if ip4_bytes.len() != 4 {
                 return Err(Error::BadEtf("ip4_len"));
             }
             std::net::Ipv4Addr::new(ip4_bytes[0], ip4_bytes[1], ip4_bytes[2], ip4_bytes[3])
+        } else if let Some(ip4_str) = anr_map.get_string("ip4") {
+            // Elixir format: IP as string like "127.0.0.1"
+            ip4_str.parse::<std::net::Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse"))?
         } else {
             return Err(Error::BadEtf("ip4"));
         };
@@ -857,6 +983,19 @@ impl Protocol for What {
             return Ok(Instruction::Noop);
         }
 
+        // Validate that sender's IP matches ANR's IP4 field (security requirement)
+        if std::net::IpAddr::V4(ip4) != src.ip() {
+            return Ok(Instruction::Noop);
+        }
+
+        // Validate timestamp within 6-second window (replay attack prevention)
+        let current_time = crate::utils::misc::get_unix_secs_now();
+        let challenge_time = self.challenge as u64;
+        let delta = if current_time > challenge_time { current_time - challenge_time } else { challenge_time - current_time };
+        if delta > 6 {
+            return Ok(Instruction::Noop);
+        }
+
         // The What message contains:
         // - anr: responder's ANR
         // - challenge: our challenge echoed back (should match what we stored when we sent new_phone_who_dis)
@@ -884,7 +1023,7 @@ impl What {
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
         m.insert(Term::Atom(Atom::from("anr")), Term::Binary(Binary::from(self.anr.clone())));
-        m.insert(Term::Atom(Atom::from("challenge")), Term::FixInteger(FixInteger::from(self.challenge as i32)));
+        m.insert(Term::Atom(Atom::from("challenge")), Term::BigInteger(BigInteger::from(self.challenge as i64)));
         m.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
 
         let term = Term::from(Map { map: m });
