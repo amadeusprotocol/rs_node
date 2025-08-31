@@ -762,6 +762,42 @@ impl NodePeers {
         
         Ok(())
     }
+
+    /// Update peer with version and public key information from ANR
+    pub async fn update_peer_from_anr(&self, ip: Ipv4Addr, pk: &[u8], version: &str) -> Result<(), Error> {
+        let current_time = get_unix_millis_now() as u64;
+        let updated = self
+            .peers
+            .update(&ip, |_key, peer| {
+                peer.pk = Some(pk.to_vec());
+                peer.version = Some(version.to_string());
+                peer.last_seen = current_time;
+            })
+            .await
+            .is_some();
+
+        if !updated {
+            // Create new peer if it doesn't exist
+            let peer = Peer {
+                ip,
+                pk: Some(pk.to_vec()),
+                version: Some(version.to_string()),
+                latency: None,
+                last_msg: current_time,
+                last_ping: None,
+                last_pong: None,
+                shared_secret: None,
+                temporal: None,
+                rooted: None,
+                last_seen: current_time,
+                last_msg_type: None,
+                handshake_status: HandshakeStatus::None,
+            };
+            let _ = self.peers.insert(ip, peer).await;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug)]

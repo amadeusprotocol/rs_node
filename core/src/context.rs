@@ -297,6 +297,11 @@ impl Context {
     pub async fn set_peer_handshake_status_by_pk(&self, pk: &[u8], status: peers::HandshakeStatus) -> Result<(), peers::Error> {
         self.node_peers.set_handshake_status_by_pk(pk, status).await
     }
+    
+    /// Update peer information from ANR data
+    pub async fn update_peer_from_anr(&self, ip: std::net::Ipv4Addr, pk: &[u8], version: &str) -> Result<(), peers::Error> {
+        self.node_peers.update_peer_from_anr(ip, pk, version).await
+    }
 
     /// register a UDP broadcaster implementation and start periodic ping/anr tasks
     pub fn set_broadcaster(&mut self, broadcaster: Arc<dyn node::Broadcaster>) {

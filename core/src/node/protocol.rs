@@ -822,19 +822,9 @@ impl Protocol for NewPhoneWhoDis {
         let anr_map = anr_term.get_term_map().ok_or(Error::BadEtf("anr_map"))?;
         
         // extract ANR fields
-        // IP4 can be either a 4-byte binary (Rust format) or string (Elixir format)
-        let ip4 = if let Some(ip4_bytes) = anr_map.get_binary::<Vec<u8>>("ip4") {
-            // Rust format: IP as 4-byte binary
-            if ip4_bytes.len() != 4 {
-                return Err(Error::BadEtf("ip4_len"));
-            }
-            std::net::Ipv4Addr::new(ip4_bytes[0], ip4_bytes[1], ip4_bytes[2], ip4_bytes[3])
-        } else if let Some(ip4_str) = anr_map.get_string("ip4") {
-            // Elixir format: IP as string like "127.0.0.1"
-            ip4_str.parse::<std::net::Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse"))?
-        } else {
-            return Err(Error::BadEtf("ip4"));
-        };
+        // IP4 is stored as string in Elixir format: "127.0.0.1"
+        let ip4_str = anr_map.get_string("ip4").ok_or(Error::BadEtf("ip4"))?;
+        let ip4 = ip4_str.parse::<std::net::Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse"))?;
         
         let pk = anr_map.get_binary::<Vec<u8>>("pk").ok_or(Error::BadEtf("pk"))?;
         let pop = anr_map.get_binary::<Vec<u8>>("pop").ok_or(Error::BadEtf("pop"))?;
@@ -940,20 +930,10 @@ impl Protocol for What {
         let anr_term = Term::decode(&self.anr[..])?;
         let anr_map = anr_term.get_term_map().ok_or(Error::BadEtf("anr_map"))?;
         
-        // extract ANR fields (responder's ANR)
-        // IP4 can be either a 4-byte binary (Rust format) or string (Elixir format)
-        let ip4 = if let Some(ip4_bytes) = anr_map.get_binary::<Vec<u8>>("ip4") {
-            // Rust format: IP as 4-byte binary
-            if ip4_bytes.len() != 4 {
-                return Err(Error::BadEtf("ip4_len"));
-            }
-            std::net::Ipv4Addr::new(ip4_bytes[0], ip4_bytes[1], ip4_bytes[2], ip4_bytes[3])
-        } else if let Some(ip4_str) = anr_map.get_string("ip4") {
-            // Elixir format: IP as string like "127.0.0.1"
-            ip4_str.parse::<std::net::Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse"))?
-        } else {
-            return Err(Error::BadEtf("ip4"));
-        };
+        // extract ANR fields (responder's ANR)  
+        // IP4 is stored as string in Elixir format: "127.0.0.1"
+        let ip4_str = anr_map.get_string("ip4").ok_or(Error::BadEtf("ip4"))?;
+        let ip4 = ip4_str.parse::<std::net::Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse"))?;
         
         let pk = anr_map.get_binary::<Vec<u8>>("pk").ok_or(Error::BadEtf("pk"))?;
         let pop = anr_map.get_binary::<Vec<u8>>("pop").ok_or(Error::BadEtf("pop"))?;

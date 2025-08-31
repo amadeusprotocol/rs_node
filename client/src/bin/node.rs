@@ -124,8 +124,9 @@ async fn handle_instruction(ctx: &Context, instruction: Instruction, src: Socket
             // insert the sender's ANR into our store
             anr::insert(anr.clone()).await?;
             
-            // set handshake status to sent_what (we completed the handshake from our side)
+            // update peer information with ANR data (version and public key)
             if let std::net::IpAddr::V4(sender_ip) = src.ip() {
+                let _ = ctx.update_peer_from_anr(sender_ip, &anr.pk, &anr.version).await;
                 let _ = ctx.set_peer_handshake_status(sender_ip, ama_core::node::peers::HandshakeStatus::SentWhat).await;
             }
         }
@@ -149,6 +150,11 @@ async fn handle_instruction(ctx: &Context, instruction: Instruction, src: Socket
             // insert the responder's ANR and mark as handshaked
             anr::insert(responder_anr.clone()).await?;
             anr::set_handshaked(&responder_anr.pk).await?;
+            
+            // update peer information with ANR data (version and public key)
+            if let std::net::IpAddr::V4(responder_ip) = src.ip() {
+                let _ = ctx.update_peer_from_anr(responder_ip, &responder_anr.pk, &responder_anr.version).await;
+            }
             
             // update peer's handshaked status in NodePeers to received_what (handshake completed)
             ctx.set_peer_handshaked(&responder_anr.pk).await?;
