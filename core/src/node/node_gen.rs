@@ -104,23 +104,29 @@ impl NodeGen {
                 debug!("ANR request to {}", ip);
 
                 // create our own ANR for the verification request
-                let my_anr = anr::ANR::build(&config.trainer_sk, &config.trainer_pk, &config.trainer_pop, self.ip, config.get_ver())
-                    .map_err(|e| Error::AnrError(e))?;
+                let my_anr = anr::ANR::build(
+                    &config.trainer_sk,
+                    &config.trainer_pk,
+                    &config.trainer_pop,
+                    self.ip,
+                    config.get_ver(),
+                )
+                .map_err(|e| Error::AnrError(e))?;
 
                 // generate a random challenge for this verification
-                let challenge = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos() as u64;
+                let challenge =
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
+                        as u64;
 
                 // create new_phone_who_dis message using protocol module
                 let new_phone_who_dis = crate::node::protocol::NewPhoneWhoDis::new(my_anr, challenge)
                     .map_err(|e| Error::SocketError(format!("Failed to create NewPhoneWhoDis: {:?}", e)))?;
-                
+
                 // serialize to ETF binary
-                let payload = new_phone_who_dis.to_etf_bin()
+                let payload = new_phone_who_dis
+                    .to_etf_bin()
                     .map_err(|e| Error::SocketError(format!("Failed to serialize NewPhoneWhoDis: {:?}", e)))?;
-                
+
                 // create shards for transmission (large messages need sharding)
                 let shards = crate::node::ReedSolomonReassembler::build_shards(config, payload)
                     .map_err(|e| Error::SocketError(format!("Failed to create shards: {:?}", e)))?;

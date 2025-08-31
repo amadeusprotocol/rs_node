@@ -1,6 +1,7 @@
 use crate::consensus::agg_sig::DST_ATT;
 use crate::node::protocol;
 use crate::node::protocol::Protocol;
+use crate::Context;
 use crate::utils::bls12_381 as bls;
 use crate::utils::bls12_381::Error as BlsError;
 use crate::utils::misc::{TermExt, TermMap};
@@ -62,6 +63,24 @@ impl crate::utils::misc::Typename for AttestationBulk {
 
 #[async_trait::async_trait]
 impl Protocol for AttestationBulk {
+    fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
+        let attestation_terms: Result<Vec<Term>, Error> =
+            self.attestations.iter().map(|att| att.to_etf_bin().map(|bin| Term::from(Binary { bytes: bin }))).collect();
+        let mut m = HashMap::new();
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        m.insert(
+            Term::Atom(Atom::from("attestations_packed")),
+            Term::from(List { elements: attestation_terms.map_err(protocol::Error::Att)? }),
+        );
+        let term = Term::from(eetf::Map { map: m });
+        let mut etf_data = Vec::new();
+        term.encode(&mut etf_data).map_err(protocol::Error::EtfEncode)?;
+        let compressed = miniz_oxide::deflate::compress_to_vec(
+            &etf_data,
+            miniz_oxide::deflate::CompressionLevel::DefaultLevel as u8,
+        );
+        Ok(compressed)
+    }
     #[instrument(skip(map), name = "AttestationBulk::from_etf_map_validated")]
     fn from_etf_map_validated(map: TermMap) -> Result<Self, protocol::Error> {
         let list = map.get_list("attestations_packed").ok_or(Error::Missing("attestations_packed"))?;
@@ -75,8 +94,8 @@ impl Protocol for AttestationBulk {
         Ok(Self { attestations })
     }
 
-    #[instrument(skip(self), name = "AttestationBulk::handle", err)]
-    async fn handle_inner(&self, _src: std::net::SocketAddr) -> Result<protocol::Instruction, protocol::Error> {
+    #[instrument(skip(self, _ctx), name = "AttestationBulk::handle", err)]
+    async fn handle_inner(&self, _ctx: &Context, _src: std::net::SocketAddr) -> Result<protocol::Instruction, protocol::Error> {
         // TODO: handle the attestation bulk
         Ok(protocol::Instruction::Noop)
     }

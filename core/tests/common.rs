@@ -13,10 +13,7 @@ impl TmpTestDir {
     /// Pass a reference to the test function item, e.g., `TmpTestDir::for_test(&my_test_fn)`.
     pub fn for_test<F: ?Sized>(f: &F) -> std::io::Result<Self> {
         let fq = type_name_of_val(f);
-        let secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         let dir_name = format!("{}{}", fq, secs);
         let path = Path::new("/tmp").join(dir_name);
         fs::create_dir_all(&path)?;

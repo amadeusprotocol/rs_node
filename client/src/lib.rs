@@ -3,10 +3,10 @@ mod dump_replay;
 use ama_core::config::Config;
 use ama_core::node::ReedSolomonReassembler;
 use ama_core::node::protocol::TxPool;
-pub use dump_replay::DumpReplaySocket;
+use ama_core::socket::UdpSocketExt;
+pub use dump_replay::UdpSocketWrapper;
 use std::net::SocketAddr;
 use std::panic;
-use tokio::net::UdpSocket;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 /// Initializes tracing, panic hook and tokio-tracing if enabled
@@ -43,9 +43,9 @@ pub async fn send_transaction(config: &Config, tx_packed: Vec<u8>) -> anyhow::Re
     let shards = ReedSolomonReassembler::build_shards(config, payload)?;
     let node_addr = get_peer_addr();
 
-    let socket = UdpSocket::bind("0.0.0.0:0").await?; // any available port
+    let socket = UdpSocketWrapper::bind("0.0.0.0:0").await?; // any available port
     for shard in shards.iter() {
-        socket.dump_replay_send_to(shard, node_addr).await?;
+        socket.send_to(shard, node_addr).await?;
     }
 
     Ok(println!("sent tx to {node_addr} ({} shards)", shards.len()))

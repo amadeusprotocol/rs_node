@@ -1,3 +1,4 @@
+use ama_core::socket::UdpSocketExt;
 use bincode::{config::standard, decode_from_slice, encode_to_vec};
 use std::io::Result;
 use std::net::SocketAddr;
@@ -7,34 +8,51 @@ use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, OnceCell};
 use tokio::time::{Duration, sleep};
 
-#[async_trait::async_trait]
-pub trait DumpReplaySocket: Send + Sync {
-    async fn dump_replay_recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)>;
-    async fn dump_replay_send_to(&self, buf: &[u8], target: SocketAddr) -> Result<usize>;
-}
+/// Wrapper for UdpSocket that implements UdpSocketExt trait with dump/replay functionality
+pub struct UdpSocketWrapper(pub UdpSocket);
 
 #[async_trait::async_trait]
-impl DumpReplaySocket for UdpSocket {
-    async fn dump_replay_recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
-        // use the replay file instead of the real socket if set
-        // fallback to real UDP socket when no replay file
+impl UdpSocketExt for UdpSocketWrapper {
+    async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
+        // Use the replay file instead of the real socket if set
+        // Fallback to real UDP socket when no replay file
         let (len, src) = match udp_replay().await {
-            Some(state) => state.lock().await.recv_from_replay(buf).await?,
-            None => self.recv_from(buf).await?,
+            Some(state) => {
+                // Replaying from file - don't dump replayed packets
+                state.lock().await.recv_from_replay(buf).await?
+            }
+            None => {
+                // Real socket - receive and dump
+                let result = self.0.recv_from(buf).await?;
+                maybe_dump_datagram(result.1, &buf[..result.0]).await;
+                result
+            }
         };
-
-        maybe_dump_datagram(src, &buf[..len]).await;
 
         Ok((len, src))
     }
 
-    async fn dump_replay_send_to(&self, buf: &[u8], target: SocketAddr) -> Result<usize> {
-        // dump outgoing packet with fixed source address
-        let src_addr = "127.0.0.1:39696".parse().unwrap();
-        maybe_dump_datagram(src_addr, buf).await;
+    async fn send_to(&self, buf: &[u8], target: SocketAddr) -> Result<usize> {
+        if std::env::var("UDP_REPLAY").is_ok() {
+            // Replay mode: don't send to socket, dump to UDP_DUMP if present
+            let src_addr = "127.0.0.1:39696".parse().unwrap();
+            maybe_dump_datagram(src_addr, buf).await;
+            Ok(buf.len()) // return packet length without sending
+        } else {
+            // Normal mode: send to socket, don't dump
+            self.0.send_to(buf, target).await
+        }
+    }
+}
 
-        // send the packet normally
-        self.send_to(buf, target).await
+impl UdpSocketWrapper {
+    pub async fn bind(addr: &str) -> Result<Self> {
+        let socket = UdpSocket::bind(addr).await?;
+        Ok(UdpSocketWrapper(socket))
+    }
+
+    pub fn local_addr(&self) -> Result<SocketAddr> {
+        self.0.local_addr()
     }
 }
 

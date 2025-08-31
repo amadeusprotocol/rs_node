@@ -167,13 +167,17 @@ impl ANR {
         let mut index_map = IndexMap::new();
         // alphabetical order: ip4, pk, pop, port, signature, ts, version
         // Use Elixir format: ip4 as string (not binary)
-        index_map.insert(Term::Atom(Atom::from("ip4")), Term::Binary(Binary::from(self.ip4.to_string().as_bytes().to_vec())));
+        index_map.insert(
+            Term::Atom(Atom::from("ip4")),
+            Term::Binary(Binary::from(self.ip4.to_string().as_bytes().to_vec())),
+        );
         index_map.insert(Term::Atom(Atom::from("pk")), Term::Binary(Binary::from(self.pk.clone())));
         index_map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
         index_map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
         index_map.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
         index_map.insert(Term::Atom(Atom::from("ts")), Term::BigInteger(BigInteger::from(self.ts as i64)));
-        index_map.insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec())));
+        index_map
+            .insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec())));
 
         let map = Map { map: index_map.into_iter().collect() };
         let term = Term::Map(map);

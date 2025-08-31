@@ -5,29 +5,47 @@ pub fn page(metrics: Value) -> String {
     let uptime_formatted = format_uptime(uptime_seconds);
 
     let packets = &metrics["packets"];
-    let total_bytes = packets["total_incoming_bytes"].as_u64().unwrap_or(0);
-    let total_packets = packets["total_incoming_packets"].as_u64().unwrap_or(0);
-    let bytes_per_second = packets["bytes_per_second"].as_u64().unwrap_or(0);
-    let packets_per_second = packets["packets_per_second"].as_u64().unwrap_or(0);
+    let total_incoming_bytes = packets["total_incoming_bytes"].as_u64().unwrap_or(0);
+    let total_incoming_packets = packets["total_incoming_packets"].as_u64().unwrap_or(0);
+    let total_outgoing_bytes = packets["total_outgoing_bytes"].as_u64().unwrap_or(0);
+    let total_outgoing_packets = packets["total_outgoing_packets"].as_u64().unwrap_or(0);
+    let incoming_bytes_per_second = packets["incoming_bytes_per_second"].as_u64().unwrap_or(0);
+    let incoming_packets_per_second = packets["incoming_packets_per_second"].as_u64().unwrap_or(0);
+    let outgoing_bytes_per_second = packets["outgoing_bytes_per_second"].as_u64().unwrap_or(0);
+    let outgoing_packets_per_second = packets["outgoing_packets_per_second"].as_u64().unwrap_or(0);
 
-    let bytes_formatted = format_bytes(total_bytes);
-    let bytes_per_sec_formatted = format_bytes(bytes_per_second);
+    let incoming_bytes_formatted = format_bytes(total_incoming_bytes);
+    let outgoing_bytes_formatted = format_bytes(total_outgoing_bytes);
+    let incoming_bytes_per_sec_formatted = format_bytes(incoming_bytes_per_second);
+    let outgoing_bytes_per_sec_formatted = format_bytes(outgoing_bytes_per_second);
 
-    // Protocol counts from handled_protos
+    // Protocol counts from handled_protos (received)
     let empty_map = serde_json::Map::new();
     let handled_protos = metrics["handled_protos"].as_object().unwrap_or(&empty_map);
-    let ping_count = handled_protos.get("ping").and_then(|v| v.as_u64()).unwrap_or(0);
-    let pong_count = handled_protos.get("pong").and_then(|v| v.as_u64()).unwrap_or(0);
-    let entry_count = handled_protos.get("entry").and_then(|v| v.as_u64()).unwrap_or(0);
-    let attestation_count = handled_protos.get("attestation_bulk").and_then(|v| v.as_u64()).unwrap_or(0);
-    let txpool_count = handled_protos.get("txpool").and_then(|v| v.as_u64()).unwrap_or(0);
+    let ping_received = handled_protos.get("ping").and_then(|v| v.as_u64()).unwrap_or(0);
+    let pong_received = handled_protos.get("pong").and_then(|v| v.as_u64()).unwrap_or(0);
+    let entry_received = handled_protos.get("entry").and_then(|v| v.as_u64()).unwrap_or(0);
+    let attestation_received = handled_protos.get("attestation_bulk").and_then(|v| v.as_u64()).unwrap_or(0);
+    let txpool_received = handled_protos.get("txpool").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    // Protocol counts from sent_packets (sent)
+    let sent_packets = metrics["sent_packets"].as_object().unwrap_or(&empty_map);
+    let ping_sent = sent_packets.get("ping").and_then(|v| v.as_u64()).unwrap_or(0);
+    let pong_sent = sent_packets.get("pong").and_then(|v| v.as_u64()).unwrap_or(0);
+    let entry_sent = sent_packets.get("entry").and_then(|v| v.as_u64()).unwrap_or(0);
+    let attestation_sent = sent_packets.get("attestation_bulk").and_then(|v| v.as_u64()).unwrap_or(0);
+    let txpool_sent = sent_packets.get("txpool").and_then(|v| v.as_u64()).unwrap_or(0);
+    let new_phone_who_dis_sent = sent_packets.get("new_phone_who_dis").and_then(|v| v.as_u64()).unwrap_or(0);
+    let what_sent = sent_packets.get("what").and_then(|v| v.as_u64()).unwrap_or(0);
 
     // Error counts
     let empty_errors_map = serde_json::Map::new();
     let errors = metrics["errors"].as_object().unwrap_or(&empty_errors_map);
     let total_errors: u64 = errors.values().filter_map(|v| v.as_u64()).sum();
 
-    let total_messages = ping_count + pong_count + entry_count + attestation_count + txpool_count;
+    let total_received = ping_received + pong_received + entry_received + attestation_received + txpool_received;
+    let total_sent =
+        ping_sent + pong_sent + entry_sent + attestation_sent + txpool_sent + new_phone_who_dis_sent + what_sent;
 
     format!(
         r#"
@@ -116,26 +134,50 @@ pub fn page(metrics: Value) -> String {
         
         <div class="grid">
             <div class="card">
-                <h3>📊 Network Statistics</h3>
+                <h3>📥 Incoming Traffic</h3>
                 <div class="metric">
-                    <span class="metric-label">Total Messages:</span>
-                    <span class="metric-value" id="total-messages">{}</span>
+                    <span class="metric-label">Messages Received:</span>
+                    <span class="metric-value" id="total-received">{}</span>
                 </div>
                 <div class="metric">
                     <span class="metric-label">Bytes Received:</span>
-                    <span class="metric-value" id="total-bytes">{}</span>
+                    <span class="metric-value" id="total-incoming-bytes">{}</span>
                 </div>
                 <div class="metric">
                     <span class="metric-label">Packets Received:</span>
-                    <span class="metric-value" id="total-packets">{}</span>
+                    <span class="metric-value" id="total-incoming-packets">{}</span>
                 </div>
                 <div class="metric">
                     <span class="metric-label">Packets/sec:</span>
-                    <span class="metric-value" id="packets-per-second">{}</span>
+                    <span class="metric-value" id="incoming-packets-per-second">{}</span>
                 </div>
                 <div class="metric">
                     <span class="metric-label">Bytes/sec:</span>
-                    <span class="metric-value" id="bytes-per-second">{}</span>
+                    <span class="metric-value" id="incoming-bytes-per-second">{}</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>📤 Outgoing Traffic</h3>
+                <div class="metric">
+                    <span class="metric-label">Messages Sent:</span>
+                    <span class="metric-value" id="total-sent">{}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Bytes Sent:</span>
+                    <span class="metric-value" id="total-outgoing-bytes">{}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Packets Sent:</span>
+                    <span class="metric-value" id="total-outgoing-packets">{}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Packets/sec:</span>
+                    <span class="metric-value" id="outgoing-packets-per-second">{}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Bytes/sec:</span>
+                    <span class="metric-value" id="outgoing-bytes-per-second">{}</span>
                 </div>
             </div>
 
@@ -156,26 +198,58 @@ pub fn page(metrics: Value) -> String {
             </div>
 
             <div class="card">
-                <h3>📝 Protocol Messages</h3>
+                <h3>📝 Messages Received</h3>
                 <div class="metric">
                     <span class="metric-label">Ping:</span>
-                    <span class="metric-value" id="ping-count">{}</span>
+                    <span class="metric-value" id="ping-received">{}</span>
                 </div>
                 <div class="metric">
                     <span class="metric-label">Pong:</span>
-                    <span class="metric-value" id="pong-count">{}</span>
+                    <span class="metric-value" id="pong-received">{}</span>
                 </div>
                 <div class="metric">
                     <span class="metric-label">Entries:</span>
-                    <span class="metric-value" id="entry-count">{}</span>
+                    <span class="metric-value" id="entry-received">{}</span>
                 </div>
                 <div class="metric">
                     <span class="metric-label">Attestations:</span>
-                    <span class="metric-value" id="attestation-count">{}</span>
+                    <span class="metric-value" id="attestation-received">{}</span>
                 </div>
                 <div class="metric">
                     <span class="metric-label">TxPool:</span>
-                    <span class="metric-value" id="txpool-count">{}</span>
+                    <span class="metric-value" id="txpool-received">{}</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>📤 Messages Sent</h3>
+                <div class="metric">
+                    <span class="metric-label">Ping:</span>
+                    <span class="metric-value" id="ping-sent">{}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Pong:</span>
+                    <span class="metric-value" id="pong-sent">{}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Entries:</span>
+                    <span class="metric-value" id="entry-sent">{}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Attestations:</span>
+                    <span class="metric-value" id="attestation-sent">{}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">TxPool:</span>
+                    <span class="metric-value" id="txpool-sent">{}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">NewPhoneWhoDis:</span>
+                    <span class="metric-value" id="new-phone-who-dis-sent">{}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">What:</span>
+                    <span class="metric-value" id="what-sent">{}</span>
                 </div>
             </div>
         </div>
@@ -214,24 +288,46 @@ async function fetchMetrics() {{
     
     const packets = metrics.packets || {{}};
     const handledProtos = metrics.handled_protos || {{}};
+    const sentPackets = metrics.sent_packets || {{}};
     const errors = metrics.errors || {{}};
     
     const totalErrors = Object.values(errors).reduce((sum, val) => sum + (val || 0), 0);
-    const totalMessages = Object.values(handledProtos).reduce((sum, val) => sum + (val || 0), 0);
+    const totalReceived = Object.values(handledProtos).reduce((sum, val) => sum + (val || 0), 0);
+    const totalSent = Object.values(sentPackets).reduce((sum, val) => sum + (val || 0), 0);
     
-    document.getElementById('total-messages').textContent = totalMessages.toLocaleString();
-    document.getElementById('total-bytes').textContent = formatBytes(packets.total_incoming_bytes || 0);
-    document.getElementById('total-packets').textContent = (packets.total_incoming_packets || 0).toLocaleString();
-    document.getElementById('packets-per-second').textContent = (packets.packets_per_second || 0);
-    document.getElementById('bytes-per-second').textContent = formatBytes(packets.bytes_per_second || 0);
+    // Incoming traffic
+    document.getElementById('total-received').textContent = totalReceived.toLocaleString();
+    document.getElementById('total-incoming-bytes').textContent = formatBytes(packets.total_incoming_bytes || 0);
+    document.getElementById('total-incoming-packets').textContent = (packets.total_incoming_packets || 0).toLocaleString();
+    document.getElementById('incoming-packets-per-second').textContent = (packets.incoming_packets_per_second || 0);
+    document.getElementById('incoming-bytes-per-second').textContent = formatBytes(packets.incoming_bytes_per_second || 0);
+    
+    // Outgoing traffic
+    document.getElementById('total-sent').textContent = totalSent.toLocaleString();
+    document.getElementById('total-outgoing-bytes').textContent = formatBytes(packets.total_outgoing_bytes || 0);
+    document.getElementById('total-outgoing-packets').textContent = (packets.total_outgoing_packets || 0).toLocaleString();
+    document.getElementById('outgoing-packets-per-second').textContent = (packets.outgoing_packets_per_second || 0);
+    document.getElementById('outgoing-bytes-per-second').textContent = formatBytes(packets.outgoing_bytes_per_second || 0);
+    
+    // System status
     document.getElementById('uptime').textContent = formatUptime(metrics.uptime || 0);
     document.getElementById('total-errors').textContent = totalErrors.toLocaleString();
     
-    document.getElementById('ping-count').textContent = (handledProtos.ping || 0).toLocaleString();
-    document.getElementById('pong-count').textContent = (handledProtos.pong || 0).toLocaleString();
-    document.getElementById('entry-count').textContent = (handledProtos.entry || 0).toLocaleString();
-    document.getElementById('attestation-count').textContent = (handledProtos.attestation_bulk || 0).toLocaleString();
-    document.getElementById('txpool-count').textContent = (handledProtos.txpool || 0).toLocaleString();
+    // Messages received
+    document.getElementById('ping-received').textContent = (handledProtos.ping || 0).toLocaleString();
+    document.getElementById('pong-received').textContent = (handledProtos.pong || 0).toLocaleString();
+    document.getElementById('entry-received').textContent = (handledProtos.entry || 0).toLocaleString();
+    document.getElementById('attestation-received').textContent = (handledProtos.attestation_bulk || 0).toLocaleString();
+    document.getElementById('txpool-received').textContent = (handledProtos.txpool || 0).toLocaleString();
+    
+    // Messages sent
+    document.getElementById('ping-sent').textContent = (sentPackets.ping || 0).toLocaleString();
+    document.getElementById('pong-sent').textContent = (sentPackets.pong || 0).toLocaleString();
+    document.getElementById('entry-sent').textContent = (sentPackets.entry || 0).toLocaleString();
+    document.getElementById('attestation-sent').textContent = (sentPackets.attestation_bulk || 0).toLocaleString();
+    document.getElementById('txpool-sent').textContent = (sentPackets.txpool || 0).toLocaleString();
+    document.getElementById('new-phone-who-dis-sent').textContent = (sentPackets.new_phone_who_dis || 0).toLocaleString();
+    document.getElementById('what-sent').textContent = (sentPackets.what || 0).toLocaleString();
   }} catch (e) {{
     console.error('Failed to fetch metrics:', e);
   }}
@@ -246,18 +342,30 @@ setInterval(fetchMetrics, 1000);
 </body>
 </html>
 "#,
-        total_messages,
-        bytes_formatted,
-        total_packets,
-        packets_per_second,
-        bytes_per_sec_formatted,
+        total_received,
+        incoming_bytes_formatted,
+        total_incoming_packets,
+        incoming_packets_per_second,
+        incoming_bytes_per_sec_formatted,
+        total_sent,
+        outgoing_bytes_formatted,
+        total_outgoing_packets,
+        outgoing_packets_per_second,
+        outgoing_bytes_per_sec_formatted,
         uptime_formatted,
         total_errors,
-        ping_count,
-        pong_count,
-        entry_count,
-        attestation_count,
-        txpool_count,
+        ping_received,
+        pong_received,
+        entry_received,
+        attestation_received,
+        txpool_received,
+        ping_sent,
+        pong_sent,
+        entry_sent,
+        attestation_sent,
+        txpool_sent,
+        new_phone_who_dis_sent,
+        what_sent,
     )
 }
 

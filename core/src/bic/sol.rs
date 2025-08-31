@@ -1,5 +1,6 @@
 use crate::node::protocol;
 use crate::node::protocol::Protocol;
+use crate::Context;
 use crate::utils::blake3;
 use crate::utils::misc::TermMap;
 use eetf::{Atom, Term};
@@ -72,8 +73,54 @@ impl Protocol for Solution {
         let bin = map.get_binary("sol").ok_or(Error::Missing("sol"))?;
         Solution::from_etf_validated(bin).map_err(Into::into)
     }
+    fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
+        // convert solution back to binary format
+        let sol_bin = match self {
+            Solution::V2(v2) => {
+                let mut buf = Vec::with_capacity(SOL_SIZE);
+                buf.extend_from_slice(&v2.epoch.to_le_bytes());
+                buf.extend_from_slice(&v2.segment_vr_hash);
+                buf.extend_from_slice(&v2.pk);
+                buf.extend_from_slice(&v2.pop);
+                buf.extend_from_slice(&v2.computor);
+                buf.extend_from_slice(&[0u8; 12]); // nonce placeholder
+                buf.extend_from_slice(&v2.tensor_c);
+                buf
+            }
+            Solution::V1(v1) => {
+                let mut buf = Vec::with_capacity(320);
+                buf.extend_from_slice(&v1.epoch.to_le_bytes());
+                buf.extend_from_slice(&v1.pk);
+                buf.extend_from_slice(&v1.pop);
+                buf.extend_from_slice(&v1.computor);
+                buf.extend_from_slice(&v1.segment_vr);
+                // pad to expected size
+                buf.resize(320, 0);
+                buf
+            }
+            Solution::V0(v0) => {
+                let mut buf = Vec::with_capacity(256);
+                buf.extend_from_slice(&v0.epoch.to_le_bytes());
+                buf.extend_from_slice(&v0.pk);
+                buf.extend_from_slice(&v0.pop);
+                buf.extend_from_slice(&v0.computor);
+                // pad to expected size
+                buf.resize(256, 0);
+                buf
+            }
+        };
 
-    async fn handle_inner(&self, _src: std::net::SocketAddr) -> Result<protocol::Instruction, protocol::Error> {
+        let mut m = HashMap::new();
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        m.insert(Term::Atom(Atom::from("sol")), Term::from(eetf::Binary { bytes: sol_bin }));
+
+        let term = Term::from(eetf::Map { map: m });
+        let mut out = Vec::new();
+        term.encode(&mut out).map_err(protocol::Error::EtfEncode)?;
+        Ok(out)
+    }
+
+    async fn handle_inner(&self, _ctx: &Context, _src: std::net::SocketAddr) -> Result<protocol::Instruction, protocol::Error> {
         // cache the solution
         Ok(protocol::Instruction::Noop)
     }

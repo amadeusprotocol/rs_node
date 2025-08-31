@@ -11,9 +11,9 @@ use eetf::Term;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use std::time::Duration;
 use tokio::net::UdpSocket as TokioUdpSocket;
+use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug, thiserror::Error)]

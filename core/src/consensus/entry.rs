@@ -5,6 +5,7 @@ use crate::consensus::tx::TxU;
 use crate::consensus::{fabric, tx};
 use crate::node::protocol;
 use crate::node::protocol::Protocol;
+use crate::Context;
 use crate::utils::bls12_381;
 use crate::utils::misc::{TermExt, TermMap, bitvec_to_bools, bools_to_bitvec, get_unix_millis_now};
 use crate::utils::{archiver, blake3};
@@ -210,8 +211,21 @@ impl Protocol for Entry {
         let bin = map.get_binary("entry_packed").ok_or(Error::BadEtf("entry_packed"))?;
         Entry::from_etf_bin_validated(bin, ENTRY_SIZE).map_err(Into::into)
     }
+    fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
+        // encode entry as bincode first
+        let entry_bin: Vec<u8> = self.clone().try_into().map_err(|_| protocol::Error::BadEtf("entry"))?;
 
-    async fn handle_inner(&self, _src: std::net::SocketAddr) -> Result<protocol::Instruction, protocol::Error> {
+        let mut m = HashMap::new();
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        m.insert(Term::Atom(Atom::from("entry_packed")), Term::from(Binary { bytes: entry_bin }));
+
+        let term = Term::from(Map { map: m });
+        let mut out = Vec::new();
+        term.encode(&mut out).map_err(protocol::Error::EtfEncode)?;
+        Ok(out)
+    }
+
+    async fn handle_inner(&self, _ctx: &Context, _src: std::net::SocketAddr) -> Result<protocol::Instruction, protocol::Error> {
         self.handle_inner().await.map_err(Into::into)
     }
 }

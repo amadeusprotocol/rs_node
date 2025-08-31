@@ -216,16 +216,19 @@ setInterval(loadPeers, 1000);
 fn get_handshake_status_html(status: &ama_core::node::peers::HandshakeStatus) -> &'static str {
     use ama_core::node::peers::HandshakeStatus;
     match status {
-        HandshakeStatus::None => 
-            "<span class=\"pill\" style=\"background: #66666620; color: #666666;\">⭕ none</span>",
-        HandshakeStatus::SentNewPhoneWhoDis => 
-            "<span class=\"pill\" style=\"background: #ffaa0020; color: #ffaa00;\">⏳ sent_new_phone_who_dis</span>",
-        HandshakeStatus::SentWhat => 
-            "<span class=\"pill\" style=\"background: #00ff0020; color: #00ff00;\">✅ sent_what</span>",
-        HandshakeStatus::ReceivedWhat => 
-            "<span class=\"pill\" style=\"background: #00ff0020; color: #00ff00;\">✅ received_what</span>",
-        HandshakeStatus::Failed => 
-            "<span class=\"pill\" style=\"background: #ff000020; color: #ff0000;\">❌ failed</span>",
+        HandshakeStatus::None => "<span class=\"pill\" style=\"background: #66666620; color: #666666;\">⭕ none</span>",
+        HandshakeStatus::SentNewPhoneWhoDis => {
+            "<span class=\"pill\" style=\"background: #ffaa0020; color: #ffaa00;\">⏳ sent_new_phone_who_dis</span>"
+        }
+        HandshakeStatus::SentWhat => {
+            "<span class=\"pill\" style=\"background: #00ff0020; color: #00ff00;\">✅ sent_what</span>"
+        }
+        HandshakeStatus::ReceivedWhat => {
+            "<span class=\"pill\" style=\"background: #00ff0020; color: #00ff00;\">✅ received_what</span>"
+        }
+        HandshakeStatus::Failed => {
+            "<span class=\"pill\" style=\"background: #ff000020; color: #ff0000;\">❌ failed</span>"
+        }
     }
 }
 

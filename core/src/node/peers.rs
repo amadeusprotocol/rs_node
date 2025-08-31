@@ -722,7 +722,7 @@ impl NodePeers {
                     .await;
             }
         }
-        
+
         Ok(())
     }
 
@@ -759,7 +759,7 @@ impl NodePeers {
                 })
                 .await;
         }
-        
+
         Ok(())
     }
 

@@ -281,67 +281,67 @@ pub unsafe fn freivalds_inner_avx2(
     // (helpers like `hsum256_epi32` go below, unchanged)
     // ------------------------------------------------------------------ //
     unsafe {
-    const N: usize = 50_240;
-    let mut U = [[0i32; 16]; 3];
+        const N: usize = 50_240;
+        let mut U = [[0i32; 16]; 3];
 
-    // --- Stage 1: U = C × R --------------------------------------------------
-    let r0_i32 = load_i8x16_as_i32(Rs[0].as_ptr());
-    let r1_i32 = load_i8x16_as_i32(Rs[1].as_ptr());
-    let r2_i32 = load_i8x16_as_i32(Rs[2].as_ptr());
+        // --- Stage 1: U = C × R --------------------------------------------------
+        let r0_i32 = load_i8x16_as_i32(Rs[0].as_ptr());
+        let r1_i32 = load_i8x16_as_i32(Rs[1].as_ptr());
+        let r2_i32 = load_i8x16_as_i32(Rs[2].as_ptr());
 
-    for i in 0..16 {
-        let c_lo = _mm256_loadu_si256(C[i].as_ptr() as *const __m256i);
-        let c_hi = _mm256_loadu_si256(C[i].as_ptr().add(8) as *const __m256i);
+        for i in 0..16 {
+            let c_lo = _mm256_loadu_si256(C[i].as_ptr() as *const __m256i);
+            let c_hi = _mm256_loadu_si256(C[i].as_ptr().add(8) as *const __m256i);
 
-        let u0 = _mm256_add_epi32(_mm256_mullo_epi32(c_lo, r0_i32.lo), _mm256_mullo_epi32(c_hi, r0_i32.hi));
-        let u1 = _mm256_add_epi32(_mm256_mullo_epi32(c_lo, r1_i32.lo), _mm256_mullo_epi32(c_hi, r1_i32.hi));
-        let u2 = _mm256_add_epi32(_mm256_mullo_epi32(c_lo, r2_i32.lo), _mm256_mullo_epi32(c_hi, r2_i32.hi));
+            let u0 = _mm256_add_epi32(_mm256_mullo_epi32(c_lo, r0_i32.lo), _mm256_mullo_epi32(c_hi, r0_i32.hi));
+            let u1 = _mm256_add_epi32(_mm256_mullo_epi32(c_lo, r1_i32.lo), _mm256_mullo_epi32(c_hi, r1_i32.hi));
+            let u2 = _mm256_add_epi32(_mm256_mullo_epi32(c_lo, r2_i32.lo), _mm256_mullo_epi32(c_hi, r2_i32.hi));
 
-        U[0][i] = hsum256_epi32(u0);
-        U[1][i] = hsum256_epi32(u1);
-        U[2][i] = hsum256_epi32(u2);
-    }
-
-    // --- Stage 2: P(k) = B[k]·R -------------------------------------------
-    let mut P0 = vec![0i32; N];
-    let mut P1 = vec![0i32; N];
-    let mut P2 = vec![0i32; N];
-
-    let r0_i16 = _mm256_cvtepi8_epi16(_mm_loadu_si128(Rs[0].as_ptr() as *const _));
-    let r1_i16 = _mm256_cvtepi8_epi16(_mm_loadu_si128(Rs[1].as_ptr() as *const _));
-    let r2_i16 = _mm256_cvtepi8_epi16(_mm_loadu_si128(Rs[2].as_ptr() as *const _));
-
-    for k in 0..N {
-        let row_i16 = _mm256_cvtepi8_epi16(_mm_loadu_si128(B[k].as_ptr() as *const _));
-
-        P0[k] = hsum256_epi32(_mm256_madd_epi16(row_i16, r0_i16));
-        P1[k] = hsum256_epi32(_mm256_madd_epi16(row_i16, r1_i16));
-        P2[k] = hsum256_epi32(_mm256_madd_epi16(row_i16, r2_i16));
-    }
-
-    // --- Stage 3: dot( A[i], P ) --------------------------------------------
-    for i in 0..16 {
-        let mut acc0 = _mm256_setzero_si256();
-        let mut acc1 = _mm256_setzero_si256();
-        let mut acc2 = _mm256_setzero_si256();
-
-        for k in (0..N).step_by(8) {
-            let a_i32 = _mm256_cvtepu8_epi32(_mm_loadl_epi64(A[i].as_ptr().add(k) as *const _));
-            let p0 = _mm256_loadu_si256(P0.as_ptr().add(k) as *const _);
-            let p1 = _mm256_loadu_si256(P1.as_ptr().add(k) as *const _);
-            let p2 = _mm256_loadu_si256(P2.as_ptr().add(k) as *const _);
-
-            acc0 = _mm256_add_epi32(acc0, _mm256_mullo_epi32(a_i32, p0));
-            acc1 = _mm256_add_epi32(acc1, _mm256_mullo_epi32(a_i32, p1));
-            acc2 = _mm256_add_epi32(acc2, _mm256_mullo_epi32(a_i32, p2));
+            U[0][i] = hsum256_epi32(u0);
+            U[1][i] = hsum256_epi32(u1);
+            U[2][i] = hsum256_epi32(u2);
         }
 
-        if hsum256_epi32(acc0) != U[0][i] || hsum256_epi32(acc1) != U[1][i] || hsum256_epi32(acc2) != U[2][i] {
-            return false;
+        // --- Stage 2: P(k) = B[k]·R -------------------------------------------
+        let mut P0 = vec![0i32; N];
+        let mut P1 = vec![0i32; N];
+        let mut P2 = vec![0i32; N];
+
+        let r0_i16 = _mm256_cvtepi8_epi16(_mm_loadu_si128(Rs[0].as_ptr() as *const _));
+        let r1_i16 = _mm256_cvtepi8_epi16(_mm_loadu_si128(Rs[1].as_ptr() as *const _));
+        let r2_i16 = _mm256_cvtepi8_epi16(_mm_loadu_si128(Rs[2].as_ptr() as *const _));
+
+        for k in 0..N {
+            let row_i16 = _mm256_cvtepi8_epi16(_mm_loadu_si128(B[k].as_ptr() as *const _));
+
+            P0[k] = hsum256_epi32(_mm256_madd_epi16(row_i16, r0_i16));
+            P1[k] = hsum256_epi32(_mm256_madd_epi16(row_i16, r1_i16));
+            P2[k] = hsum256_epi32(_mm256_madd_epi16(row_i16, r2_i16));
         }
+
+        // --- Stage 3: dot( A[i], P ) --------------------------------------------
+        for i in 0..16 {
+            let mut acc0 = _mm256_setzero_si256();
+            let mut acc1 = _mm256_setzero_si256();
+            let mut acc2 = _mm256_setzero_si256();
+
+            for k in (0..N).step_by(8) {
+                let a_i32 = _mm256_cvtepu8_epi32(_mm_loadl_epi64(A[i].as_ptr().add(k) as *const _));
+                let p0 = _mm256_loadu_si256(P0.as_ptr().add(k) as *const _);
+                let p1 = _mm256_loadu_si256(P1.as_ptr().add(k) as *const _);
+                let p2 = _mm256_loadu_si256(P2.as_ptr().add(k) as *const _);
+
+                acc0 = _mm256_add_epi32(acc0, _mm256_mullo_epi32(a_i32, p0));
+                acc1 = _mm256_add_epi32(acc1, _mm256_mullo_epi32(a_i32, p1));
+                acc2 = _mm256_add_epi32(acc2, _mm256_mullo_epi32(a_i32, p2));
+            }
+
+            if hsum256_epi32(acc0) != U[0][i] || hsum256_epi32(acc1) != U[1][i] || hsum256_epi32(acc2) != U[2][i] {
+                return false;
+            }
+        }
+        true
     }
-    true
-}
 }
 
 fn freivalds_inner_scalar(

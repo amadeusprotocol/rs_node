@@ -5,12 +5,13 @@ use crate::node::{anr, peers};
 pub mod bic;
 pub mod config;
 pub mod consensus;
+pub mod context;
 pub mod genesis;
 pub mod metrics;
 pub mod node;
+pub mod socket;
 pub mod utils;
 pub mod wasm;
-pub mod context;
 
 pub use context::{Context, PeerInfo, read_udp_packet};
 
@@ -29,5 +30,3 @@ pub enum Error {
     #[error("{0}")]
     String(String),
 }
-
-

@@ -304,9 +304,9 @@ pub fn revert(m_rev: &[Mutation]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::rocksdb;
     use std::any::type_name_of_val;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use crate::utils::rocksdb;
 
     fn tmp_base_for_test<F: ?Sized>(f: &F) -> String {
         let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();

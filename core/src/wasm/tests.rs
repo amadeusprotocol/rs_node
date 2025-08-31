@@ -30,7 +30,7 @@ fn setup_test_env() -> CallEnv {
         attached_symbol: vec![],
         attached_amount: vec![],
         seed: [42u8; 32],
-        seedf64: 3.14159,
+        seedf64: std::f64::consts::PI,
         readonly: false,
     }
 }
