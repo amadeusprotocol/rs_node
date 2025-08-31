@@ -288,7 +288,7 @@ impl Config {
             .unwrap_or_else(|_| vec![0u8; 96]);
 
         Self {
-            work_folder: ".config/rs-amadeusd".to_string(),
+            work_folder: ".config/rs_amadeusd".to_string(),
             version_3b: VERSION,
             offline: false,
             http_ipv4: Ipv4Addr::new(0, 0, 0, 0),
@@ -296,7 +296,7 @@ impl Config {
             udp_ipv4: Ipv4Addr::new(0, 0, 0, 0),
             udp_port: 36969,
             public_ipv4: None,
-            seed_nodes: vec!["104.218.45.23".to_string(), "72.9.144.110".to_string()],
+            seed_nodes: SEED_NODES.iter().map(|s| s.to_string()).collect(),
             seed_anrs: vec![],
             other_nodes: vec![],
             trust_factor: 0.8,

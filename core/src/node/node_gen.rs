@@ -91,11 +91,11 @@ impl NodeGen {
         Ok(())
     }
 
-    pub async fn broadcast_check_anr(&self, trainer_pk: &[u8]) -> Result<(), Error> {
+    pub async fn broadcast_check_anr(&self, config: &crate::config::Config) -> Result<(), Error> {
         debug!("Broadcasting ANR checks");
 
         // use provided trainer pk
-        let my_pk = trainer_pk.to_vec();
+        let my_pk = config.trainer_pk.to_vec();
 
         let random_unverified = anr::get_random_unverified(3).await?;
 
@@ -103,18 +103,36 @@ impl NodeGen {
             if pk != my_pk {
                 debug!("ANR request to {}", ip);
 
-                let _challenge =
-                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
-                        as u64;
+                // create our own ANR for the verification request
+                let my_anr = anr::ANR::build(&config.trainer_sk, &config.trainer_pk, &config.trainer_pop, self.ip, config.get_ver())
+                    .map_err(|e| Error::AnrError(e))?;
 
-                // TODO: create new_phone_who_dis message using protocol module
-                let msg_compressed = vec![]; // placeholder
+                // generate a random challenge for this verification
+                let challenge = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64;
 
-                let socket_gen = self.get_socket_gen();
-                socket_gen
-                    .send_to_some(vec![ip.to_string()], msg_compressed)
-                    .await
-                    .map_err(|e| Error::SocketError(e.to_string()))?;
+                // create new_phone_who_dis message using protocol module
+                let new_phone_who_dis = crate::node::protocol::NewPhoneWhoDis::new(my_anr, challenge)
+                    .map_err(|e| Error::SocketError(format!("Failed to create NewPhoneWhoDis: {:?}", e)))?;
+                
+                // serialize to ETF binary
+                let payload = new_phone_who_dis.to_etf_bin()
+                    .map_err(|e| Error::SocketError(format!("Failed to serialize NewPhoneWhoDis: {:?}", e)))?;
+                
+                // create shards for transmission (large messages need sharding)
+                let shards = crate::node::ReedSolomonReassembler::build_shards(config, payload)
+                    .map_err(|e| Error::SocketError(format!("Failed to create shards: {:?}", e)))?;
+
+                // send each shard individually to the target IP
+                for shard in shards {
+                    let socket_gen = self.get_socket_gen();
+                    socket_gen
+                        .send_to_some(vec![ip.to_string()], shard)
+                        .await
+                        .map_err(|e| Error::SocketError(e.to_string()))?;
+                }
             }
         }
 

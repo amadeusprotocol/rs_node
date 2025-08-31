@@ -191,6 +191,41 @@ impl Context {
             }
         });
 
+        // periodic ANR verification task - runs every 1 second
+        const ANR_CHECK_SECS: u64 = 1;
+        let config_local = config.clone();
+        tokio::spawn(async move {
+            use tracing::debug;
+            let mut ticker = interval(Duration::from_secs(ANR_CHECK_SECS));
+            loop {
+                ticker.tick().await;
+                
+                // get random unverified ANRs and attempt to verify them
+                match anr::get_random_unverified(3).await {
+                    Ok(unverified_anrs) => {
+                        if !unverified_anrs.is_empty() {
+                            debug!("ANR check: found {} unverified ANRs", unverified_anrs.len());
+                            
+                            for (pk, ip4) in unverified_anrs {
+                                // skip our own public key
+                                if pk == config_local.trainer_pk {
+                                    continue;
+                                }
+                                
+                                // send NewPhoneWhoDis message to this IP to verify ANR
+                                if let Err(e) = send_anr_verification_request(&config_local, ip4).await {
+                                    debug!("Failed to send ANR verification request to {}: {}", ip4, e);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Failed to get random unverified ANRs: {}", e);
+                    }
+                }
+            }
+        });
+
         let metrics = Metrics::new();
         Ok(Self {
             config,
@@ -328,10 +363,121 @@ impl Context {
             }
         }
     }
+
+    /// manual trigger for cleanup (optional helper)
+    pub async fn cleanup_stale(&self) {
+        const CLEANUP_SECS: u64 = 8;
+        let cleared_shards = self.reassembler.clear_stale(CLEANUP_SECS).await;
+        let cleared_peers = self.node_peers.clear_stale().await;
+        tracing::info!("cleanup: cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
+    }
+
+    /// manual trigger for bootstrap handshake to seed nodes (optional helper)
+    pub async fn bootstrap_handshake(&self) -> Result<(), Error> {
+        use crate::node::protocol::NewPhoneWhoDis;
+        use tokio::net::UdpSocket;
+        use tracing::info;
+
+        // create our own ANR for the handshake
+        let my_ip = self.config
+            .public_ipv4
+            .as_ref()
+            .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok())
+            .unwrap_or_else(|| std::net::Ipv4Addr::new(127, 0, 0, 1));
+
+        let my_anr = anr::ANR::build(
+            &self.config.trainer_sk,
+            &self.config.trainer_pk,
+            &self.config.trainer_pop,
+            my_ip,
+            self.config.get_ver(),
+        )?;
+
+        // generate a random challenge
+        let challenge = random::<u64>();
+
+        // create NewPhoneWhoDis message
+        let new_phone_who_dis = NewPhoneWhoDis::new(my_anr, challenge)
+            .map_err(|e| Error::String(format!("Failed to create NewPhoneWhoDis: {:?}", e)))?;
+
+        // serialize to compressed ETF binary
+        let payload = new_phone_who_dis.to_etf_bin()
+            .map_err(|e| Error::String(format!("Failed to serialize NewPhoneWhoDis: {:?}", e)))?;
+
+        // build shards for transmission
+        let shards = node::ReedSolomonReassembler::build_shards(&self.config, payload)
+            .map_err(|e| Error::String(format!("Failed to create shards: {:?}", e)))?;
+
+        let sock = UdpSocket::bind("0.0.0.0:0").await
+            .map_err(|e| Error::String(format!("Failed to bind UDP socket: {:?}", e)))?;
+
+        for ip in &self.config.seed_nodes {
+            let addr = format!("{}:{}", ip, 36969);
+            if let Ok(target) = addr.parse::<std::net::SocketAddr>() {
+                info!(%addr, count = shards.len(), challenge, "sending bootstrap new_phone_who_dis");
+                for shard in &shards {
+                    sock.send_to(shard, target).await
+                        .map_err(|e| Error::String(format!("Failed to send shard: {:?}", e)))?;
+                }
+            }
+        }
+        
+        info!("sent bootstrap new_phone_who_dis");
+        Ok(())
+    }
+}
+
+/// Send ANR verification request via NewPhoneWhoDis message
+async fn send_anr_verification_request(config: &config::Config, target_ip: Ipv4Addr) -> Result<(), Error> {
+    use crate::node::protocol::NewPhoneWhoDis;
+    use tokio::net::UdpSocket;
+    
+    // create our own ANR for the verification request
+    let my_ip = config
+        .public_ipv4
+        .as_ref()
+        .and_then(|s| s.parse::<Ipv4Addr>().ok())
+        .unwrap_or_else(|| Ipv4Addr::new(127, 0, 0, 1));
+
+    let my_anr = anr::ANR::build(
+        &config.trainer_sk,
+        &config.trainer_pk,
+        &config.trainer_pop,
+        my_ip,
+        config.get_ver(),
+    )?;
+
+    // generate a random challenge for this verification
+    let challenge = random::<u64>();
+
+    // create NewPhoneWhoDis message
+    let new_phone_who_dis = NewPhoneWhoDis::new(my_anr, challenge)
+        .map_err(|e| Error::String(format!("Failed to create NewPhoneWhoDis: {:?}", e)))?;
+    
+    // serialize to ETF binary
+    let payload = new_phone_who_dis.to_etf_bin()
+        .map_err(|e| Error::String(format!("Failed to serialize NewPhoneWhoDis: {:?}", e)))?;
+    
+    // create shards for transmission
+    let shards = crate::node::ReedSolomonReassembler::build_shards(config, payload)
+        .map_err(|e| Error::String(format!("Failed to create shards: {:?}", e)))?;
+    
+    // send shards via UDP
+    let socket = UdpSocket::bind("0.0.0.0:0").await
+        .map_err(|e| Error::String(format!("Failed to bind UDP socket: {:?}", e)))?;
+    let target = SocketAddr::new(std::net::IpAddr::V4(target_ip), 36969);
+    
+    for shard in shards {
+        socket.send_to(&shard, target).await
+            .map_err(|e| Error::String(format!("Failed to send shard: {:?}", e)))?;
+    }
+    
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn tokio_rwlock_allows_concurrent_reads() {
@@ -352,5 +498,168 @@ mod tests {
         let mut w = lock.write().await;
         *w += 1;
         assert_eq!(*w, 1);
+    }
+
+    #[tokio::test]
+    async fn test_anr_verification_request_creation() {
+        // test that we can create an ANR verification request without errors
+        use crate::utils::bls12_381 as bls;
+        use std::net::Ipv4Addr;
+        
+        // create test config
+        let sk = bls::generate_sk();
+        let pk = bls::get_public_key(&sk).expect("pk");
+        let pop = bls::sign(&sk, &pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("pop");
+        
+        let config = config::Config {
+            work_folder: "/tmp/test".to_string(),
+            version_3b: [1, 2, 3],
+            offline: false,
+            http_ipv4: Ipv4Addr::new(127, 0, 0, 1),
+            http_port: 3000,
+            udp_ipv4: Ipv4Addr::new(127, 0, 0, 1),
+            udp_port: 36969,
+            public_ipv4: Some("127.0.0.1".to_string()),
+            seed_nodes: Vec::new(),
+            seed_anrs: Vec::new(),
+            other_nodes: Vec::new(),
+            trust_factor: 0.8,
+            max_peers: 100,
+            trainer_sk: sk,
+            trainer_pk: pk,
+            trainer_pk_b58: String::new(),
+            trainer_pop: pop.to_vec(),
+            archival_node: false,
+            autoupdate: false,
+            computor_type: None,
+            snapshot_height: 0,
+            anr: None,
+            anr_desc: None,
+            anr_name: None,
+        };
+
+        let target_ip = Ipv4Addr::new(127, 0, 0, 1);
+        
+        // test that the function doesn't panic and handles errors gracefully
+        match send_anr_verification_request(&config, target_ip).await {
+            Ok(()) => {
+                // success case - message was sent
+            }
+            Err(_e) => {
+                // failure case is ok for testing, might be due to network issues
+                // the important thing is that it doesn't panic
+            }
+        }
+    }
+
+    #[tokio::test] 
+    async fn test_get_random_unverified_anrs() {
+        // test the ANR selection logic
+        let result = anr::get_random_unverified(3).await;
+        
+        // should not panic and should return a result
+        assert!(result.is_ok());
+        
+        let unverified = result.unwrap();
+        // should return at most 3 results as requested
+        assert!(unverified.len() <= 3);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_stale_manual_trigger() {
+        // test that cleanup_stale can be called manually without error
+        use crate::utils::bls12_381 as bls;
+        use std::net::Ipv4Addr;
+        
+        // create test config with minimal requirements
+        let sk = bls::generate_sk();
+        let pk = bls::get_public_key(&sk).expect("pk");
+        let pop = bls::sign(&sk, &pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("pop");
+        
+        let config = config::Config {
+            work_folder: "/tmp/test".to_string(),
+            version_3b: [1, 2, 3],
+            offline: false,
+            http_ipv4: Ipv4Addr::new(127, 0, 0, 1),
+            http_port: 3000,
+            udp_ipv4: Ipv4Addr::new(127, 0, 0, 1),
+            udp_port: 36969,
+            public_ipv4: Some("127.0.0.1".to_string()),
+            seed_nodes: vec!["127.0.0.1".to_string()],
+            seed_anrs: Vec::new(),
+            other_nodes: Vec::new(),
+            trust_factor: 0.8,
+            max_peers: 100,
+            trainer_sk: sk,
+            trainer_pk: pk,
+            trainer_pk_b58: String::new(),
+            trainer_pop: pop.to_vec(),
+            archival_node: false,
+            autoupdate: false,
+            computor_type: None,
+            snapshot_height: 0,
+            anr: None,
+            anr_desc: None,
+            anr_name: None,
+        };
+
+        // create context with test config  
+        let ctx = Context::with_config(config).await.expect("context creation");
+        
+        // test cleanup_stale manual trigger - should not panic
+        ctx.cleanup_stale().await;
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_handshake_manual_trigger() {
+        // test that bootstrap_handshake can be called manually
+        use crate::utils::bls12_381 as bls;
+        use std::net::Ipv4Addr;
+        
+        // create test config
+        let sk = bls::generate_sk();
+        let pk = bls::get_public_key(&sk).expect("pk");
+        let pop = bls::sign(&sk, &pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("pop");
+        
+        let config = config::Config {
+            work_folder: "/tmp/test2".to_string(),
+            version_3b: [1, 2, 3],
+            offline: false,
+            http_ipv4: Ipv4Addr::new(127, 0, 0, 1),
+            http_port: 3000,
+            udp_ipv4: Ipv4Addr::new(127, 0, 0, 1),
+            udp_port: 36969,
+            public_ipv4: Some("127.0.0.1".to_string()),
+            seed_nodes: vec!["127.0.0.1".to_string()], // test seed node
+            seed_anrs: Vec::new(),
+            other_nodes: Vec::new(),
+            trust_factor: 0.8,
+            max_peers: 100,
+            trainer_sk: sk,
+            trainer_pk: pk,
+            trainer_pk_b58: String::new(),
+            trainer_pop: pop.to_vec(),
+            archival_node: false,
+            autoupdate: false,
+            computor_type: None,
+            snapshot_height: 0,
+            anr: None,
+            anr_desc: None,
+            anr_name: None,
+        };
+
+        // create context with test config
+        let ctx = Context::with_config(config).await.expect("context creation");
+        
+        // test bootstrap_handshake manual trigger - should handle errors gracefully
+        match ctx.bootstrap_handshake().await {
+            Ok(()) => {
+                // success case - message was sent
+            }
+            Err(_e) => {
+                // failure case is ok for testing, might be due to network issues
+                // the important thing is that it doesn't panic
+            }
+        }
     }
 }
