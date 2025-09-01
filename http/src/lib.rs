@@ -1,12 +1,17 @@
 pub mod models;
 mod routes;
+pub mod utils;
 mod views {
-    pub mod metrics;
+    pub mod dashboard;
+    pub mod entries;
+    pub mod errors;
+    pub mod incoming;
+    pub mod network;
+    pub mod outgoing;
     pub mod peers;
 }
 
 use ama_core::Context;
-use axum::{response::Html, routing::get};
 use std::process;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,20 +23,6 @@ use tracing::{error, info};
 
 pub async fn serve(socket: TcpListener, ctx: Arc<Context>) -> anyhow::Result<()> {
     let app = routes::app(ctx.clone())
-        .route(
-            "/",
-            get(|| async {
-                info!("GET /");
-                Html(get_embedded_simple_dashboard())
-            }),
-        )
-        .route(
-            "/advanced",
-            get(|| async {
-                info!("GET /advanced");
-                Html(get_embedded_dashboard())
-            }),
-        )
         .nest_service("/static", ServeDir::new("http/static"))
         // Add timeout for regular requests (SSE streams handle their own timeouts)
         .layer(TimeoutLayer::new(Duration::from_secs(30)))
@@ -46,14 +37,6 @@ pub async fn serve(socket: TcpListener, ctx: Arc<Context>) -> anyhow::Result<()>
         error!("http server error: {}", e);
     }
     Ok(())
-}
-
-fn get_embedded_simple_dashboard() -> String {
-    include_str!("../static/simple-dashboard.html").to_string()
-}
-
-fn get_embedded_dashboard() -> String {
-    include_str!("../static/dashboard.html").to_string()
 }
 
 async fn shutdown_signal() {

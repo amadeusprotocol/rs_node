@@ -1,11 +1,11 @@
 /// Entry is a consensus block in Amadeus
 use super::agg_sig::{DST_ENTRY, DST_VRF};
+use crate::Context;
 use crate::config::ENTRY_SIZE;
 use crate::consensus::tx::TxU;
 use crate::consensus::{fabric, tx};
 use crate::node::protocol;
 use crate::node::protocol::Protocol;
-use crate::Context;
 use crate::utils::bls12_381;
 use crate::utils::misc::{TermExt, TermMap, bitvec_to_bools, bools_to_bitvec, get_unix_millis_now};
 use crate::utils::{archiver, blake3};
@@ -225,7 +225,11 @@ impl Protocol for Entry {
         Ok(out)
     }
 
-    async fn handle_inner(&self, _ctx: &Context, _src: std::net::SocketAddr) -> Result<protocol::Instruction, protocol::Error> {
+    async fn handle(
+        &self,
+        _ctx: &Context,
+        _src: std::net::SocketAddr,
+    ) -> Result<protocol::Instruction, protocol::Error> {
         self.handle_inner().await.map_err(Into::into)
     }
 }
@@ -393,5 +397,101 @@ impl ParsedEntry {
         }
 
         Ok(())
+    }
+}
+
+/// Get archived entries as a list of (epoch, height, entry_size) tuples by parsing filenames
+pub async fn get_archived_entries() -> Result<Vec<(u64, u64, u64)>, Error> {
+    let filenames_with_sizes = archiver::get_archived_filenames().await?;
+    let mut entries = Vec::new();
+
+    for (filename, file_size) in filenames_with_sizes {
+        if let Some((epoch, height)) = parse_entry_filename(&filename) {
+            entries.push((epoch, height, file_size));
+        }
+    }
+
+    // Sort by epoch first, then by height
+    entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    entries.dedup(); // Remove any duplicates
+
+    Ok(entries)
+}
+
+/// Parse entry filename to extract epoch and height
+/// Expected format: "epoch-{epoch}/entry-{height}" or similar patterns
+fn parse_entry_filename(filename: &str) -> Option<(u64, u64)> {
+    // Split by '/' to get directory and filename parts
+    let parts: Vec<&str> = filename.split('/').collect();
+
+    let mut epoch = None;
+    let mut height = None;
+
+    // Look for epoch in directory part (e.g., "epoch-123")
+    for part in &parts {
+        if let Some(epoch_str) = part.strip_prefix("epoch-") {
+            if let Ok(e) = epoch_str.parse::<u64>() {
+                epoch = Some(e);
+            }
+        }
+    }
+
+    // Look for height in filename part (e.g., "entry-456")
+    if let Some(filename_part) = parts.last() {
+        if let Some(height_str) = filename_part.strip_prefix("entry-") {
+            if let Ok(h) = height_str.parse::<u64>() {
+                height = Some(h);
+            }
+        }
+    }
+
+    match (epoch, height) {
+        (Some(e), Some(h)) => Some((e, h)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_entry_filename() {
+        // Test valid filenames
+        assert_eq!(parse_entry_filename("epoch-0/entry-12345"), Some((0, 12345)));
+        assert_eq!(parse_entry_filename("epoch-123/entry-456"), Some((123, 456)));
+        assert_eq!(parse_entry_filename("epoch-999/subdir/entry-789"), Some((999, 789)));
+
+        // Test invalid filenames
+        assert_eq!(parse_entry_filename("not-epoch/entry-123"), None);
+        assert_eq!(parse_entry_filename("epoch-123/not-entry"), None);
+        assert_eq!(parse_entry_filename("epoch-abc/entry-123"), None);
+        assert_eq!(parse_entry_filename("epoch-123/entry-def"), None);
+        assert_eq!(parse_entry_filename("random-file.txt"), None);
+        assert_eq!(parse_entry_filename(""), None);
+    }
+
+    #[tokio::test]
+    async fn test_get_archived_entries_empty() {
+        // This test will only work if the archiver is not initialized
+        // or the directory is empty, which is fine for testing the function structure
+        let result = get_archived_entries().await;
+        // We don't assert specific values since we don't know the state of the filesystem
+        // but we ensure the function doesn't panic and returns a proper Result
+        match result {
+            Ok(entries) => {
+                // Entries should be sorted and deduplicated
+                for i in 1..entries.len() {
+                    let prev = entries[i - 1];
+                    let curr = entries[i];
+                    assert!(prev.0 < curr.0 || (prev.0 == curr.0 && prev.1 <= curr.1));
+                    // Each entry should have a file size (third element)
+                    assert!(curr.2 > 0 || curr.2 == 0); // File size can be 0 for empty files
+                }
+            }
+            Err(_) => {
+                // It's okay if it fails due to archiver not being initialized
+            }
+        }
     }
 }

@@ -1,23 +1,23 @@
+use crate::Context;
 use crate::bic::sol;
 use crate::bic::sol::Solution;
+use crate::config::Config;
 use crate::consensus::attestation::AttestationBulk;
 use crate::consensus::consensus::{get_chain_tip_entry, get_rooted_tip_entry};
 use crate::consensus::entry::{Entry, EntrySummary};
 use crate::consensus::tx;
-use crate::consensus::{DST_NODE, attestation, entry};
-use crate::node::msg_v2::MessageV2;
-use crate::node::{anr, msg_v2};
+use crate::consensus::{attestation, entry};
+use crate::node::{ReedSolomonReassembler, anr, msg_v2, reassembler};
+use crate::socket::UdpSocketExt;
+use crate::utils::bls12_381 as bls;
 use crate::utils::misc::Typename;
-use crate::utils::misc::{TermExt, TermMap, get_unix_millis_now, get_unix_nanos_now};
-use crate::utils::reed_solomon::ReedSolomonResource;
-use crate::utils::{bls12_381 as bls, reed_solomon};
-use crate::{Context, config};
+use crate::utils::misc::{TermExt, TermMap, get_unix_millis_now};
 use eetf::convert::TryAsRef;
 use eetf::{Atom, BigInteger, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, List, Map, Term};
-use miniz_oxide::deflate::{CompressionLevel, compress_to_vec};
-use miniz_oxide::inflate::{DecompressError, decompress_to_vec};
 use std::collections::HashMap;
 use std::io::Error as IoError;
+use std::net::SocketAddr;
+use std::sync::Arc;
 use tracing::{instrument, warn};
 
 /// Every object that has this trait must be convertible from an Erlang ETF
@@ -31,16 +31,28 @@ pub trait Protocol: Typename + Send + Sync {
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error>;
     /// Handle a message returning instructions for upper layers
     #[instrument(skip(self, ctx), fields(proto = %self.typename()), name = "Proto::handle")]
-    async fn handle(&self, ctx: &Context, src: std::net::SocketAddr) -> Result<Instruction, Error> {
-        ctx.metrics.add_handled_proto_by_name(self.typename());
-        self.handle_inner(ctx, src).await.inspect_err(|e| ctx.metrics.add_error(e))
+    async fn handle_with_metrics(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
+        ctx.metrics.add_incoming_proto_by_name(self.typename());
+        self.handle(ctx, src).await.inspect_err(|e| ctx.metrics.add_error(e))
     }
-    async fn handle_inner(&self, ctx: &Context, src: std::net::SocketAddr) -> Result<Instruction, Error>;
+    async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error>;
     /// Send this protocol message to a destination using context's UDP socket
-    async fn send_to(&self, ctx: &Context, dst: std::net::SocketAddr) -> Result<usize, Error> {
-        let payload = self.to_etf_bin().inspect_err(|e| ctx.metrics.add_error(e))?;
-        ctx.metrics.add_sent_packet_by_name(self.typename());
-        ctx.send_to(&payload, dst).await.map_err(Into::into)
+    async fn send_to_with_metrics(&self, ctx: &Context, dst: SocketAddr) -> Result<(), Error> {
+        let Context { metrics, config, socket, .. } = ctx;
+        let payload = self.to_etf_bin().inspect_err(|e| metrics.add_error(e))?;
+        let shards = ReedSolomonReassembler::build_shards(config, &payload).inspect_err(|e| metrics.add_error(e))?;
+        for shard in &shards {
+            socket.send_to_with_metrics(shard, dst, metrics).await?;
+        }
+        metrics.add_outgoing_proto_by_name(self.typename());
+        Ok(())
+    }
+    async fn send_to(&self, config: &Config, socket: Arc<dyn UdpSocketExt>, dst: SocketAddr) -> Result<(), Error> {
+        let shards = ReedSolomonReassembler::build_shards(config, &self.to_etf_bin()?)?;
+        for shard in &shards {
+            socket.send_to(shard, dst).await?;
+        }
+        Ok(())
     }
 }
 
@@ -61,26 +73,18 @@ pub enum Error {
     #[error(transparent)]
     Att(#[from] attestation::Error),
     #[error(transparent)]
-    ReedSolomon(#[from] reed_solomon::Error),
+    ReedSolomon(#[from] reassembler::Error),
     #[error(transparent)]
     MsgV2(#[from] msg_v2::Error),
     #[error(transparent)]
     Anr(#[from] anr::Error),
-    #[error("failed to decompress: {0}")]
-    Decompress(DecompressError),
     #[error("bad etf: {0}")]
     BadEtf(&'static str),
 }
 
-impl crate::utils::misc::Typename for Error {
+impl Typename for Error {
     fn typename(&self) -> &'static str {
         self.into()
-    }
-}
-
-impl From<DecompressError> for Error {
-    fn from(e: DecompressError) -> Self {
-        Self::Decompress(e)
     }
 }
 
@@ -112,8 +116,8 @@ pub enum Instruction {
 /// Does proto parsing and validation
 #[instrument(skip(bin), name = "Proto::from_etf_validated")]
 pub fn from_etf_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
-    let decompressed = decompress_to_vec(bin)?;
-    let term = Term::decode(decompressed.as_slice())?;
+    // TODO: this function is a main UDP router and is subject to refactoring
+    let term = Term::decode(bin)?;
     let map = term.get_term_map().ok_or(Error::BadEtf("map"))?;
 
     // `op` determines the variant
@@ -246,12 +250,10 @@ impl Protocol for Ping {
         m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: self.ts_m.into() }));
         let term = Term::from(Map { map: m });
         let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-        // compress to be symmetric with from_etf_bin
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
+        term.encode(&mut etf_data)?;
+        Ok(etf_data)
     }
-    async fn handle_inner(&self, _ctx: &Context, _src: std::net::SocketAddr) -> Result<Instruction, Error> {
+    async fn handle(&self, _ctx: &Context, _src: SocketAddr) -> Result<Instruction, Error> {
         Ok(Instruction::ReplyPong { ts_m: self.ts_m })
     }
 }
@@ -282,162 +284,6 @@ impl Ping {
 
         Ok(Self::new(temporal, rooted))
     }
-
-    pub fn to_msg_v2(&self, config: &config::Config) -> Result<MessageV2, Error> {
-        // create a MessageV2 from this Ping
-        let compressed_payload = self.to_compressed_etf_bin()?;
-
-        // get signing keys from config
-        let pk = config.get_pk();
-        let trainer_sk = config.get_sk();
-
-        // create message metadata
-        let ts_nano = get_unix_nanos_now() as u64;
-
-        let original_size = compressed_payload.len() as u32;
-        let version = config.get_ver();
-
-        // for single shard (no Reed-Solomon needed)
-        let shard_index = 0;
-        let shard_total = 1;
-
-        // create message signature over blake3(pk || payload)
-        let mut hasher = crate::utils::blake3::Hasher::new();
-        hasher.update(&pk);
-        hasher.update(&compressed_payload);
-        let msg_hash = hasher.finalize();
-        let signature = bls::sign(&trainer_sk, &msg_hash, DST_NODE).map_err(|_| Error::BadEtf("signing_failed"))?;
-
-        Ok(MessageV2 {
-            version,
-            pk,
-            signature,
-            shard_index,
-            shard_total,
-            ts_nano,
-            original_size,
-            payload: compressed_payload,
-        })
-    }
-
-    /// Convert Ping to ETF binary format (compressed, symmetric with from_etf_bin)
-    pub fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("ping")));
-        m.insert(Term::Atom(Atom::from("temporal")), self.temporal.to_etf_term()?);
-        m.insert(Term::Atom(Atom::from("rooted")), self.rooted.to_etf_term()?);
-        m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: self.ts_m.into() }));
-
-        let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-
-        // compress to be symmetric with from_etf_bin
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
-    }
-
-    /// Create compressed ETF binary for transmission (same as to_etf_bin now)
-    pub fn to_compressed_etf_bin(&self) -> Result<Vec<u8>, Error> {
-        // to_etf_bin now returns compressed data, so this is the same
-        self.to_etf_bin()
-    }
-
-    /// Create a signed MessageV2 from this Ping (single shard)
-    pub fn to_message_v2(&self, config: &config::Config) -> Result<MessageV2, Error> {
-        let compressed_payload = self.to_compressed_etf_bin()?;
-
-        // get signing keys from config
-        let pk = config.get_pk();
-        let trainer_sk = config.get_sk();
-
-        // create message metadata
-        let ts_nano = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
-
-        let original_size = compressed_payload.len() as u32;
-        let version = config.get_ver();
-
-        // for single shard (no Reed-Solomon needed)
-        let shard_index = 0;
-        let shard_total = 1;
-
-        // create message signature over blake3(pk || payload)
-        let mut hasher = crate::utils::blake3::Hasher::new();
-        hasher.update(&pk);
-        hasher.update(&compressed_payload);
-        let msg_hash = hasher.finalize();
-        let signature = bls::sign(&trainer_sk, &msg_hash, DST_NODE).map_err(|_| Error::BadEtf("signing_failed"))?;
-
-        Ok(MessageV2 {
-            version,
-            pk,
-            signature,
-            shard_index,
-            shard_total,
-            ts_nano,
-            original_size,
-            payload: compressed_payload,
-        })
-    }
-
-    /// Create multiple signed MessageV2 packets with Reed-Solomon sharding for large payloads
-    pub fn to_message_v2_sharded(&self, config: &config::Config) -> Result<Vec<Vec<u8>>, Error> {
-        const MAX_UDP_SIZE: usize = 1300; // ~1.3KB UDP limit
-        const HEADER_SIZE: usize = 167; // messagev2 header size from protocol spec
-
-        let compressed_payload = self.to_compressed_etf_bin()?;
-
-        // check if we need sharding
-        let total_size = HEADER_SIZE + compressed_payload.len();
-        if total_size <= MAX_UDP_SIZE {
-            // single packet - no sharding needed
-            let msg = self.to_message_v2(config)?;
-            let packet: Vec<u8> = msg.try_into()?;
-            return Ok(vec![packet]);
-        }
-
-        // need Reed-Solomon sharding
-        let mut rs = ReedSolomonResource::new(4, 4)?; // 4 data + 4 recovery shards
-        let shards = rs.encode_shards(&compressed_payload)?;
-
-        // get signing keys from config
-        let pk = config.get_pk();
-        let trainer_sk = config.get_sk();
-
-        let ts_nano = get_unix_nanos_now() as u64; // TODO: check if this is fine
-
-        let original_size = compressed_payload.len() as u32;
-        let version = config.get_ver();
-        let total_shards = (shards.len() * 2) as u16; // total shards * 2 as per protocol
-
-        let mut packets = Vec::new();
-
-        // create a MessageV2 for each shard
-        for (shard_index, shard_data) in shards {
-            // sign the shard data
-            let signature =
-                bls::sign(&trainer_sk, &shard_data, DST_NODE).map_err(|_| Error::BadEtf("signing_failed"))?;
-
-            let msg = MessageV2 {
-                version: version.clone(),
-                pk,
-                signature,
-                shard_index: shard_index as u16,
-                shard_total: total_shards,
-                ts_nano,
-                original_size,
-                payload: shard_data,
-            };
-
-            let packet: Vec<u8> = msg.try_into()?;
-            packets.push(packet);
-        }
-
-        Ok(packets)
-    }
 }
 
 impl Typename for Pong {
@@ -460,13 +306,11 @@ impl Protocol for Pong {
         m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: self.ts_m.into() }));
         let term = Term::from(Map { map: m });
         let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-        // compress to be symmetric with from_etf_bin
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
+        term.encode(&mut etf_data)?;
+        Ok(etf_data)
     }
 
-    async fn handle_inner(&self, _ctx: &Context, _src: std::net::SocketAddr) -> Result<Instruction, Error> {
+    async fn handle(&self, _ctx: &Context, _src: SocketAddr) -> Result<Instruction, Error> {
         // TODO: update ETS-like peer table with latency now_ms - p.ts_m
         Ok(Instruction::Noop)
     }
@@ -474,20 +318,6 @@ impl Protocol for Pong {
 
 impl Pong {
     pub const NAME: &'static str = "pong";
-
-    pub fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
-        m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: self.ts_m.into() }));
-
-        let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-
-        // compress to be symmetric with from_etf_bin
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
-    }
 }
 
 impl Typename for TxPool {
@@ -513,13 +343,11 @@ impl Protocol for TxPool {
         m.insert(Term::Atom(Atom::from("txs_packed")), Term::from(List { elements: tx_terms }));
         let term = Term::from(Map { map: m });
         let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-        // compress to be symmetric with from_etf_bin
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
+        term.encode(&mut etf_data)?;
+        Ok(etf_data)
     }
 
-    async fn handle_inner(&self, _ctx: &Context, _src: std::net::SocketAddr) -> Result<Instruction, Error> {
+    async fn handle(&self, _ctx: &Context, _src: SocketAddr) -> Result<Instruction, Error> {
         // TODO: update ETS-like tx pool with valid_txs
         Ok(Instruction::Noop)
     }
@@ -527,24 +355,6 @@ impl Protocol for TxPool {
 
 impl TxPool {
     pub const NAME: &'static str = "txpool";
-
-    pub fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
-        // create list of transaction binaries (txs_packed is directly a list of binaries)
-        let tx_terms: Vec<Term> = self.valid_txs.iter().map(|tx| Term::from(Binary { bytes: tx.clone() })).collect();
-
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
-        // txs_packed is directly a list of binary terms, not a binary containing an encoded list
-        m.insert(Term::Atom(Atom::from("txs_packed")), Term::from(List { elements: tx_terms }));
-
-        let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-
-        // compress to be symmetric with from_etf_bin
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
-    }
 
     fn get_valid_txs_from_list(txs_list: &[Term]) -> Result<Vec<Vec<u8>>, Error> {
         let mut good: Vec<Vec<u8>> = Vec::with_capacity(txs_list.len());
@@ -594,13 +404,11 @@ impl Protocol for Peers {
         m.insert(Term::Atom(Atom::from("ips")), Term::from(List { elements: ip_terms }));
         let term = Term::from(Map { map: m });
         let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-        // compress to be symmetric with from_etf_bin
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
+        term.encode(&mut etf_data)?;
+        Ok(etf_data)
     }
 
-    async fn handle_inner(&self, _ctx: &Context, _src: std::net::SocketAddr) -> Result<Instruction, Error> {
+    async fn handle(&self, _ctx: &Context, _src: SocketAddr) -> Result<Instruction, Error> {
         // TODO: update ETS-like peer table with new IPs
         Ok(Instruction::Noop)
     }
@@ -608,23 +416,13 @@ impl Protocol for Peers {
 
 impl Peers {
     pub const NAME: &'static str = "peers";
+}
 
-    pub fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
-        // create list of IP strings
-        let ip_terms: Vec<Term> =
-            self.ips.iter().map(|ip| Term::from(Binary { bytes: ip.as_bytes().to_vec() })).collect();
+impl Ping {}
 
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
-        m.insert(Term::Atom(Atom::from("ips")), Term::from(List { elements: ip_terms }));
-
-        let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-
-        // compress to be symmetric with from_etf_bin
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
+impl Typename for NewPhoneWhoDis {
+    fn typename(&self) -> &'static str {
+        Self::NAME
     }
 }
 
@@ -641,10 +439,10 @@ mod tests {
         let ping = Ping::new(temporal, rooted);
 
         // serialize to ETF (now compressed by default)
-        let compressed_bin = ping.to_etf_bin().expect("should serialize");
+        let bin = ping.to_etf_bin().expect("should serialize");
 
         // deserialize back
-        let result = from_etf_bin(&compressed_bin).expect("should deserialize");
+        let result = from_etf_bin(&bin).expect("should deserialize");
 
         // check that we get the right type
         assert_eq!(result.typename(), "ping");
@@ -654,8 +452,8 @@ mod tests {
     async fn test_pong_etf_roundtrip() {
         let pong = Pong { ts_m: 1234567890, seen_time_ms: 9876543210 };
 
-        let compressed_bin = pong.to_etf_bin().expect("should serialize");
-        let result = from_etf_bin(&compressed_bin).expect("should deserialize");
+        let bin = pong.to_etf_bin().expect("should serialize");
+        let result = from_etf_bin(&bin).expect("should deserialize");
 
         // check that the result type is Pong
         assert_eq!(result.typename(), "pong");
@@ -665,8 +463,8 @@ mod tests {
     async fn test_txpool_etf_roundtrip() {
         let txpool = TxPool { valid_txs: vec![vec![1, 2, 3], vec![4, 5, 6]] };
 
-        let compressed_bin = txpool.to_etf_bin().expect("should serialize");
-        let result = from_etf_bin(&compressed_bin).expect("should deserialize");
+        let bin = txpool.to_etf_bin().expect("should serialize");
+        let result = from_etf_bin(&bin).expect("should deserialize");
 
         assert_eq!(result.typename(), "txpool");
     }
@@ -675,8 +473,8 @@ mod tests {
     async fn test_peers_etf_roundtrip() {
         let peers = Peers { ips: vec!["192.168.1.1".to_string(), "10.0.0.1".to_string()] };
 
-        let compressed_bin = peers.to_etf_bin().expect("should serialize");
-        let result = from_etf_bin(&compressed_bin).expect("should deserialize");
+        let bin = peers.to_etf_bin().expect("should serialize");
+        let result = from_etf_bin(&bin).expect("should deserialize");
 
         assert_eq!(result.typename(), "peers");
     }
@@ -720,7 +518,7 @@ mod tests {
         let ip = Ipv4Addr::new(127, 0, 0, 1);
         let my_anr = anr::ANR::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
         let challenge = get_unix_secs_now();
-        let msg = NewPhoneWhoDis::new(my_anr, challenge).expect("npwd new");
+        let _msg = NewPhoneWhoDis::new(my_anr, challenge).expect("npwd new");
 
         // Test with mismatched source ip - should be handled internally now
         let wrong_ip = Ipv4Addr::new(127, 0, 0, 2);
@@ -771,7 +569,7 @@ mod tests {
         // challenge far in the past (>6s)
         let challenge = crate::utils::misc::get_unix_secs_now().saturating_sub(10);
         let sig = vec![1u8; 96];
-        let msg = What::new(responder_anr, challenge, sig).expect("what new");
+        let _msg = What::new(responder_anr, challenge, sig).expect("what new");
 
         let _src = SocketAddr::V4(SocketAddrV4::new(ip, 36969));
         // Protocol handle_inner now manages validation internally and returns Noop for stale challenges
@@ -795,7 +593,7 @@ mod tests {
     #[tokio::test]
     async fn test_protocol_send_to() {
         // Test that Protocol trait's send_to method works with Context convenience functions
-        use crate::socket::DummySocket;
+        use crate::socket::MockSocket;
         use crate::utils::bls12_381 as bls;
         use std::net::Ipv4Addr;
         use std::sync::Arc;
@@ -831,31 +629,31 @@ mod tests {
             anr_name: None,
         };
 
-        let dummy_socket = Arc::new(DummySocket);
+        let dummy_socket = Arc::new(MockSocket::new());
         let target = "127.0.0.1:1234".parse().unwrap();
 
-        match crate::Context::with_socket(config, dummy_socket).await {
+        match crate::Context::with_config_and_socket(config, dummy_socket).await {
             Ok(ctx) => {
                 // Create a Pong message to test with
                 let pong = Pong { ts_m: 12345, seen_time_ms: 67890 };
 
                 // Check metrics before sending
                 let metrics_json_before = ctx.metrics.get_json();
-                let sent_before = metrics_json_before.get("sent_packets");
+                let sent_before = metrics_json_before.get("outgoing_protos");
 
-                // Test Protocol::send_to method - should return error with DummySocket but not panic
-                match pong.send_to(&ctx, target).await {
+                // Test Protocol::send_to method - should return error with MockSocket but not panic
+                match pong.send_to_with_metrics(&ctx, target).await {
                     Ok(_) => {
-                        // unexpected success with DummySocket
+                        // unexpected success with MockSocket
                     }
                     Err(_) => {
-                        // expected error with DummySocket - the important thing is that it compiled and didn't panic
+                        // expected error with MockSocket - the important thing is that it compiled and didn't panic
                     }
                 }
 
                 // Check that sent packet counter was incremented even when send fails
                 let metrics_json_after = ctx.metrics.get_json();
-                let sent_after = metrics_json_after.get("sent_packets").unwrap().as_object().unwrap();
+                let sent_after = metrics_json_after.get("outgoing_protos").unwrap().as_object().unwrap();
                 match sent_before {
                     Some(obj) => {
                         let sent_before_obj = obj.as_object().unwrap();
@@ -880,46 +678,6 @@ mod tests {
     }
 }
 
-impl Ping {
-    /// Build compressed ETF payload for Ping with optional tips.
-    /// When temporal/rooted are None, emits empty maps (Elixir-compatible bootstrap behavior).
-    /// If ts_m is None, uses current unix millis.
-    pub fn build_compressed_payload_optional(
-        temporal: Option<EntrySummary>,
-        rooted: Option<EntrySummary>,
-        ts_m: Option<u128>,
-    ) -> Result<Vec<u8>, Error> {
-        let empty_map = Term::from(Map { map: HashMap::new() });
-        let temporal_term = match temporal {
-            Some(es) => es.to_etf_term()?,
-            None => empty_map.clone(),
-        };
-        let rooted_term = match rooted {
-            Some(es) => es.to_etf_term()?,
-            None => empty_map.clone(),
-        };
-
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
-        m.insert(Term::Atom(Atom::from("temporal")), temporal_term);
-        m.insert(Term::Atom(Atom::from("rooted")), rooted_term);
-        let ts = ts_m.unwrap_or_else(get_unix_millis_now);
-        m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: ts.into() }));
-
-        let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
-    }
-}
-
-impl Typename for NewPhoneWhoDis {
-    fn typename(&self) -> &'static str {
-        Self::NAME
-    }
-}
-
 #[async_trait::async_trait]
 impl Protocol for NewPhoneWhoDis {
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
@@ -929,10 +687,8 @@ impl Protocol for NewPhoneWhoDis {
         m.insert(Term::Atom(Atom::from("challenge")), Term::BigInteger(BigInteger::from(self.challenge as i64)));
         let term = Term::from(Map { map: m });
         let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-        // compress to be symmetric with from_etf_bin
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
+        term.encode(&mut etf_data)?;
+        Ok(etf_data)
     }
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
         // In Elixir, anr can be sent as either a map or a binary
@@ -954,7 +710,7 @@ impl Protocol for NewPhoneWhoDis {
         Ok(Self { anr: anr_binary, challenge })
     }
 
-    async fn handle_inner(&self, ctx: &Context, src: std::net::SocketAddr) -> Result<Instruction, Error> {
+    async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
         // deserialize the sender's ANR from binary
         let anr_term = Term::decode(&self.anr[..])?;
         let anr_map = anr_term.get_term_map().ok_or(Error::BadEtf("anr_map"))?;
@@ -1006,7 +762,7 @@ impl Protocol for NewPhoneWhoDis {
         println!("received new_phone_who_dis from {:?}, challenge {}, replying with what", src, self.challenge);
 
         // Insert the sender's ANR into our store
-        anr::insert(sender_anr.clone()).await.map_err(|e| Error::BadEtf("anr_insert_failed"))?;
+        anr::insert(sender_anr.clone()).await.map_err(Into::<Error>::into)?;
 
         // Update peer information with ANR data (version and public key)
         if let std::net::IpAddr::V4(sender_ip) = src.ip() {
@@ -1043,7 +799,7 @@ impl Protocol for NewPhoneWhoDis {
             .map_err(|_| Error::BadEtf("what_msg_create_failed"))?;
 
         // Send the What message directly
-        what_msg.send_to(ctx, src).await.map_err(|_| Error::BadEtf("what_send_failed"))?;
+        what_msg.send_to_with_metrics(ctx, src).await.map_err(|_| Error::BadEtf("what_send_failed"))?;
 
         Ok(Instruction::Noop)
     }
@@ -1056,21 +812,6 @@ impl NewPhoneWhoDis {
         // serialize ANR to binary for internal storage
         let anr_binary = anr.to_etf_binary()?;
         Ok(Self { anr: anr_binary, challenge })
-    }
-
-    pub fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
-        m.insert(Term::Atom(Atom::from("anr")), Term::Binary(Binary::from(self.anr.clone())));
-        m.insert(Term::Atom(Atom::from("challenge")), Term::BigInteger(BigInteger::from(self.challenge as i64)));
-
-        let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-
-        // compress to be symmetric with from_etf_bin
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
     }
 }
 
@@ -1090,10 +831,8 @@ impl Protocol for What {
         m.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
         let term = Term::from(Map { map: m });
         let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-        // compress to be symmetric with from_etf_bin
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
+        term.encode(&mut etf_data)?;
+        Ok(etf_data)
     }
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
         // In Elixir, anr can be sent as either a map or a binary
@@ -1116,7 +855,7 @@ impl Protocol for What {
         Ok(Self { anr: anr_binary, challenge, signature })
     }
 
-    async fn handle_inner(&self, ctx: &Context, src: std::net::SocketAddr) -> Result<Instruction, Error> {
+    async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
         // deserialize the responder's ANR from binary (this is THEIR ANR, not ours)
         let anr_term = Term::decode(&self.anr[..])?;
         let anr_map = anr_term.get_term_map().ok_or(Error::BadEtf("anr_map"))?;
@@ -1176,7 +915,9 @@ impl Protocol for What {
         challenge_msg.extend_from_slice(&self.challenge.to_be_bytes());
 
         // Verify using the responder's public key from their ANR
-        if let Err(e) = bls::verify(&responder_anr.pk, &self.signature, &challenge_msg, crate::consensus::DST_ANR_CHALLENGE) {
+        if let Err(e) =
+            bls::verify(&responder_anr.pk, &self.signature, &challenge_msg, crate::consensus::DST_ANR_CHALLENGE)
+        {
             println!("signature verification failed: {}", e);
             return Ok(Instruction::Noop);
         }
@@ -1194,11 +935,9 @@ impl Protocol for What {
 
         // Update peer's handshaked status in NodePeers to received_what (handshake completed)
         ctx.set_peer_handshaked(&responder_anr.pk).await.map_err(|_| Error::BadEtf("set_peer_handshaked_failed"))?;
-        ctx.set_peer_handshake_status_by_pk(
-            &responder_anr.pk,
-            crate::node::peers::HandshakeStatus::ReceivedWhat,
-        )
-        .await.map_err(|_| Error::BadEtf("set_handshake_status_failed"))?;
+        ctx.set_peer_handshake_status_by_pk(&responder_anr.pk, crate::node::peers::HandshakeStatus::ReceivedWhat)
+            .await
+            .map_err(|_| Error::BadEtf("set_handshake_status_failed"))?;
 
         println!("peer {} is now handshaked", bs58::encode(&responder_anr.pk).into_string());
 
@@ -1213,22 +952,6 @@ impl What {
         // pack ANR to binary
         let anr_binary = anr.to_etf_binary()?;
         Ok(Self { anr: anr_binary, challenge, signature })
-    }
-
-    pub fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
-        m.insert(Term::Atom(Atom::from("anr")), Term::Binary(Binary::from(self.anr.clone())));
-        m.insert(Term::Atom(Atom::from("challenge")), Term::BigInteger(BigInteger::from(self.challenge as i64)));
-        m.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
-
-        let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-
-        // compress to be symmetric with from_etf_bin
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
     }
 }
 
@@ -1246,17 +969,15 @@ impl Protocol for SpecialBusiness {
         m.insert(Term::Atom(Atom::from("business")), Term::from(Binary { bytes: self.business.clone() }));
         let term = Term::from(Map { map: m });
         let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-        // compress to be symmetric with from_etf_bin
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
+        term.encode(&mut etf_data)?;
+        Ok(etf_data)
     }
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
         let business = map.get_binary::<Vec<u8>>("business").ok_or(Error::BadEtf("business"))?;
         Ok(Self { business })
     }
 
-    async fn handle_inner(&self, _ctx: &Context, _src: std::net::SocketAddr) -> Result<Instruction, Error> {
+    async fn handle(&self, _ctx: &Context, _src: SocketAddr) -> Result<Instruction, Error> {
         // TODO: Implement special business handling logic
         // For now, just pass the business data to the state handler
         Ok(Instruction::SpecialBusiness { business: self.business.clone() })
@@ -1265,17 +986,6 @@ impl Protocol for SpecialBusiness {
 
 impl SpecialBusiness {
     pub const NAME: &'static str = "special_business";
-    pub fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
-        m.insert(Term::Atom(Atom::from("business")), Term::from(Binary { bytes: self.business.clone() }));
-        let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-        // compress to be symmetric with from_etf_bin
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
-    }
 }
 
 impl Typename for SpecialBusinessReply {
@@ -1286,23 +996,21 @@ impl Typename for SpecialBusinessReply {
 
 #[async_trait::async_trait]
 impl Protocol for SpecialBusinessReply {
+    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
+        let business = map.get_binary::<Vec<u8>>("business").ok_or(Error::BadEtf("business"))?;
+        Ok(Self { business })
+    }
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
         m.insert(Term::Atom(Atom::from("business")), Term::from(Binary { bytes: self.business.clone() }));
         let term = Term::from(Map { map: m });
         let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-        // compress to be symmetric with from_etf_bin
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
-    }
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let business = map.get_binary::<Vec<u8>>("business").ok_or(Error::BadEtf("business"))?;
-        Ok(Self { business })
+        term.encode(&mut etf_data)?;
+        Ok(etf_data)
     }
 
-    async fn handle_inner(&self, _ctx: &Context, _src: std::net::SocketAddr) -> Result<Instruction, Error> {
+    async fn handle(&self, _ctx: &Context, _src: SocketAddr) -> Result<Instruction, Error> {
         // TODO: Implement special business reply handling logic
         Ok(Instruction::SpecialBusinessReply { business: self.business.clone() })
     }
@@ -1316,9 +1024,7 @@ impl SpecialBusinessReply {
         m.insert(Term::Atom(Atom::from("business")), Term::from(Binary { bytes: self.business.clone() }));
         let term = Term::from(Map { map: m });
         let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(Error::EtfEncode)?;
-        // compress to be symmetric with from_etf_bin
-        let compressed = compress_to_vec(&etf_data, CompressionLevel::DefaultLevel as u8);
-        Ok(compressed)
+        term.encode(&mut etf_data)?;
+        Ok(etf_data)
     }
 }

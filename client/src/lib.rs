@@ -1,12 +1,11 @@
 mod dump_replay;
 
 use ama_core::config::Config;
-use ama_core::node::ReedSolomonReassembler;
 use ama_core::node::protocol::TxPool;
-use ama_core::socket::UdpSocketExt;
 pub use dump_replay::UdpSocketWrapper;
 use std::net::SocketAddr;
 use std::panic;
+use std::sync::Arc;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 /// Initializes tracing, panic hook and tokio-tracing if enabled
@@ -38,15 +37,11 @@ pub fn get_http_port() -> u16 {
 }
 
 /// Send transaction to network via UDP
-pub async fn send_transaction(config: &Config, tx_packed: Vec<u8>) -> anyhow::Result<()> {
-    let payload = TxPool { valid_txs: vec![tx_packed] }.to_etf_bin()?;
-    let shards = ReedSolomonReassembler::build_shards(config, payload)?;
+pub async fn send_transaction(config: &Config, socket: UdpSocketWrapper, tx_packed: Vec<u8>) -> anyhow::Result<()> {
+    use ama_core::node::protocol::Protocol;
+    let tx = TxPool { valid_txs: vec![tx_packed] };
     let node_addr = get_peer_addr();
-
-    let socket = UdpSocketWrapper::bind("0.0.0.0:0").await?; // any available port
-    for shard in shards.iter() {
-        socket.send_to(shard, node_addr).await?;
-    }
-
-    Ok(println!("sent tx to {node_addr} ({} shards)", shards.len()))
+    tx.send_to(config, Arc::new(socket), node_addr).await?;
+    println!("sent transaction to {node_addr}");
+    Ok(())
 }

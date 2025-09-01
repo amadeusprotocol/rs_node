@@ -37,7 +37,7 @@ impl TestDbGuard {
 pub fn init_for_test(base: &str) -> Result<TestDbGuard, Error> {
     // create base/db path synchronously (tests are synchronous)
     let path = format!("{}/db", base);
-    std::fs::create_dir_all(&path).map_err(|e| tokio::io::Error::from(e))?;
+    std::fs::create_dir_all(&path)?;
 
     let mut db_opts = Options::default();
     db_opts.create_if_missing(true);

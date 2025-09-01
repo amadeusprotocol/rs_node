@@ -15,25 +15,11 @@ use tracing::info;
 async fn main() -> anyhow::Result<()> {
     init_tracing();
 
-    // Create UDP socket first
     let udp_socket = Arc::new(UdpSocketWrapper::bind("0.0.0.0:36969").await.expect("bind udp"));
-    println!("udp listening on 36969"); // port must always be 36969
 
-    // Create context with socket
     let config = ama_core::config::Config::from_fs(None, None).await?;
-    let ctx = Arc::new(Context::with_socket(config, udp_socket.clone()).await?);
-
-    // HTTP dashboard server
-    let ctx_http = ctx.clone();
-    let http = spawn(async move {
-        let port = get_http_port();
-        let socket = TcpListener::bind(&format!("0.0.0.0:{port}")).await.expect("bind http");
-
-        println!("http listening on {port}");
-        if let Err(e) = serve(socket, ctx_http).await {
-            eprintln!("http server error: {e}");
-        }
-    });
+    info!("working inside {}", config.get_root());
+    let ctx = Arc::new(Context::with_config_and_socket(config, udp_socket.clone()).await?);
 
     // UDP amadeus node
     let ctx_udp = ctx.clone();
@@ -44,8 +30,19 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // HTTP dashboard server
+    let ctx_http = ctx.clone();
+    let http = spawn(async move {
+        let port = get_http_port();
+        let socket = TcpListener::bind(&format!("0.0.0.0:{port}")).await.expect("bind http");
+
+        if let Err(e) = serve(socket, ctx_http).await {
+            eprintln!("http server error: {e}");
+        }
+    });
+
     // Wait for either task to finish (or join both if you prefer)
-    tokio::try_join!(http, udp)?;
+    tokio::try_join!(udp, http)?;
     Ok(())
 }
 
@@ -64,7 +61,7 @@ async fn recv_loop(socket: Arc<UdpSocketWrapper>, ctx: Arc<Context>) -> anyhow::
             Ok(Err(e)) => return Err(e.into()),
             Ok(Ok((len, src))) => match read_udp_packet(&ctx, src, &buf[..len]).await {
                 Some(proto) => {
-                    if let Ok(instruction) = proto.handle(&ctx, src).await {
+                    if let Ok(instruction) = proto.handle_with_metrics(&ctx, src).await {
                         handle_instruction(&ctx, instruction, src).await?;
                     }
                 }
@@ -74,7 +71,7 @@ async fn recv_loop(socket: Arc<UdpSocketWrapper>, ctx: Arc<Context>) -> anyhow::
     }
 }
 
-async fn handle_instruction(ctx: &Context, instruction: Instruction, src: SocketAddr) -> anyhow::Result<()> {
+async fn handle_instruction(_ctx: &Context, instruction: Instruction, src: SocketAddr) -> anyhow::Result<()> {
     match instruction {
         Instruction::ReplyPong { ts_m: _ } => {
             // handle pong reply if needed

@@ -3,8 +3,10 @@ use ama_core::config::{Config, gen_sk, get_pk, read_sk, write_sk};
 use ama_core::consensus::tx;
 use bs58;
 use clap::{Parser, Subcommand};
+use client::UdpSocketWrapper;
 use serde_json::Value as JsonValue;
 use std::fs;
+use tokio::net::UdpSocket;
 
 #[derive(Parser)]
 #[command(author, version, about = "Amadeus blockchain CLI tool")]
@@ -37,7 +39,7 @@ enum Commands {
         sk: String,
     },
     /// Build a transaction for contract function call
-    BuildTx {
+    Tx {
         /// Path to the secret key file
         #[arg(long = "sk")]
         sk: String,
@@ -56,7 +58,7 @@ enum Commands {
         send: bool,
     },
     /// Build a transaction to deploy WASM contract
-    DeployTx {
+    ContractTx {
         /// Path to the secret key file
         #[arg(long = "sk")]
         sk: String,
@@ -72,19 +74,19 @@ fn parse_json_arg_elem(v: &JsonValue) -> Result<Vec<u8>, String> {
     match v {
         JsonValue::String(s) => Ok(s.as_bytes().to_vec()),
         JsonValue::Object(map) => {
-            if let Some(b58v) = map.get("b58") {
-                if let Some(s) = b58v.as_str() {
+            if let Some(b58) = map.get("b58") {
+                if let Some(s) = b58.as_str() {
                     return bs58::decode(s).into_vec().map_err(|e| format!("invalid base58: {}", e));
                 }
             }
-            if let Some(hexv) = map.get("hex") {
-                if let Some(s) = hexv.as_str() {
-                    let s2 = s.strip_prefix("0x").unwrap_or(s);
-                    return hex::decode(s2).map_err(|e| format!("invalid hex: {}", e));
+            if let Some(hex) = map.get("hex") {
+                if let Some(s) = hex.as_str() {
+                    let s = s.strip_prefix("0x").unwrap_or(s);
+                    return hex::decode(s).map_err(|e| format!("invalid hex: {}", e));
                 }
             }
-            if let Some(utf8v) = map.get("utf8") {
-                if let Some(s) = utf8v.as_str() {
+            if let Some(utf8) = map.get("utf8") {
+                if let Some(s) = utf8.as_str() {
                     return Ok(s.as_bytes().to_vec());
                 }
             }
@@ -99,15 +101,15 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::GenSk { out_file } => handle_gensk(&out_file).await,
-        Commands::GetPk { sk } => handle_getpk(&config_from_sk(&sk).await),
-        Commands::BuildTx { sk, contract, function, args_json, attach_symbol, attach_amount, send } => {
+        Commands::GenSk { out_file } => handle_gen_sk(&out_file).await,
+        Commands::GetPk { sk } => handle_get_pk(&config_from_sk(&sk).await),
+        Commands::Tx { sk, contract, function, args_json, attach_symbol, attach_amount, send } => {
             if attach_symbol.is_some() != attach_amount.is_some() {
                 eprintln!("Error: attach_amount and attach_symbol must go together");
                 std::process::exit(2);
             }
 
-            handle_buildtx(
+            handle_build_tx(
                 &config_from_sk(&sk).await,
                 &contract,
                 &function,
@@ -118,25 +120,25 @@ async fn main() {
             )
             .await;
         }
-        Commands::DeployTx { sk, wasm_path, send } => {
-            handle_deploytx(&config_from_sk(&sk).await, &wasm_path, send).await;
+        Commands::ContractTx { sk, wasm_path, send } => {
+            handle_deploy_tx(&config_from_sk(&sk).await, &wasm_path, send).await;
         }
     }
 }
 
-async fn handle_gensk(path: &str) {
+async fn handle_gen_sk(path: &str) {
     let sk = gen_sk();
     write_sk(path, sk).await.expect("write sk");
     println!("created {path}, pk {}", bs58::encode(get_pk(&sk)).into_string());
     std::process::exit(0);
 }
 
-fn handle_getpk(config: &Config) {
+fn handle_get_pk(config: &Config) {
     println!("{}", bs58::encode(config.get_pk()).into_string());
     std::process::exit(0);
 }
 
-async fn handle_buildtx(
+async fn handle_build_tx(
     config: &Config,
     contract: &str,
     function: &str,
@@ -194,25 +196,11 @@ async fn handle_buildtx(
         attach_amount_bytes.as_deref(),
     );
 
-    if send {
-        match client::send_transaction(config, tx_packed).await {
-            Ok(()) => {
-                println!("Transaction sent successfully");
-                std::process::exit(0);
-            }
-            Err(e) => {
-                eprintln!("Failed to send transaction: {}", e);
-                std::process::exit(2);
-            }
-        }
-    } else {
-        println!("{}", bs58::encode(tx_packed).into_string());
-        std::process::exit(0);
-    }
+    send_or_print(config, tx_packed, send).await;
 }
 
-async fn handle_deploytx(config: &Config, wasm_path: &str, send: bool) {
-    let wasmbytes = match fs::read(wasm_path) {
+async fn handle_deploy_tx(config: &Config, wasm_path: &str, send: bool) {
+    let wasm_bytes = match fs::read(wasm_path) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("failed to read wasm file: {}", e);
@@ -221,25 +209,25 @@ async fn handle_deploytx(config: &Config, wasm_path: &str, send: bool) {
     };
 
     // Validate WASM
-    if let Err(e) = contract::validate(&wasmbytes) {
+    if let Err(e) = contract::validate(&wasm_bytes) {
         eprintln!("{}", e);
         std::process::exit(2);
     }
 
-    let args_vec = vec![wasmbytes];
+    let args_vec = vec![wasm_bytes];
     let tx_packed = tx::build(config, b"Contract", "deploy", &args_vec, None, None, None);
+    send_or_print(config, tx_packed, send).await;
+}
 
+async fn send_or_print(config: &Config, tx_packed: Vec<u8>, send: bool) {
     if send {
-        match client::send_transaction(config, tx_packed).await {
-            Ok(()) => {
-                println!("Contract deployment sent successfully");
-                std::process::exit(0);
-            }
-            Err(e) => {
-                eprintln!("Failed to send contract deployment: {}", e);
-                std::process::exit(2);
-            }
-        }
+        let socket = UdpSocketWrapper(UdpSocket::bind("0.0.0.0").await.expect("bind udp socket"));
+        let code = client::send_transaction(config, socket, tx_packed)
+            .await
+            .inspect_err(|e| eprintln!("failed to send transaction: {}", e))
+            .map(|_| 0)
+            .unwrap_or(2);
+        std::process::exit(code);
     } else {
         println!("{}", bs58::encode(tx_packed).into_string());
         std::process::exit(0);

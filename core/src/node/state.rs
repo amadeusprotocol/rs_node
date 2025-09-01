@@ -139,13 +139,13 @@ impl NodeState {
         }
 
         // TODO: Get trainer keys from config
-        let _trainer_sk = vec![0u8; 32]; // placeholder
+        let _trainer_sk = [0u8; 32]; // placeholder
         let trainer_pk = vec![0u8; 48]; // placeholder
 
         // Sign challenge
         // TODO: Implement BLS signing
         let _challenge_msg = [trainer_pk.clone(), challenge.to_le_bytes().to_vec()].concat();
-        let _signature = vec![0u8; 96]; // placeholder signature
+        let _signature = [0u8; 96]; // placeholder signature
 
         // Store ANR
         anr::insert(verified_anr).await?;

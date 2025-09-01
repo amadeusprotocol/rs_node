@@ -7,6 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, OnceCell};
 use tokio::time::{Duration, sleep};
+use tracing::{info, warn};
 
 /// Wrapper for UdpSocket that implements UdpSocketExt trait with dump/replay functionality
 pub struct UdpSocketWrapper(pub UdpSocket);
@@ -124,17 +125,17 @@ async fn udp_replay() -> Option<&'static Mutex<ReplayState>> {
                     Ok(file) => {
                         let chunk = Vec::with_capacity(CHUNK_SIZE);
                         let mut state = ReplayState { file, chunk, file_pos: 0, chunk_pos: 0 };
-                        let bytes = state
+                        state
                             .read_next_chunk_with_remainder(0)
                             .await
-                            .inspect_err(|e| eprintln!("failed to read from UDP_REPLAY file: {e}"))
+                            .inspect_err(|e| warn!("failed to read log from {path}: {e}"))
                             .ok()?;
 
-                        println!("replaying UDP packets from {path} (first chunk {bytes})");
+                        info!("replaying capture from {path}");
                         Some(Mutex::new(state))
                     }
                     Err(e) => {
-                        eprintln!("failed to open UDP_REPLAY file: {e}");
+                        warn!("failed to open {path}: {e}");
                         None
                     }
                 },
@@ -162,11 +163,11 @@ async fn udp_dump() -> Option<&'static Mutex<File>> {
             match std::env::var("UDP_DUMP") {
                 Ok(path) => match OpenOptions::new().create(true).append(true).open(&path).await {
                     Ok(file) => {
-                        println!("dumping UDP packets to {path}");
+                        info!("dumping capture to {path}");
                         Some(Mutex::new(file))
                     }
                     Err(e) => {
-                        eprintln!("failed to open UDP_DUMP file: {e}");
+                        warn!("failed to open {path}: {e}");
                         None
                     }
                 },

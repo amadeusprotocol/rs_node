@@ -1,6 +1,6 @@
 use once_cell::sync::OnceCell;
 use std::borrow::Cow;
-use tokio::fs::{OpenOptions, create_dir_all};
+use tokio::fs::{OpenOptions, create_dir_all, read_dir};
 use tokio::io::AsyncWriteExt;
 
 static ARCHIVER_DIR: OnceCell<String> = OnceCell::new();
@@ -45,6 +45,53 @@ pub async fn store<'a>(
     file.flush().await?;
 
     Ok(())
+}
+
+/// Recursively get all archived filenames with their sizes from the archiver directory
+pub async fn get_archived_filenames() -> Result<Vec<(String, u64)>, Error> {
+    let base = ARCHIVER_DIR.get().ok_or(Error::OnceCell("archiver_dir_get"))?;
+    let mut filenames = Vec::new();
+    collect_filenames_recursive(base, "", &mut filenames).await?;
+    Ok(filenames)
+}
+
+/// Recursively collect filenames with sizes from a directory
+fn collect_filenames_recursive<'a>(
+    base_path: &'a str,
+    current_subdir: &'a str,
+    filenames: &'a mut Vec<(String, u64)>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + 'a>> {
+    Box::pin(async move {
+        let dir_path =
+            if current_subdir.is_empty() { base_path.to_string() } else { format!("{}/{}", base_path, current_subdir) };
+
+        let mut entries = read_dir(&dir_path).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let file_type = entry.file_type().await?;
+            let file_name = entry.file_name().to_string_lossy().to_string();
+
+            if file_type.is_dir() {
+                // Recursively process subdirectories
+                let new_subdir = if current_subdir.is_empty() {
+                    file_name.clone()
+                } else {
+                    format!("{}/{}", current_subdir, file_name)
+                };
+                collect_filenames_recursive(base_path, &new_subdir, filenames).await?;
+            } else if file_type.is_file() {
+                // Get file size
+                let metadata = entry.metadata().await?;
+                let file_size = metadata.len();
+
+                // Add file to the list with full path relative to base and its size
+                let full_path =
+                    if current_subdir.is_empty() { file_name } else { format!("{}/{}", current_subdir, file_name) };
+                filenames.push((full_path, file_size));
+            }
+        }
+
+        Ok(())
+    })
 }
 
 #[cfg(test)]

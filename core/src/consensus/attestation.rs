@@ -1,7 +1,7 @@
+use crate::Context;
 use crate::consensus::agg_sig::DST_ATT;
 use crate::node::protocol;
 use crate::node::protocol::Protocol;
-use crate::Context;
 use crate::utils::bls12_381 as bls;
 use crate::utils::bls12_381::Error as BlsError;
 use crate::utils::misc::{TermExt, TermMap};
@@ -75,11 +75,7 @@ impl Protocol for AttestationBulk {
         let term = Term::from(eetf::Map { map: m });
         let mut etf_data = Vec::new();
         term.encode(&mut etf_data).map_err(protocol::Error::EtfEncode)?;
-        let compressed = miniz_oxide::deflate::compress_to_vec(
-            &etf_data,
-            miniz_oxide::deflate::CompressionLevel::DefaultLevel as u8,
-        );
-        Ok(compressed)
+        Ok(etf_data)
     }
     #[instrument(skip(map), name = "AttestationBulk::from_etf_map_validated")]
     fn from_etf_map_validated(map: TermMap) -> Result<Self, protocol::Error> {
@@ -95,7 +91,11 @@ impl Protocol for AttestationBulk {
     }
 
     #[instrument(skip(self, _ctx), name = "AttestationBulk::handle", err)]
-    async fn handle_inner(&self, _ctx: &Context, _src: std::net::SocketAddr) -> Result<protocol::Instruction, protocol::Error> {
+    async fn handle(
+        &self,
+        _ctx: &Context,
+        _src: std::net::SocketAddr,
+    ) -> Result<protocol::Instruction, protocol::Error> {
         // TODO: handle the attestation bulk
         Ok(protocol::Instruction::Noop)
     }
@@ -103,28 +103,6 @@ impl Protocol for AttestationBulk {
 
 impl AttestationBulk {
     pub const NAME: &'static str = "attestation_bulk";
-
-    pub fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        // create list of attestation binaries
-        let attestation_terms: Result<Vec<Term>, Error> =
-            self.attestations.iter().map(|att| att.to_etf_bin().map(|bin| Term::from(Binary { bytes: bin }))).collect();
-
-        let attestation_list = attestation_terms.map_err(protocol::Error::Att)?;
-
-        // encode the list to binary for attestations_packed field
-        let attestations_list_term = Term::from(List { elements: attestation_list });
-        let mut attestations_packed = Vec::new();
-        attestations_list_term.encode(&mut attestations_packed).map_err(protocol::Error::EtfEncode)?;
-
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
-        m.insert(Term::Atom(Atom::from("attestations_packed")), Term::from(Binary { bytes: attestations_packed }));
-
-        let term = Term::from(eetf::Map { map: m });
-        let mut out = Vec::new();
-        term.encode(&mut out).map_err(protocol::Error::EtfEncode)?;
-        Ok(out)
-    }
 }
 
 impl Attestation {

@@ -1,6 +1,6 @@
+use crate::Context;
 use crate::node::protocol;
 use crate::node::protocol::Protocol;
-use crate::Context;
 use crate::utils::blake3;
 use crate::utils::misc::TermMap;
 use eetf::{Atom, Term};
@@ -120,7 +120,11 @@ impl Protocol for Solution {
         Ok(out)
     }
 
-    async fn handle_inner(&self, _ctx: &Context, _src: std::net::SocketAddr) -> Result<protocol::Instruction, protocol::Error> {
+    async fn handle(
+        &self,
+        _ctx: &Context,
+        _src: std::net::SocketAddr,
+    ) -> Result<protocol::Instruction, protocol::Error> {
         // cache the solution
         Ok(protocol::Instruction::Noop)
     }

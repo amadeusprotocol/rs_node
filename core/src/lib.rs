@@ -14,6 +14,7 @@ pub mod utils;
 pub mod wasm;
 
 pub use context::{Context, PeerInfo, read_udp_packet};
+pub use metrics::{MetricsSnapshot, UdpStats};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

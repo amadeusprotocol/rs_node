@@ -11,7 +11,7 @@ const CONTRACTS_DIR: &str = "../contracts"; // because core is in the workspace
 fn setup_test_env() -> CallEnv {
     INIT.call_once(|| {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let _ = rocksdb::init(&TEST_DB).await;
+            let _ = rocksdb::init(TEST_DB).await;
         });
     });
 

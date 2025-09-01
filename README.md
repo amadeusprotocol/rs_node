@@ -58,8 +58,8 @@ CLI is a client that can deploy a contract or send transactions.
 ```bash
 cargo cli gen-sk sk.local
 cargo cli get-pk --sk sk.local
-cargo cli build-tx Contract test "[]" --sk sk.local --send
-UDP_ADDR=167.99.137.218:36969 cargo cli deploy-tx contracts/simple_counter.wasm --sk sk.local --send
+cargo cli tx Contract test "[]" --sk sk.local --send
+UDP_ADDR=167.99.137.218:36969 cargo cli contract-tx contracts/simple_counter.wasm --sk sk.local --send
 ```
 
 ### Node debugging

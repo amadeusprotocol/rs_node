@@ -129,8 +129,8 @@ impl Config {
     }
 
     /// Returns root work folder path
-    pub fn get_root(&self) -> Result<&str, Error> {
-        Ok(&self.work_folder)
+    pub fn get_root(&self) -> &str {
+        &self.work_folder
     }
 
     pub fn get_ver(&self) -> String {

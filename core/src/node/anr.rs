@@ -470,7 +470,7 @@ mod tests {
     #[tokio::test]
     async fn test_anr_operations() {
         // create test keys with unique pk to avoid conflicts
-        let _sk = vec![1; 32];
+        let _sk = [1; 32];
         let mut pk = vec![2; 48];
         // make pk unique per test run to avoid collision with parallel tests
         let pid_bytes = std::process::id().to_le_bytes();
