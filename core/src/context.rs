@@ -1,3 +1,7 @@
+use crate::config::{ANR_CHECK_SECS, CLEANUP_SECS};
+use crate::node::anr::Anr;
+use crate::node::peers::HandshakeStatus::SentNewPhoneWhoDis;
+use crate::node::protocol::NewPhoneWhoDis;
 use crate::node::protocol::Protocol;
 use crate::node::{NodeState, anr, peers};
 #[cfg(test)]
@@ -11,7 +15,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use tokio::spawn;
 use tokio::sync::RwLock;
+use tracing::{debug, info, warn};
 
 /// Reads UDP datagram and silently does parsing, validation and reassembly
 /// If the protocol message is complete, returns Some(Protocol)
@@ -76,182 +82,134 @@ impl Context {
         init_kvdb(&config.work_folder).await?;
         init_storage(&config.work_folder).await?;
 
-        let my_ip = config
-            .public_ipv4
-            .as_ref()
-            .and_then(|s| s.parse::<Ipv4Addr>().ok())
-            .unwrap_or_else(|| Ipv4Addr::new(127, 0, 0, 1));
-
-        // create metrics instance early so it can be used in spawned tasks
         let metrics = Arc::new(Metrics::new());
-
-        // convert seed anrs from config to ANR structs
-        let seed_anrs: Vec<anr::ANR> = config
-            .seed_anrs
-            .iter()
-            .filter_map(|seed| {
-                seed.ip4.parse::<Ipv4Addr>().ok().map(|ip| anr::ANR {
-                    ip4: ip,
-                    pk: seed.pk.clone(),
-                    pop: vec![0u8; 96], // seed anrs don't include pop in config
-                    port: seed.port,
-                    signature: seed.signature.clone(),
-                    ts: seed.ts,
-                    version: seed.version.clone(),
-                    handshaked: false,
-                    hasChainPop: false,
-                    error: None,
-                    error_tries: 0,
-                    next_check: seed.ts + 3,
-                })
-            })
-            .collect();
-
-        let my_sk = config.trainer_sk;
-        let my_pk = config.trainer_pk;
-        let my_pop = config.trainer_pop.clone();
-
-        anr::seed(seed_anrs, &my_sk, &my_pk, &my_pop, config.get_ver(), Some(my_ip)).await?;
-
-        // create node peers instance
         let node_peers = Arc::new(peers::NodePeers::default());
-        node_peers.seed(my_ip).await?;
 
-        // send initial bootstrap handshake to seed nodes (new_phone_who_dis)
+        anr::seed(&config).await?; // must be done before node_peers.seed()
+        node_peers.seed(&config).await?;
+
         {
-            let boot_cfg = config.clone();
-            let seed_ips = config.seed_nodes.clone();
-            let bootstrap_socket = socket.clone();
-            let bootstrap_metrics = metrics.clone();
-            let bootstrap_node_peers = node_peers.clone();
-            tokio::spawn(async move {
-                use crate::node::protocol::NewPhoneWhoDis;
-                use tracing::info;
-
-                // create our own ANR for the handshake
-                let my_ip = boot_cfg
-                    .public_ipv4
-                    .as_ref()
-                    .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok())
-                    .unwrap_or_else(|| std::net::Ipv4Addr::new(127, 0, 0, 1));
-
-                let my_anr = match anr::ANR::build(
-                    &boot_cfg.trainer_sk,
-                    &boot_cfg.trainer_pk,
-                    &boot_cfg.trainer_pop,
-                    my_ip,
-                    boot_cfg.get_ver(),
-                ) {
-                    Ok(anr) => anr,
-                    Err(_) => return,
-                };
-
-                // generate a random challenge
+            // oneshot bootstrap task to send new_phone_who_dis to seed nodes
+            let config = config.clone();
+            let socket = socket.clone();
+            let metrics = metrics.clone();
+            let node_peers = node_peers.clone();
+            let anr = Anr::from_config(&config)?;
+            spawn(async move {
                 let challenge = random::<u64>();
-
-                // create NewPhoneWhoDis message
-                let new_phone_who_dis = match NewPhoneWhoDis::new(my_anr, challenge) {
+                let new_phone_who_dis = match NewPhoneWhoDis::new(anr, challenge) {
                     Ok(msg) => msg,
-                    Err(_) => return,
-                };
-
-                // serialize to compressed ETF binary
-                let payload = match new_phone_who_dis.to_etf_bin() {
-                    Ok(p) => p,
-                    Err(_) => return,
-                };
-
-                // build shards for transmission
-                if let Ok(shards) = node::ReedSolomonReassembler::build_shards(&boot_cfg, &payload) {
-                    for ip in seed_ips {
-                        let addr = format!("{}:{}", ip, 36969);
-                        if let Ok(target) = addr.parse::<std::net::SocketAddr>() {
-                            info!(%addr, count = shards.len(), challenge, "sending bootstrap new_phone_who_dis");
-                            for shard in &shards {
-                                let _ = bootstrap_socket.send_to_with_metrics(shard, target, &bootstrap_metrics).await;
-                            }
-
-                            // Track sent packet metric
-                            bootstrap_metrics.add_outgoing_proto_by_name("new_phone_who_dis");
-
-                            // Set handshake status to SentNewPhoneWhoDis for this peer
-                            if let Ok(seed_ip) = ip.parse::<std::net::Ipv4Addr>() {
-                                let _ = bootstrap_node_peers
-                                    .set_handshake_status(
-                                        seed_ip,
-                                        crate::node::peers::HandshakeStatus::SentNewPhoneWhoDis,
-                                    )
-                                    .await;
-                            }
-                        }
+                    Err(e) => {
+                        warn!("bootstrap: failed to create NewPhoneWhoDis: {e}");
+                        return;
                     }
+                };
+
+                let mut sent_count = 0;
+                for ip in &config.seed_nodes {
+                    let addr = match ip.parse::<Ipv4Addr>() {
+                        Ok(ip) => ip,
+                        Err(e) => {
+                            warn!("bootstrap: invalid seed node ip {}: {}", ip, e);
+                            continue;
+                        }
+                    };
+
+                    if let Err(e) = new_phone_who_dis
+                        .send_to_with_metrics(&config, socket.clone(), SocketAddr::new(addr.into(), 36969), &metrics)
+                        .await
+                    {
+                        warn!("bootstrap: failed to send new_phone_who_dis to {addr}: {e}");
+                        continue;
+                    }
+
+                    if let Err(e) = node_peers.set_handshake_status(addr, SentNewPhoneWhoDis).await {
+                        warn!("bootstrap: failed to set handshake status for {addr}: {e}");
+                    }
+
+                    sent_count += 1;
                 }
-                info!("sent bootstrap new_phone_who_dis, exiting bootstrap task");
+
+                info!("bootstrap: sent new_phone_who_dis to {sent_count} nodes");
             });
         }
 
         let node_state = Arc::new(RwLock::new(NodeState::init()));
         let reassembler = Arc::new(Reassembler::new());
 
-        const CLEANUP_SECS: u64 = 8;
-        let reassembler_local = reassembler.clone();
-        let node_peers_local = node_peers.clone();
-        tokio::spawn(async move {
-            use tracing::info;
-            let mut ticker = interval(Duration::from_secs(CLEANUP_SECS));
-            loop {
-                ticker.tick().await;
-                let cleared_shards = reassembler_local.clear_stale(CLEANUP_SECS).await;
-                let cleared_peers = node_peers_local.clear_stale().await;
-                info!("cleanup: cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
-            }
-        });
+        {
+            // periodic cleanup task
+            let reassembler = reassembler.clone();
+            let node_peers = node_peers.clone();
+            spawn(async move {
+                let mut ticker = interval(Duration::from_secs(CLEANUP_SECS));
+                loop {
+                    ticker.tick().await;
+                    let cleared_shards = reassembler.clear_stale(CLEANUP_SECS).await;
+                    let cleared_peers = node_peers.clear_stale().await;
+                    debug!("cleanup: cleared {cleared_shards} stale shards, {cleared_peers} stale peers");
+                }
+            });
+        }
 
-        // periodic ANR verification task - runs every 1 second
-        const ANR_CHECK_SECS: u64 = 1;
-        let config_local = config.clone();
-        let anr_socket = socket.clone();
-        let anr_metrics = metrics.clone();
-        let anr_node_peers = node_peers.clone();
-        tokio::spawn(async move {
-            use tracing::debug;
-            let mut ticker = interval(Duration::from_secs(ANR_CHECK_SECS));
-            loop {
-                ticker.tick().await;
+        {
+            // periodic anr check task
+            let config = config.clone();
+            let socket = socket.clone();
+            let metrics = metrics.clone();
+            let node_peers = node_peers.clone();
+            spawn(async move {
+                let mut ticker = interval(Duration::from_secs(ANR_CHECK_SECS));
+                loop {
+                    ticker.tick().await;
+                    // get random unverified anrs and attempt to verify them
+                    match anr::get_random_not_handshaked(3).await {
+                        Ok(unverified_anrs) => {
+                            debug!("anrcheck: found {} unverified anrs", unverified_anrs.len());
 
-                // get random unverified ANRs and attempt to verify them
-                match anr::get_random_unverified(3).await {
-                    Ok(unverified_anrs) => {
-                        if !unverified_anrs.is_empty() {
-                            debug!("ANR check: found {} unverified ANRs", unverified_anrs.len());
+                            let anr = match Anr::from_config(&config) {
+                                Ok(a) => a,
+                                Err(e) => {
+                                    warn!("anrcheck: failed to create anr from config: {e}");
+                                    continue;
+                                }
+                            };
 
-                            for (pk, ip4) in unverified_anrs {
-                                // skip our own public key
-                                if pk == config_local.trainer_pk {
+                            let challenge = random::<u64>();
+                            let new_phone_who_dis = match NewPhoneWhoDis::new(anr, challenge) {
+                                Ok(msg) => msg,
+                                Err(e) => {
+                                    warn!("anrcheck: failed to create NewPhoneWhoDis: {e}");
+                                    return;
+                                }
+                            };
+
+                            for (_, ip) in unverified_anrs.iter().cloned() {
+                                if let Err(e) = new_phone_who_dis
+                                    .send_to_with_metrics(
+                                        &config,
+                                        socket.clone(),
+                                        SocketAddr::new(ip.into(), 36969),
+                                        &metrics,
+                                    )
+                                    .await
+                                {
+                                    warn!("anrcheck: failed to send new_phone_who_dis to {ip}: {e}");
                                     continue;
                                 }
 
-                                // send NewPhoneWhoDis message to this IP to verify ANR
-                                if let Err(e) = send_anr_verification_request(
-                                    &config_local,
-                                    ip4,
-                                    anr_socket.clone(),
-                                    &anr_metrics,
-                                    &anr_node_peers,
-                                )
-                                .await
-                                {
-                                    debug!("Failed to send ANR verification request to {}: {}", ip4, e);
+                                if let Err(e) = node_peers.set_handshake_status(ip, SentNewPhoneWhoDis).await {
+                                    warn!("anrcheck: failed to set handshake status for {ip}: {e}");
                                 }
                             }
                         }
-                    }
-                    Err(e) => {
-                        debug!("Failed to get random unverified ANRs: {}", e);
+                        Err(e) => {
+                            warn!("anrcheck: can't get random unverified anrs {e}");
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
 
         Ok(Self {
             config,
@@ -427,7 +385,7 @@ impl Context {
             let mut ticker = interval(Duration::from_secs(1));
             loop {
                 ticker.tick().await;
-                if let Ok(list) = anr::get_random_unverified(3).await {
+                if let Ok(list) = anr::get_random_not_handshaked(3).await {
                     for (pk, ip) in list {
                         if pk != my_pk_copy {
                             let payload = Vec::new(); // placeholder new_phone_who_dis
@@ -452,7 +410,7 @@ impl Context {
     pub async fn broadcast_check_anr(&self) {
         if let Some(b) = &self.broadcaster {
             let my_pk = self.config.trainer_pk.to_vec();
-            if let Ok(list) = anr::get_random_unverified(3).await {
+            if let Ok(list) = anr::get_random_not_handshaked(3).await {
                 for (pk, ip) in list {
                     if pk != my_pk {
                         b.send_to(vec![ip.to_string()], Vec::new());
@@ -489,7 +447,7 @@ impl Context {
                 // Reply with pong message
                 use crate::node::protocol::{Pong, Protocol};
                 let pong = Pong { ts_m, seen_time_ms: crate::utils::misc::get_unix_millis_now() };
-                pong.send_to_with_metrics(self, src)
+                pong.send_to_with_metrics(&self.config, self.socket.clone(), src, &self.metrics)
                     .await
                     .map_err(|e| crate::Error::String(format!("Failed to send pong: {:?}", e)))
             }
@@ -706,7 +664,7 @@ impl Context {
             .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok())
             .unwrap_or_else(|| std::net::Ipv4Addr::new(127, 0, 0, 1));
 
-        let my_anr = anr::ANR::build(
+        let my_anr = anr::Anr::build(
             &self.config.trainer_sk,
             &self.config.trainer_pk,
             &self.config.trainer_pop,
@@ -747,7 +705,7 @@ impl Context {
 
                 // Set handshake status to SentNewPhoneWhoDis for this peer
                 if let Ok(seed_ip) = ip.parse::<std::net::Ipv4Addr>() {
-                    let _ = self.set_peer_handshake_status(seed_ip, peers::HandshakeStatus::SentNewPhoneWhoDis).await;
+                    let _ = self.set_peer_handshake_status(seed_ip, SentNewPhoneWhoDis).await;
                 }
             }
         }
@@ -755,60 +713,6 @@ impl Context {
         info!("sent bootstrap new_phone_who_dis");
         Ok(())
     }
-}
-
-/// Send ANR verification request via NewPhoneWhoDis message
-async fn send_anr_verification_request(
-    config: &config::Config,
-    target_ip: Ipv4Addr,
-    socket: Arc<dyn UdpSocketExt>,
-    metrics: &Arc<crate::metrics::Metrics>,
-    node_peers: &Arc<peers::NodePeers>,
-) -> Result<(), Error> {
-    use crate::node::protocol::NewPhoneWhoDis;
-
-    // create our own ANR for the verification request
-    let my_ip = config
-        .public_ipv4
-        .as_ref()
-        .and_then(|s| s.parse::<Ipv4Addr>().ok())
-        .unwrap_or_else(|| Ipv4Addr::new(127, 0, 0, 1));
-
-    let my_anr = anr::ANR::build(&config.trainer_sk, &config.trainer_pk, &config.trainer_pop, my_ip, config.get_ver())?;
-
-    // generate a random challenge for this verification
-    let challenge = random::<u64>();
-
-    // create NewPhoneWhoDis message
-    let new_phone_who_dis = NewPhoneWhoDis::new(my_anr, challenge)
-        .map_err(|e| Error::String(format!("Failed to create NewPhoneWhoDis: {:?}", e)))?;
-
-    // serialize to ETF binary
-    let payload = new_phone_who_dis
-        .to_etf_bin()
-        .map_err(|e| Error::String(format!("Failed to serialize NewPhoneWhoDis: {:?}", e)))?;
-
-    // create shards for transmission
-    let shards = crate::node::ReedSolomonReassembler::build_shards(config, &payload)
-        .map_err(|e| Error::String(format!("Failed to create shards: {:?}", e)))?;
-
-    // send shards via UDP
-    let target = SocketAddr::new(std::net::IpAddr::V4(target_ip), 36969);
-
-    for shard in shards {
-        socket
-            .send_to_with_metrics(&shard, target, metrics)
-            .await
-            .map_err(|e| Error::String(format!("Failed to send shard: {:?}", e)))?;
-    }
-
-    // Track sent packet metric
-    metrics.add_outgoing_proto_by_name("new_phone_who_dis");
-
-    // Set handshake status to SentNewPhoneWhoDis for this peer
-    let _ = node_peers.set_handshake_status(target_ip, peers::HandshakeStatus::SentNewPhoneWhoDis).await;
-
-    Ok(())
 }
 
 /// Format a duration into human-readable form following the requirements:
@@ -924,26 +828,15 @@ mod tests {
 
         let target_ip = Ipv4Addr::new(127, 0, 0, 1);
 
-        // test that the function doesn't panic and handles errors gracefully
-        use std::sync::Arc;
-        let test_socket = Arc::new(MockSocket::new());
-        let test_metrics = Arc::new(crate::metrics::Metrics::new());
-        let test_node_peers = Arc::new(crate::node::peers::NodePeers::default());
-        match send_anr_verification_request(&config, target_ip, test_socket, &test_metrics, &test_node_peers).await {
-            Ok(()) => {
-                // success case - message was sent
-            }
-            Err(_e) => {
-                // failure case is ok for testing, might be due to network issues
-                // the important thing is that it doesn't panic
-            }
-        }
+        // test that ANR creation doesn't panic and handles errors gracefully
+        let my_anr = anr::Anr::build(&config.trainer_sk, &config.trainer_pk, &config.trainer_pop, target_ip, "testver".to_string());
+        assert!(my_anr.is_ok());
     }
 
     #[tokio::test]
     async fn test_get_random_unverified_anrs() {
         // test the ANR selection logic
-        let result = anr::get_random_unverified(3).await;
+        let result = anr::get_random_not_handshaked(3).await;
 
         // should not panic and should return a result
         assert!(result.is_ok());

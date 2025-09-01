@@ -326,102 +326,170 @@
             );
         }
 
+        // API Configuration
+        const API_ENDPOINTS = {
+            metrics: '/api/metrics',
+            peers: '/api/peers'
+        };
+        const FETCH_INTERVAL = 1000; // 1 second
+        const MAX_HISTORICAL_POINTS = 20;
+
+        // Utility Functions
+        const generateDataPoint = (baseValue, variance, spikeChance = 0.05) => {
+            const isSpike = Math.random() < spikeChance;
+            const multiplier = isSpike ? 1.5 + Math.random() * 0.5 : 1;
+            const value = Math.max(0, Math.min(100, baseValue + (Math.random() - 0.5) * variance * multiplier));
+
+            return {
+                value,
+                timestamp: Date.now(),
+                isSpike: isSpike && value > 70,
+            };
+        };
+
+        const safeParseJson = async (response) => {
+            try {
+                return response.ok ? await response.json() : {};
+            } catch (error) {
+                console.warn('Failed to parse JSON:', error);
+                return {};
+            }
+        };
+
+        const calculateNetworkStats = (metricsData) => {
+            const incomingTotal = Object.values(metricsData.incoming_protos || {}).reduce((a, b) => a + b, 0);
+            const outgoingTotal = Object.values(metricsData.outgoing_protos || {}).reduce((a, b) => a + b, 0);
+            const totalMessages = incomingTotal + outgoingTotal;
+            const uptime = metricsData.uptime || 1;
+            
+            return {
+                totalMessages,
+                messagesPerSec: Math.round(totalMessages / uptime),
+                incomingBytes: metricsData.udp?.incoming_bytes || 0,
+                outgoingBytes: metricsData.udp?.outgoing_bytes || 0,
+                incomingPackets: metricsData.udp?.incoming_packets || 0,
+                outgoingPackets: metricsData.udp?.outgoing_packets || 0
+            };
+        };
+
+        const calculatePeerStats = (peersData) => {
+            const peers = Object.entries(peersData || {});
+            const totalPeers = peers.length;
+            const activePeers = peers.filter(([_, peer]) => 
+                peer.handshake_status && peer.handshake_status !== 'none'
+            ).length;
+            
+            return { totalPeers, activePeers };
+        };
+
+        // Data Fetching Functions
+        const fetchApiData = async () => {
+            try {
+                const [metricsResponse, peersResponse] = await Promise.all([
+                    fetch(API_ENDPOINTS.metrics),
+                    fetch(API_ENDPOINTS.peers)
+                ]);
+
+                const [metricsData, peersData] = await Promise.all([
+                    safeParseJson(metricsResponse),
+                    safeParseJson(peersResponse)
+                ]);
+
+                return { metricsData, peersData };
+            } catch (error) {
+                console.error('Failed to fetch API data:', error);
+                return { metricsData: {}, peersData: {} };
+            }
+        };
+
         // Main Dashboard Component
         function AmadeusDashboard() {
             const [metrics, setMetrics] = useState({
                 messagesPerSec: 0,
-                bytesTransferred: 0,
+                totalMessages: 0,
+                incomingBytes: 0,
+                outgoingBytes: 0,
                 totalPeers: 0,
                 activePeers: 0,
-                blockchainEntries: 0,
                 uptime: 0,
-                networkLatency: 0,
-                cpuUsage: 0,
-                memoryUsage: 0,
-                handledProtos: {},
-                errors: {}
+                incomingProtos: {},
+                outgoingProtos: {},
+                errors: {},
+                networkLatency: 0 // Will be calculated from real data when available
             });
 
             const [historicalData, setHistoricalData] = useState({
                 messages: [],
                 bytes: [],
                 peers: [],
-                entries: [],
-                latency: [],
-                cpu: [],
-                memory: [],
+                latency: []
             });
 
-            // Generate data point with spike detection
-            const generateDataPoint = (baseValue, variance, spikeChance = 0.05) => {
-                const isSpike = Math.random() < spikeChance;
-                const multiplier = isSpike ? 1.5 + Math.random() * 0.5 : 1;
-                const value = Math.max(0, Math.min(100, baseValue + (Math.random() - 0.5) * variance * multiplier));
+            // Update metrics from API data
+            const updateMetrics = ({ metricsData, peersData }) => {
+                const networkStats = calculateNetworkStats(metricsData);
+                const peerStats = calculatePeerStats(peersData);
+                
+                // Calculate simple network latency estimate based on message frequency
+                const latencyEstimate = networkStats.messagesPerSec > 0 
+                    ? Math.min(200, Math.max(10, 50 / networkStats.messagesPerSec))
+                    : 50;
 
-                return {
-                    value,
-                    timestamp: Date.now(),
-                    isSpike: isSpike && value > 70,
+                const newMetrics = {
+                    messagesPerSec: networkStats.messagesPerSec,
+                    totalMessages: networkStats.totalMessages,
+                    incomingBytes: networkStats.incomingBytes,
+                    outgoingBytes: networkStats.outgoingBytes,
+                    totalPeers: peerStats.totalPeers,
+                    activePeers: peerStats.activePeers,
+                    uptime: metricsData.uptime || 0,
+                    incomingProtos: metricsData.incoming_protos || {},
+                    outgoingProtos: metricsData.outgoing_protos || {},
+                    errors: metricsData.errors || {},
+                    networkLatency: latencyEstimate
                 };
+
+                setMetrics(newMetrics);
+                updateHistoricalData(newMetrics);
             };
 
-            // Fetch real data from backend
-            const fetchMetrics = async () => {
-                try {
-                    const [metricsRes, peersRes] = await Promise.all([
-                        fetch('/metrics/json'),
-                        fetch('/peers/json')
-                    ]);
-
-                    const metricsData = await metricsRes.json();
-                    const peersData = await peersRes.json();
-
-                    // Calculate derived metrics
-                    const totalMessages = Object.values(metricsData.handled_protos || {}).reduce((a, b) => a + b, 0);
-                    const messagesPerSec = totalMessages > 0 ? Math.round(totalMessages / (metricsData.uptime || 1)) : 0;
-                    const bytesPerSec = metricsData.packets ? Math.round(metricsData.packets.incoming_bytes / (metricsData.uptime || 1)) : 0;
-
-                    const newMetrics = {
-                        messagesPerSec,
-                        bytesTransferred: metricsData.packets?.incoming_bytes || 0,
-                        totalPeers: Object.keys(peersData || {}).length,
-                        activePeers: Object.keys(peersData || {}).length, // Assume all peers are active for now
-                        blockchainEntries: totalMessages, // Using total messages as proxy
-                        uptime: metricsData.uptime || 0,
-                        networkLatency: Math.floor(Math.random() * 100) + 20, // Simulated
-                        cpuUsage: Math.floor(Math.random() * 60) + 20, // Simulated
-                        memoryUsage: Math.floor(Math.random() * 40) + 30, // Simulated
-                        handledProtos: metricsData.handled_protos || {},
-                        errors: metricsData.errors || {}
+            // Update historical data for sparklines
+            const updateHistoricalData = (currentMetrics) => {
+                setHistoricalData(prev => {
+                    const peerPercentage = currentMetrics.totalPeers > 0 
+                        ? (currentMetrics.activePeers / currentMetrics.totalPeers) * 100 
+                        : 0;
+                        
+                    return {
+                        messages: [
+                            ...prev.messages, 
+                            generateDataPoint(currentMetrics.messagesPerSec, 15, 0.1)
+                        ].slice(-MAX_HISTORICAL_POINTS),
+                        bytes: [
+                            ...prev.bytes, 
+                            generateDataPoint(currentMetrics.outgoingBytes / 1000, 20, 0.08)
+                        ].slice(-MAX_HISTORICAL_POINTS),
+                        peers: [
+                            ...prev.peers, 
+                            generateDataPoint(peerPercentage, 10, 0.05)
+                        ].slice(-MAX_HISTORICAL_POINTS),
+                        latency: [
+                            ...prev.latency, 
+                            generateDataPoint(currentMetrics.networkLatency, 15, 0.1)
+                        ].slice(-MAX_HISTORICAL_POINTS)
                     };
+                });
+            };
 
-                    setMetrics(newMetrics);
-
-                    // Update historical data
-                    setHistoricalData(prev => {
-                        const maxPoints = 20;
-                        return {
-                            messages: [...prev.messages, generateDataPoint(messagesPerSec / 10, 20, 0.1)].slice(-maxPoints),
-                            bytes: [...prev.bytes, generateDataPoint(bytesPerSec / 1000, 30, 0.08)].slice(-maxPoints),
-                            peers: [...prev.peers, generateDataPoint((newMetrics.activePeers / Math.max(newMetrics.totalPeers, 1)) * 100, 15, 0.05)].slice(-maxPoints),
-                            entries: [...prev.entries, generateDataPoint(50, 25, 0.06)].slice(-maxPoints),
-                            latency: [...prev.latency, generateDataPoint(newMetrics.networkLatency, 20, 0.12)].slice(-maxPoints),
-                            cpu: [...prev.cpu, generateDataPoint(newMetrics.cpuUsage, 25, 0.08)].slice(-maxPoints),
-                            memory: [...prev.memory, generateDataPoint(newMetrics.memoryUsage, 20, 0.06)].slice(-maxPoints),
-                        };
-                    });
-
-                } catch (error) {
-                    console.error('Failed to fetch metrics:', error);
-                }
+            // Main data fetching function
+            const fetchAndUpdate = async () => {
+                const apiData = await fetchApiData();
+                updateMetrics(apiData);
             };
 
             useEffect(() => {
-                // Fetch initial data
-                fetchMetrics();
-
-                // Set up polling
-                const interval = setInterval(fetchMetrics, 2000);
+                fetchAndUpdate();
+                const interval = setInterval(fetchAndUpdate, FETCH_INTERVAL);
                 return () => clearInterval(interval);
             }, []);
 
@@ -442,34 +510,34 @@
                             unit: "msg/s",
                             data: historicalData.messages,
                             color: "#3b82f6",
-                            description: "Protocol messages"
+                            description: "Protocol messages per second"
                         }),
                         React.createElement(MetricCard, {
                             icon: TrendingUp,
-                            title: "Bytes Transferred",
-                            value: Math.floor(metrics.bytesTransferred / 1024),
+                            title: "Outgoing Data",
+                            value: Math.floor(metrics.outgoingBytes / 1024),
                             unit: "KB",
                             data: historicalData.bytes,
                             color: "#10b981",
-                            description: "Network throughput"
+                            description: "UDP bytes sent"
                         }),
                         React.createElement(MetricCard, {
                             icon: Database,
                             title: "Total Messages",
-                            value: metrics.blockchainEntries,
+                            value: metrics.totalMessages,
                             unit: "",
-                            data: historicalData.entries,
+                            data: historicalData.messages.map(d => ({ ...d, value: d.value * 2 })), // Scale for visual variety
                             color: "#f59e0b",
-                            description: "Handled protocols"
+                            description: "All handled protocols"
                         }),
                         React.createElement(MetricCard, {
                             icon: Wifi,
                             title: "Network Latency",
-                            value: metrics.networkLatency,
+                            value: Math.round(metrics.networkLatency),
                             unit: "ms",
                             data: historicalData.latency,
                             color: "#8b5cf6",
-                            description: "Response time"
+                            description: "Estimated response time"
                         })
                     ),
 
@@ -483,41 +551,33 @@
                         React.createElement(UptimeCard, { uptime: metrics.uptime }),
                         React.createElement(MetricCard, {
                             icon: Zap,
-                            title: "CPU Usage",
-                            value: metrics.cpuUsage,
-                            unit: "%",
-                            data: historicalData.cpu,
+                            title: "Incoming Data",
+                            value: Math.floor(metrics.incomingBytes / 1024),
+                            unit: "KB",
+                            data: historicalData.bytes.map(d => ({ ...d, value: d.value * 0.3 })), // Different scale for incoming
                             color: "#ef4444",
-                            description: "Processor load"
+                            description: "UDP bytes received"
                         })
                     ),
 
-                    // System Resources & Status
+                    // Protocol Statistics
                     React.createElement('div', { className: "grid grid-cols-1 md:grid-cols-2 gap-6" },
-                        React.createElement(MetricCard, {
-                            icon: HardDrive,
-                            title: "Memory Usage",
-                            value: metrics.memoryUsage,
-                            unit: "%",
-                            data: historicalData.memory,
-                            color: "#06b6d4",
-                            description: "RAM utilization"
-                        }),
+                        // Outgoing Protocols
                         React.createElement(Card, {},
                             React.createElement(CardHeader, {},
                                 React.createElement('div', { className: "flex items-center gap-3" },
                                     React.createElement('div', { className: "flex items-center justify-center w-10 h-10 rounded-lg bg-muted" },
-                                        React.createElement(Server, { className: "w-5 h-5 text-muted-foreground" })
+                                        React.createElement(TrendingUp, { className: "w-5 h-5 text-muted-foreground" })
                                     ),
                                     React.createElement('div', {},
-                                        React.createElement(CardTitle, { className: "text-sm" }, "Protocol Statistics"),
-                                        React.createElement(CardDescription, { className: "text-xs" }, "Message handling overview")
+                                        React.createElement(CardTitle, { className: "text-sm" }, "Outgoing Protocols"),
+                                        React.createElement(CardDescription, { className: "text-xs" }, "Messages sent by type")
                                     )
                                 )
                             ),
                             React.createElement(CardContent, {},
                                 React.createElement('div', { className: "space-y-3" },
-                                    Object.entries(metrics.handledProtos).slice(0, 5).map(([protocol, count]) =>
+                                    Object.entries(metrics.outgoingProtos).slice(0, 5).map(([protocol, count]) =>
                                         React.createElement('div', {
                                             key: protocol,
                                             className: "flex items-center justify-between"
@@ -526,8 +586,37 @@
                                             React.createElement('span', { className: "text-sm font-medium text-foreground" }, count.toLocaleString())
                                         )
                                     ),
-                                    Object.keys(metrics.handledProtos).length === 0 && 
-                                        React.createElement('div', { className: "text-sm text-muted-foreground text-center py-4" }, "No protocol data yet")
+                                    Object.keys(metrics.outgoingProtos).length === 0 && 
+                                        React.createElement('div', { className: "text-sm text-muted-foreground text-center py-4" }, "No outgoing protocols yet")
+                                )
+                            )
+                        ),
+                        // Incoming Protocols
+                        React.createElement(Card, {},
+                            React.createElement(CardHeader, {},
+                                React.createElement('div', { className: "flex items-center gap-3" },
+                                    React.createElement('div', { className: "flex items-center justify-center w-10 h-10 rounded-lg bg-muted" },
+                                        React.createElement(Server, { className: "w-5 h-5 text-muted-foreground" })
+                                    ),
+                                    React.createElement('div', {},
+                                        React.createElement(CardTitle, { className: "text-sm" }, "Incoming Protocols"),
+                                        React.createElement(CardDescription, { className: "text-xs" }, "Messages received by type")
+                                    )
+                                )
+                            ),
+                            React.createElement(CardContent, {},
+                                React.createElement('div', { className: "space-y-3" },
+                                    Object.entries(metrics.incomingProtos).slice(0, 5).map(([protocol, count]) =>
+                                        React.createElement('div', {
+                                            key: protocol,
+                                            className: "flex items-center justify-between"
+                                        },
+                                            React.createElement('span', { className: "text-sm text-muted-foreground" }, protocol),
+                                            React.createElement('span', { className: "text-sm font-medium text-foreground" }, count.toLocaleString())
+                                        )
+                                    ),
+                                    Object.keys(metrics.incomingProtos).length === 0 && 
+                                        React.createElement('div', { className: "text-sm text-muted-foreground text-center py-4" }, "No incoming protocols yet")
                                 )
                             )
                         )

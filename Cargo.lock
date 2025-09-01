@@ -1031,6 +1031,7 @@ dependencies = [
  "ama_core",
  "anyhow",
  "axum 0.8.4",
+ "bs58",
  "serde",
  "serde_json",
  "tokio",

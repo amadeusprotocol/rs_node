@@ -43,12 +43,12 @@ pub struct PeerInfo {
 
 #[derive(Debug)]
 pub enum StateMessage {
-    NewPhoneWhoDis { anr: anr::ANR, challenge: u64 },
-    What { anr: anr::ANR, challenge: u64, signature: Vec<u8> },
+    NewPhoneWhoDis { anr: anr::Anr, challenge: u64 },
+    What { anr: anr::Anr, challenge: u64, signature: Vec<u8> },
     Ping { temporal: Vec<u8>, rooted: Vec<u8>, ts_m: u128 },
     Pong { ts_m: u128 },
     TxPool { txs_packed: Vec<Vec<u8>> },
-    PeersV2 { anrs: Vec<anr::ANR> },
+    PeersV2 { anrs: Vec<anr::Anr> },
     Sol { sol: Vec<u8> },
     Entry { entry_packed: Vec<u8>, consensus_packed: Option<Vec<u8>>, attestation_packed: Option<Vec<u8>> },
     AttestationBulk { attestations_packed: Vec<Vec<u8>> },
@@ -126,12 +126,12 @@ impl NodeState {
     /// Handle new_phone_who_dis message
     async fn handle_new_phone_who_dis(
         &mut self,
-        anr: anr::ANR,
+        anr: anr::Anr,
         challenge: u64,
         peer: &PeerInfo,
     ) -> Result<Option<Vec<u8>>, Error> {
         // Verify ANR
-        let verified_anr = anr::ANR::verify_and_unpack(anr)?;
+        let verified_anr = anr::Anr::verify_and_unpack(anr)?;
 
         // Check if ANR IP matches peer IP
         if verified_anr.ip4 != peer.ip {
@@ -159,13 +159,13 @@ impl NodeState {
     /// Handle what? message
     async fn handle_what(
         &mut self,
-        anr: anr::ANR,
+        anr: anr::Anr,
         challenge: u64,
         signature: Vec<u8>,
         peer: &PeerInfo,
     ) -> Result<Option<Vec<u8>>, Error> {
         // Verify ANR
-        let verified_anr = anr::ANR::verify_and_unpack(anr)?;
+        let verified_anr = anr::Anr::verify_and_unpack(anr)?;
 
         // Check if ANR IP matches peer IP
         if verified_anr.ip4 != peer.ip {
@@ -293,12 +293,12 @@ impl NodeState {
     }
 
     /// Handle peers_v2 message
-    async fn handle_peers_v2(&mut self, anrs: Vec<anr::ANR>) -> Result<Option<Vec<u8>>, Error> {
+    async fn handle_peers_v2(&mut self, anrs: Vec<anr::Anr>) -> Result<Option<Vec<u8>>, Error> {
         // Verify and insert ANRs
         let mut valid_anrs = Vec::new();
 
         for anr in anrs {
-            if let Ok(verified_anr) = anr::ANR::verify_and_unpack(anr) {
+            if let Ok(verified_anr) = anr::Anr::verify_and_unpack(anr) {
                 valid_anrs.push(verified_anr);
             }
         }

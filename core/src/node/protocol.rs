@@ -7,6 +7,7 @@ use crate::consensus::consensus::{get_chain_tip_entry, get_rooted_tip_entry};
 use crate::consensus::entry::{Entry, EntrySummary};
 use crate::consensus::tx;
 use crate::consensus::{attestation, entry};
+use crate::metrics::Metrics;
 use crate::node::{ReedSolomonReassembler, anr, msg_v2, reassembler};
 use crate::socket::UdpSocketExt;
 use crate::utils::bls12_381 as bls;
@@ -37,8 +38,13 @@ pub trait Protocol: Typename + Send + Sync {
     }
     async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error>;
     /// Send this protocol message to a destination using context's UDP socket
-    async fn send_to_with_metrics(&self, ctx: &Context, dst: SocketAddr) -> Result<(), Error> {
-        let Context { metrics, config, socket, .. } = ctx;
+    async fn send_to_with_metrics(
+        &self,
+        config: &Config,
+        socket: Arc<dyn UdpSocketExt>,
+        dst: SocketAddr,
+        metrics: &Metrics,
+    ) -> Result<(), Error> {
         let payload = self.to_etf_bin().inspect_err(|e| metrics.add_error(e))?;
         let shards = ReedSolomonReassembler::build_shards(config, &payload).inspect_err(|e| metrics.add_error(e))?;
         for shard in &shards {
@@ -108,9 +114,9 @@ pub enum Instruction {
     SpecialBusinessReply { business: Vec<u8> },
     SolicitEntry { hash: Vec<u8> },
     SolicitEntry2,
-    ReplyWhatChallenge { anr: anr::ANR, challenge: u64 },
-    ReceivedWhatResponse { responder_anr: anr::ANR, challenge: u64, their_signature: Vec<u8> },
-    HandshakeComplete { anr: anr::ANR },
+    ReplyWhatChallenge { anr: anr::Anr, challenge: u64 },
+    ReceivedWhatResponse { responder_anr: anr::Anr, challenge: u64, their_signature: Vec<u8> },
+    HandshakeComplete { anr: anr::Anr },
 }
 
 /// Does proto parsing and validation
@@ -490,7 +496,7 @@ mod tests {
         let pk = bls::get_public_key(&sk).expect("pk");
         let pop = bls::sign(&sk, &pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("pop");
         let ip = Ipv4Addr::new(127, 0, 0, 1);
-        let my_anr = anr::ANR::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
+        let my_anr = anr::Anr::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
 
         // construct message
         let challenge = get_unix_secs_now();
@@ -516,7 +522,7 @@ mod tests {
         let pk = bls::get_public_key(&sk).expect("pk");
         let pop = bls::sign(&sk, &pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("pop");
         let ip = Ipv4Addr::new(127, 0, 0, 1);
-        let my_anr = anr::ANR::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
+        let my_anr = anr::Anr::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
         let challenge = get_unix_secs_now();
         let _msg = NewPhoneWhoDis::new(my_anr, challenge).expect("npwd new");
 
@@ -537,7 +543,7 @@ mod tests {
         let pk = bls::get_public_key(&sk).expect("pk");
         let pop = bls::sign(&sk, &pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("pop");
         let ip = Ipv4Addr::new(127, 0, 0, 1);
-        let responder_anr = anr::ANR::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
+        let responder_anr = anr::Anr::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
 
         // fresh challenge within 6s window
         let challenge = get_unix_secs_now();
@@ -564,7 +570,7 @@ mod tests {
         let pk = bls::get_public_key(&sk).expect("pk");
         let pop = bls::sign(&sk, &pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("pop");
         let ip = Ipv4Addr::new(127, 0, 0, 1);
-        let responder_anr = anr::ANR::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
+        let responder_anr = anr::Anr::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
 
         // challenge far in the past (>6s)
         let challenge = crate::utils::misc::get_unix_secs_now().saturating_sub(10);
@@ -642,7 +648,7 @@ mod tests {
                 let sent_before = metrics_json_before.get("outgoing_protos");
 
                 // Test Protocol::send_to method - should return error with MockSocket but not panic
-                match pong.send_to_with_metrics(&ctx, target).await {
+                match pong.send_to_with_metrics(&ctx.config, ctx.socket.clone(), target, &ctx.metrics).await {
                     Ok(_) => {
                         // unexpected success with MockSocket
                     }
@@ -728,7 +734,7 @@ impl Protocol for NewPhoneWhoDis {
         let version_bytes = anr_map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version"))?;
         let version = String::from_utf8_lossy(&version_bytes).to_string();
 
-        let sender_anr = anr::ANR {
+        let sender_anr = anr::Anr {
             ip4,
             pk,
             pop,
@@ -778,7 +784,7 @@ impl Protocol for NewPhoneWhoDis {
             .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok())
             .unwrap_or_else(|| std::net::Ipv4Addr::new(127, 0, 0, 1));
 
-        let my_anr = anr::ANR::build(
+        let my_anr = anr::Anr::build(
             &ctx.get_config().trainer_sk,
             &ctx.get_config().trainer_pk,
             &ctx.get_config().trainer_pop,
@@ -799,7 +805,7 @@ impl Protocol for NewPhoneWhoDis {
             .map_err(|_| Error::BadEtf("what_msg_create_failed"))?;
 
         // Send the What message directly
-        what_msg.send_to_with_metrics(ctx, src).await.map_err(|_| Error::BadEtf("what_send_failed"))?;
+        what_msg.send_to_with_metrics(&ctx.config, ctx.socket.clone(), src, &ctx.metrics).await.map_err(|_| Error::BadEtf("what_send_failed"))?;
 
         Ok(Instruction::Noop)
     }
@@ -808,7 +814,7 @@ impl Protocol for NewPhoneWhoDis {
 impl NewPhoneWhoDis {
     pub const NAME: &'static str = "new_phone_who_dis";
 
-    pub fn new(anr: anr::ANR, challenge: u64) -> Result<Self, Error> {
+    pub fn new(anr: anr::Anr, challenge: u64) -> Result<Self, Error> {
         // serialize ANR to binary for internal storage
         let anr_binary = anr.to_etf_binary()?;
         Ok(Self { anr: anr_binary, challenge })
@@ -873,7 +879,7 @@ impl Protocol for What {
         let version_bytes = anr_map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version"))?;
         let version = String::from_utf8_lossy(&version_bytes).to_string();
 
-        let responder_anr = anr::ANR {
+        let responder_anr = anr::Anr {
             ip4,
             pk: pk.clone(),
             pop,
@@ -948,7 +954,7 @@ impl Protocol for What {
 impl What {
     pub const NAME: &'static str = "what?";
 
-    pub fn new(anr: anr::ANR, challenge: u64, signature: Vec<u8>) -> Result<Self, Error> {
+    pub fn new(anr: anr::Anr, challenge: u64, signature: Vec<u8>) -> Result<Self, Error> {
         // pack ANR to binary
         let anr_binary = anr.to_etf_binary()?;
         Ok(Self { anr: anr_binary, challenge, signature })

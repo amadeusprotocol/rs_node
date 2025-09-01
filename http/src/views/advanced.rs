@@ -1,21 +1,75 @@
 use ama_core::{Context, MetricsSnapshot, PeerInfo};
 use std::collections::HashMap;
 
+fn generate_protocol_items(protocols: &HashMap<String, u64>) -> String {
+    if protocols.is_empty() {
+        return r#"<div class="empty-state">No data available</div>"#.to_string();
+    }
+    
+    let mut items: Vec<_> = protocols.iter().collect();
+    items.sort_by(|a, b| b.1.cmp(a.1)); // Sort by count descending
+    
+    items.into_iter()
+        .take(10) // Show top 10
+        .map(|(name, count)| {
+            format!(
+                r#"<div class="message-type-item">
+                    <div class="message-type-name">{}</div>
+                    <div class="message-type-count">{}</div>
+                </div>"#,
+                name,
+                count
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entries: &Vec<(u64, u64, u64)>, ctx: &Context) -> String {
     let peers_count = peers.len();
     let uptime = ctx.get_uptime();
     let version = ctx.get_config().get_ver();
+    let pubkey_bytes = ctx.get_config().get_pk();
+    let pubkey = bs58::encode(pubkey_bytes).into_string();
 
-    // Calculate network I/O rates (mock values for now)
-    let network_in_mbps = 2.4;
-    let network_out_mbps = 1.8;
-    let network_in_pps = 156;  // packets per second
-    let network_out_pps = 123; // packets per second
+    // Get uptime in seconds from metrics snapshot
+    let uptime_seconds = snapshot.uptime as f64;
+    
+    // Calculate network I/O rates from actual metrics
+    let incoming_bytes = snapshot.udp.incoming_bytes as f64;
+    let outgoing_bytes = snapshot.udp.outgoing_bytes as f64;
+    let incoming_packets = snapshot.udp.incoming_packets;
+    let outgoing_packets = snapshot.udp.outgoing_packets;
+    
+    let network_in_mbps = if uptime_seconds > 0.0 {
+        (incoming_bytes / uptime_seconds) / (1024.0 * 1024.0)
+    } else {
+        0.0
+    };
+    let network_out_mbps = if uptime_seconds > 0.0 {
+        (outgoing_bytes / uptime_seconds) / (1024.0 * 1024.0)
+    } else {
+        0.0
+    };
+    let network_in_pps = if uptime_seconds > 0.0 {
+        incoming_packets as f64 / uptime_seconds
+    } else {
+        0.0
+    };
+    let network_out_pps = if uptime_seconds > 0.0 {
+        outgoing_packets as f64 / uptime_seconds
+    } else {
+        0.0
+    };
 
-    // Mock system resources (in a real implementation, these would come from the context)
-    let cpu_usage = 65;
-    let memory_usage = 78;
-    let disk_usage = 45;
+    // System resources (stub values for now - will be read from context later)
+    let total_messages = snapshot.incoming_protos.values().sum::<u64>() + 
+                       snapshot.outgoing_protos.values().sum::<u64>();
+    
+    // Stub system resource values - these will be replaced with real values from context later
+    let cpu_usage = std::cmp::min(85, std::cmp::max(15, (total_messages / 50) as i32 + 25)); // Simulated CPU usage
+    let memory_usage = std::cmp::min(80, std::cmp::max(20, peers_count as i32 * 3 + 35)); // Simulated memory usage
+    let disk_usage = std::cmp::min(60, std::cmp::max(10, (snapshot.uptime / 7200) as i32 + 25)); // Simulated disk usage
 
 
     format!(
@@ -108,17 +162,62 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
             font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
         }}
         
-        .mainnet-badge {{
+        .pubkey-badge {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
             background: hsl(var(--background));
             border: 1px solid hsl(var(--foreground));
             color: hsl(var(--foreground));
-            padding: 2px 8px;
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 500;
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+        }}
+        
+        .pubkey-badge:hover {{
+            background: hsl(var(--muted));
+            border-color: hsl(var(--foreground));
+            transform: scale(1.02);
+        }}
+        
+        .pubkey-badge:active {{
+            transform: scale(0.98);
+        }}
+        
+        .pubkey-icon {{
+            width: 16px;
+            height: 16px;
+            color: hsl(var(--foreground));
+        }}
+        
+        .pubkey-text {{
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+            letter-spacing: 0.5px;
+        }}
+        
+        .copy-tooltip {{
+            position: absolute;
+            bottom: -30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: hsl(var(--foreground));
+            color: hsl(var(--background));
+            padding: 4px 8px;
             border-radius: 4px;
             font-size: 10px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+            white-space: nowrap;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s ease;
+        }}
+        
+        .pubkey-badge:hover .copy-tooltip {{
+            opacity: 1;
         }}
         
         .version-text {{
@@ -486,10 +585,17 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
             letter-spacing: 1px;
         }}
         
-        /* Semi-transparent badges for SYNCING and DISCONNECTED */
+        /* Semi-transparent badges for SYNCING, DISCONNECTED, and IMPERSONATED */
         .status-syncing,
-        .status-disconnected {{
+        .status-disconnected,
+        .status-impersonated {{
             opacity: 0.6;
+        }}
+        
+        /* Red color for impersonated status */
+        .status-impersonated {{
+            border-color: #dc2626;
+            color: #dc2626;
         }}
         
         .activity-list {{
@@ -860,7 +966,16 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
         <div class="header-left">
             <img src="/static/wordmark-light.svg" alt="Amadeus" class="logo-wordmark">
             <img src="/static/logo-light.svg" alt="Amadeus" class="logo-compact">
-            <div class="mainnet-badge">MAINNET</div>
+            <div class="pubkey-badge" onclick="copyPubkey('{}')" title="Click to copy full public key">
+                <svg class="pubkey-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24">
+                    <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+                        <path d="M7 9.667A2.667 2.667 0 0 1 9.667 7h8.666A2.667 2.667 0 0 1 21 9.667v8.666A2.667 2.667 0 0 1 18.333 21H9.667A2.667 2.667 0 0 1 7 18.333z"/>
+                        <path d="M4.012 16.737A2 2 0 0 1 3 15V5c0-1.1.9-2 2-2h10c.75 0 1.158.385 1.5 1"/>
+                    </g>
+                </svg>
+                <span class="pubkey-text">{}...</span>
+                <div class="copy-tooltip">Click to copy</div>
+            </div>
             <div class="version-text font-mono">v{}</div>
         </div>
         <div class="header-right">
@@ -928,12 +1043,20 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
                 </div>
                 <div class="network-stats">
                     <div class="network-row">
-                        <div class="network-label">IN:</div>
-                        <div class="network-value">{:.1} MB/s | {}k pps</div>
+                        <div class="network-label">DATA IN:</div>
+                        <div class="network-value">{:.1} MB/s</div>
                     </div>
                     <div class="network-row">
-                        <div class="network-label">OUT:</div>
-                        <div class="network-value">{:.1} MB/s | {}k pps</div>
+                        <div class="network-label">DATA OUT:</div>
+                        <div class="network-value">{:.1} MB/s</div>
+                    </div>
+                    <div class="network-row">
+                        <div class="network-label">PKT IN:</div>
+                        <div class="network-value">{:.0} pkt/s</div>
+                    </div>
+                    <div class="network-row">
+                        <div class="network-label">PKT OUT:</div>
+                        <div class="network-value">{:.0} pkt/s</div>
                     </div>
                 </div>
             </div>
@@ -1043,76 +1166,14 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
                     <div class="section-card">
                         <div class="section-title">Incoming Messages</div>
                         <div class="message-type-list">
-                            <div class="message-type-item">
-                                <div class="message-type-name">Ping</div>
-                                <div class="message-type-count">1,247</div>
-                            </div>
-                            <div class="message-type-item">
-                                <div class="message-type-name">Entry</div>
-                                <div class="message-type-count">856</div>
-                            </div>
-                            <div class="message-type-item">
-                                <div class="message-type-name">Pong</div>
-                                <div class="message-type-count">623</div>
-                            </div>
-                            <div class="message-type-item">
-                                <div class="message-type-name">Transaction</div>
-                                <div class="message-type-count">412</div>
-                            </div>
-                            <div class="message-type-item">
-                                <div class="message-type-name">Consensus</div>
-                                <div class="message-type-count">298</div>
-                            </div>
-                            <div class="message-type-item">
-                                <div class="message-type-name">Attestation</div>
-                                <div class="message-type-count">187</div>
-                            </div>
-                            <div class="message-type-item">
-                                <div class="message-type-name">Block</div>
-                                <div class="message-type-count">156</div>
-                            </div>
-                            <div class="message-type-item">
-                                <div class="message-type-name">Sync</div>
-                                <div class="message-type-count">134</div>
-                            </div>
-                            <div class="message-type-item">
-                                <div class="message-type-name">Handshake</div>
-                                <div class="message-type-count">89</div>
-                            </div>
-                            <div class="message-type-item">
-                                <div class="message-type-name">Heartbeat</div>
-                                <div class="message-type-count">67</div>
-                            </div>
-                            <div class="message-type-item">
-                                <div class="message-type-name">Discovery</div>
-                                <div class="message-type-count">45</div>
-                            </div>
+                            {}
                         </div>
                     </div>
                     
                     <div class="section-card">
                         <div class="section-title">Outgoing Messages</div>
                         <div class="message-type-list">
-                            <div class="message-type-item">
-                                <div class="message-type-name">Pong</div>
-                                <div class="message-type-count">1,156</div>
-                            </div>
-                            <div class="message-type-item">
-                                <div class="message-type-name">Ping</div>
-                                <div class="message-type-count">934</div>
-                            </div>
-                            <div class="message-type-item">
-                                <div class="message-type-name">Entry</div>
-                                <div class="message-type-count">567</div>
-                            </div>
-                            <div class="message-type-item">
-                                <div class="message-type-name">Transaction</div>
-                                <div class="message-type-count">389</div>
-                            </div>
-                            <div class="message-type-item">
-                                <div class="message-type-name">Consensus</div>
-                                <div class="message-type-count">245</div>
-                            </div>
+                            {}
                         </div>
                     </div>
                 </div>
@@ -1133,147 +1194,8 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
                                     <th>VERSION</th>
                                 </tr>
                             </thead>
-                            <tbody>
-                                <tr>
-                                    <td class="font-mono">192.168.1.100:8333</td>
-                                    <td>
-                                        <div class="flex items-center space-x-2">
-                                            <svg class="status-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-                                            </svg>
-                                            <div class="status-badge">CONNECTED</div>
-                                        </div>
-                                    </td>
-                                    <td class="font-mono">45ms</td>
-                                    <td class="font-mono">812,345</td>
-                                    <td class="font-mono">24.0.1</td>
-                                </tr>
-                                <tr>
-                                    <td class="font-mono">10.0.0.50:8333</td>
-                                    <td>
-                                        <div class="flex items-center space-x-2">
-                                            <svg class="status-icon animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-                                            </svg>
-                                            <div class="status-badge status-syncing">SYNCING</div>
-                                        </div>
-                                    </td>
-                                    <td class="font-mono">120ms</td>
-                                    <td class="font-mono">812,340</td>
-                                    <td class="font-mono">23.0.0</td>
-                                </tr>
-                                <tr>
-                                    <td class="font-mono">172.16.0.25:8333</td>
-                                    <td>
-                                        <div class="flex items-center space-x-2">
-                                            <svg class="status-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                                            </svg>
-                                            <div class="status-badge status-disconnected">DISCONNECTED</div>
-                                        </div>
-                                    </td>
-                                    <td class="font-mono">-</td>
-                                    <td class="font-mono">812,300</td>
-                                    <td class="font-mono">22.1.0</td>
-                                </tr>
-                                <tr>
-                                    <td class="font-mono">203.0.113.15:8333</td>
-                                    <td>
-                                        <div class="flex items-center space-x-2">
-                                            <svg class="status-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-                                            </svg>
-                                            <div class="status-badge">CONNECTED</div>
-                                        </div>
-                                    </td>
-                                    <td class="font-mono">78ms</td>
-                                    <td class="font-mono">812,344</td>
-                                    <td class="font-mono">24.1.0</td>
-                                </tr>
-                                <tr>
-                                    <td class="font-mono">198.51.100.42:8333</td>
-                                    <td>
-                                        <div class="flex items-center space-x-2">
-                                            <svg class="status-icon animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-                                            </svg>
-                                            <div class="status-badge status-syncing">SYNCING</div>
-                                        </div>
-                                    </td>
-                                    <td class="font-mono">95ms</td>
-                                    <td class="font-mono">812,335</td>
-                                    <td class="font-mono">23.2.1</td>
-                                </tr>
-                                <tr>
-                                    <td class="font-mono">192.0.2.100:8333</td>
-                                    <td>
-                                        <div class="flex items-center space-x-2">
-                                            <svg class="status-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-                                            </svg>
-                                            <div class="status-badge">CONNECTED</div>
-                                        </div>
-                                    </td>
-                                    <td class="font-mono">32ms</td>
-                                    <td class="font-mono">812,345</td>
-                                    <td class="font-mono">24.0.1</td>
-                                </tr>
-                                <tr>
-                                    <td class="font-mono">172.16.1.50:8333</td>
-                                    <td>
-                                        <div class="flex items-center space-x-2">
-                                            <svg class="status-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                                            </svg>
-                                            <div class="status-badge status-disconnected">DISCONNECTED</div>
-                                        </div>
-                                    </td>
-                                    <td class="font-mono">-</td>
-                                    <td class="font-mono">812,280</td>
-                                    <td class="font-mono">22.0.5</td>
-                                </tr>
-                                <tr>
-                                    <td class="font-mono">10.1.1.75:8333</td>
-                                    <td>
-                                        <div class="flex items-center space-x-2">
-                                            <svg class="status-icon animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-                                            </svg>
-                                            <div class="status-badge status-syncing">SYNCING</div>
-                                        </div>
-                                    </td>
-                                    <td class="font-mono">156ms</td>
-                                    <td class="font-mono">812,320</td>
-                                    <td class="font-mono">23.1.2</td>
-                                </tr>
-                                <tr>
-                                    <td class="font-mono">203.0.113.89:8333</td>
-                                    <td>
-                                        <div class="flex items-center space-x-2">
-                                            <svg class="status-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-                                            </svg>
-                                            <div class="status-badge">CONNECTED</div>
-                                        </div>
-                                    </td>
-                                    <td class="font-mono">67ms</td>
-                                    <td class="font-mono">812,345</td>
-                                    <td class="font-mono">24.0.1</td>
-                                </tr>
-                                <tr>
-                                    <td class="font-mono">192.168.50.10:8333</td>
-                                    <td>
-                                        <div class="flex items-center space-x-2">
-                                            <svg class="status-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                                            </svg>
-                                            <div class="status-badge status-disconnected">DISCONNECTED</div>
-                                        </div>
-                                    </td>
-                                    <td class="font-mono">-</td>
-                                    <td class="font-mono">812,275</td>
-                                    <td class="font-mono">21.3.0</td>
-                                </tr>
+                            <tbody id="peers-table-body">
+                                <!-- Peers will be populated dynamically by JavaScript -->
                             </tbody>
                         </table>
                     </div>
@@ -1318,6 +1240,184 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
             
             // Show selected tab content
             document.getElementById(tabName + '-content').classList.add('active');
+            
+            // If switching to peers tab, refresh peer data immediately
+            if (tabName === 'peers') {{
+                refreshPeersData();
+            }}
+        }}
+        
+        // Refresh peers data specifically for peers tab
+        async function refreshPeersData() {{
+            try {{
+                const peersRes = await fetch('/api/peers');
+                if (peersRes.ok) {{
+                    const peers = await peersRes.json();
+                    updatePeersTable(peers);
+                }}
+            }} catch (error) {{
+                console.warn('Failed to refresh peers data:', error);
+            }}
+        }}
+        
+        // Auto-refresh dashboard data every second
+        let isRefreshing = false;
+        
+        async function refreshDashboardData() {{
+            if (isRefreshing) return;
+            isRefreshing = true;
+            
+            try {{
+                const [metricsRes, peersRes] = await Promise.all([
+                    fetch('/api/metrics'),
+                    fetch('/api/peers')
+                ]);
+                
+                if (metricsRes.ok && peersRes.ok) {{
+                    const [metrics, peers] = await Promise.all([
+                        metricsRes.json(),
+                        peersRes.json()
+                    ]);
+                    
+                    updateMetricsDisplay(metrics, peers);
+                }}
+            }} catch (error) {{
+                console.warn('Failed to refresh dashboard data:', error);
+            }} finally {{
+                isRefreshing = false;
+            }}
+        }}
+        
+        function updateMetricsDisplay(metrics, peers) {{
+            // Update peer count
+            const peerCount = Object.keys(peers).length;
+            const peerElements = document.querySelectorAll('.metric-value');
+            if (peerElements.length > 1) {{
+                peerElements[1].textContent = peerCount;
+            }}
+            
+            // Update network I/O if we have uptime data
+            if (metrics.uptime && metrics.uptime > 0) {{
+                const uptime = metrics.uptime;
+                const inMbps = ((metrics.udp?.incoming_bytes || 0) / uptime) / (1024 * 1024);
+                const outMbps = ((metrics.udp?.outgoing_bytes || 0) / uptime) / (1024 * 1024);
+                const inPps = (metrics.udp?.incoming_packets || 0) / uptime;
+                const outPps = (metrics.udp?.outgoing_packets || 0) / uptime;
+                
+                const networkValues = document.querySelectorAll('.network-value');
+                if (networkValues.length >= 4) {{
+                    networkValues[0].textContent = `${{inMbps.toFixed(1)}} MB/s`;
+                    networkValues[1].textContent = `${{outMbps.toFixed(1)}} MB/s`;
+                    networkValues[2].textContent = `${{Math.round(inPps).toLocaleString()}} pkt/s`;
+                    networkValues[3].textContent = `${{Math.round(outPps).toLocaleString()}} pkt/s`;
+                }}
+            }}
+            
+            // Update protocol lists
+            updateProtocolList('incoming', metrics.incoming_protos || {{}});
+            updateProtocolList('outgoing', metrics.outgoing_protos || {{}});
+            
+            // Update peers table if peers tab is active
+            if (document.getElementById('peers-content').classList.contains('active')) {{
+                updatePeersTable(peers);
+            }}
+        }}
+        
+        function updateProtocolList(type, protocols) {{
+            const container = document.querySelector(`#overview-content .section-card:${{type === 'incoming' ? 'first-child' : 'last-child'}} .message-type-list`);
+            if (!container) return;
+            
+            const items = Object.entries(protocols)
+                .sort(([,a], [,b]) => b - a)
+                .slice(0, 10)
+                .map(([name, count]) => `
+                    <div class="message-type-item">
+                        <div class="message-type-name">${{name}}</div>
+                        <div class="message-type-count">${{count.toLocaleString()}}</div>
+                    </div>
+                `)
+                .join('');
+            
+            container.innerHTML = items || '<div class="empty-state">No data available</div>';
+        }}
+        
+        function updatePeersTable(peers) {{
+            const tbody = document.getElementById('peers-table-body');
+            if (!tbody) return;
+            
+            const peerEntries = Object.entries(peers);
+            if (peerEntries.length === 0) {{
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: #9ca3af; font-style: italic;">No peers connected</td></tr>';
+                return;
+            }}
+            
+            const rows = peerEntries.map(([address, peerInfo]) => {{
+                // Determine status based on HandshakeStatus enum
+                const handshakeStatus = peerInfo.handshake_status;
+                let status = 'DISCONNECTED';
+                let statusClass = 'status-disconnected';
+                let statusIcon = `
+                    <svg class="status-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                `;
+                
+                // Map HandshakeStatus enum to display status
+                if (handshakeStatus === 'SentWhat' || handshakeStatus === 'ReceivedWhat') {{
+                    // Connected - white badge
+                    status = 'CONNECTED';
+                    statusClass = '';
+                    statusIcon = `
+                        <svg class="status-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                        </svg>
+                    `;
+                }} else if (handshakeStatus === 'SentNewPhoneWhoDis') {{
+                    // Connecting - transparent badge with spinning arrows
+                    status = 'CONNECTING';
+                    statusClass = 'status-syncing';
+                    statusIcon = `
+                        <svg class="status-icon animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                        </svg>
+                    `;
+                }} else if (handshakeStatus === 'Failed') {{
+                    // Impersonated - transparent red badge
+                    status = 'IMPERSONATED';
+                    statusClass = 'status-impersonated';
+                    statusIcon = `
+                        <svg class="status-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                    `;
+                }} else {{
+                    // None or other - disconnected (transparent badge)
+                    status = 'DISCONNECTED';
+                    statusClass = 'status-disconnected';
+                }}
+                
+                // Extract peer info fields with defaults
+                const latency = peerInfo.latency || '-';
+                const blockHeight = peerInfo.block_height || '-';
+                const version = peerInfo.version || '-';
+                
+                return `
+                    <tr>
+                        <td class="font-mono">${{address}}</td>
+                        <td>
+                            <div class="flex items-center space-x-2">
+                                ${{statusIcon}}
+                                <div class="status-badge ${{statusClass}}">${{status}}</div>
+                            </div>
+                        </td>
+                        <td class="font-mono">${{typeof latency === 'number' ? latency + 'ms' : latency}}</td>
+                        <td class="font-mono">${{typeof blockHeight === 'number' ? blockHeight.toLocaleString() : blockHeight}}</td>
+                        <td class="font-mono">${{version}}</td>
+                    </tr>
+                `;
+            }}).join('');
+            
+            tbody.innerHTML = rows;
         }}
         
         // Auto-switch to transactions tab when user starts typing in search
@@ -1336,19 +1436,52 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
                     }}
                 }});
             }}
+            
+            // Start auto-refresh
+            refreshDashboardData();
+            setInterval(refreshDashboardData, 1000);
         }});
         
-        // Removed auto-refresh to prevent tab switching issues
-        // Auto-refresh can be added back with proper state preservation
+        // Copy pubkey functionality
+        function copyPubkey(pubkey) {{
+            navigator.clipboard.writeText(pubkey).then(function() {{
+                // Show success feedback
+                const badge = document.querySelector('.pubkey-badge');
+                const originalBg = badge.style.background;
+                badge.style.background = 'hsl(142, 76%, 36%)';
+                badge.style.borderColor = 'hsl(142, 76%, 36%)';
+                
+                const tooltip = badge.querySelector('.copy-tooltip');
+                const originalText = tooltip.textContent;
+                tooltip.textContent = 'Copied!';
+                
+                setTimeout(function() {{
+                    badge.style.background = originalBg;
+                    badge.style.borderColor = '';
+                    tooltip.textContent = originalText;
+                }}, 1000);
+            }}).catch(function(err) {{
+                console.error('Failed to copy: ', err);
+                // Fallback for older browsers
+                const textArea = document.createElement('textarea');
+                textArea.value = pubkey;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+            }});
+        }}
     </script>
 </body>
 </html>
 "#,
+        pubkey, // Full pubkey for onclick
+        &pubkey[..8], // Shortened pubkey for display (first 8 chars)
         version,
         peers_count,
         network_in_mbps,
-        network_in_pps,
         network_out_mbps,
+        network_in_pps,
         network_out_pps,
         uptime,
         cpu_usage,
@@ -1357,5 +1490,7 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
         memory_usage,
         disk_usage,
         disk_usage,
+        generate_protocol_items(&snapshot.incoming_protos),
+        generate_protocol_items(&snapshot.outgoing_protos),
     )
 }

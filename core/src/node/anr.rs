@@ -1,3 +1,4 @@
+use crate::config::{Config, SeedANR};
 use crate::utils::bls12_381::{sign, verify};
 use crate::utils::misc::{get_unix_millis_now, get_unix_secs_now};
 use eetf::{Atom, BigInteger, Binary, FixInteger, Map, Term, Tuple};
@@ -37,12 +38,12 @@ impl crate::utils::misc::Typename for Error {
 }
 
 // global in-memory storage for anrs
-static ANR_STORE: Lazy<Arc<RwLock<HashMap<Vec<u8>, ANR>>>> = Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+static ANR_STORE: Lazy<Arc<RwLock<HashMap<Vec<u8>, Anr>>>> = Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
 
 // ama node record
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, bincode::Encode, bincode::Decode)]
 #[allow(non_snake_case)]
-pub struct ANR {
+pub struct Anr {
     pub ip4: Ipv4Addr,
     pub pk: Vec<u8>,
     pub pop: Vec<u8>,
@@ -64,13 +65,56 @@ pub struct ANR {
     pub next_check: u64,
 }
 
-impl ANR {
-    // build a new anr with signature
-    pub fn build(sk: &[u8], pk: &[u8], pop: &[u8], ip4: Ipv4Addr, version: String) -> Result<Self, Error> {
-        // use seconds like elixir :os.system_time(1)
-        let ts = get_unix_secs_now();
+impl From<SeedANR> for Anr {
+    fn from(seed: SeedANR) -> Self {
+        Anr {
+            ip4: seed.ip4.parse().unwrap_or(Ipv4Addr::new(0, 0, 0, 0)),
+            pk: seed.pk,
+            pop: vec![0u8; 96], // seed anrs don't include pop in config
+            port: seed.port,
+            signature: seed.signature,
+            ts: seed.ts,
+            version: seed.version,
+            handshaked: false,
+            hasChainPop: false,
+            error: None,
+            error_tries: 0,
+            next_check: seed.ts + 3,
+        }
+    }
+}
 
-        let mut anr = ANR {
+impl Anr {
+    // build a new anr with signature
+    pub fn from_config(config: &Config) -> Result<Self, Error> {
+        let ts = get_unix_secs_now();
+        let mut anr = Anr {
+            ip4: config.get_public_ipv4(),
+            pk: config.get_pk().to_vec(),
+            pop: config.get_pop(),
+            port: 36969,
+            ts,
+            version: config.get_ver(),
+            signature: vec![],
+            handshaked: false,
+            hasChainPop: false,
+            error: None,
+            error_tries: 0,
+            next_check: ts + 3,
+        };
+
+        // create signature over erlang term format like elixir
+        let to_sign = anr.to_erlang_term_for_signing()?;
+        let dst = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_ANR";
+        let sig_array = sign(&config.get_sk(), &to_sign, dst)?;
+        anr.signature = sig_array.to_vec();
+
+        Ok(anr)
+    }
+
+    pub fn build(sk: &[u8], pk: &[u8], pop: &[u8], ip4: Ipv4Addr, version: String) -> Result<Self, Error> {
+        let ts = get_unix_secs_now();
+        let mut anr = Anr {
             ip4,
             pk: pk.to_vec(),
             pop: pop.to_vec(),
@@ -133,7 +177,7 @@ impl ANR {
     }
 
     // verify and unpack anr from untrusted source
-    pub fn verify_and_unpack(anr: ANR) -> Result<ANR, Error> {
+    pub fn verify_and_unpack(anr: Anr) -> Result<Anr, Error> {
         // check not wound into future (10 min tolerance)
         // elixir uses :os.system_time(1000) for milliseconds
         let now_ms = get_unix_millis_now() as u64;
@@ -187,9 +231,9 @@ impl ANR {
     }
 
     // unpack anr with port validation like elixir
-    pub fn unpack(anr: ANR) -> Result<ANR, Error> {
+    pub fn unpack(anr: Anr) -> Result<Anr, Error> {
         if anr.port == 36969 {
-            Ok(ANR {
+            Ok(Anr {
                 ip4: anr.ip4,
                 pk: anr.pk,
                 pop: anr.pop,
@@ -209,8 +253,8 @@ impl ANR {
     }
 
     // pack anr for network transmission
-    pub fn pack(&self) -> ANR {
-        ANR {
+    pub fn pack(&self) -> Anr {
+        Anr {
             ip4: self.ip4,
             pk: self.pk.clone(),
             pop: self.pop.clone(),
@@ -235,7 +279,7 @@ impl ANR {
 // storage functions using scc hashmap
 
 // insert or update anr
-pub async fn insert(anr: ANR) -> Result<(), Error> {
+pub async fn insert(anr: Anr) -> Result<(), Error> {
     // check if we have chain pop for this pk (would need consensus module)
     // let hasChainPop = consensus::chain_pop(&anr.pk).is_some();
     let mut anr = anr;
@@ -277,15 +321,15 @@ pub async fn insert(anr: ANR) -> Result<(), Error> {
 }
 
 // get anr by public key
-pub async fn get(pk: &[u8]) -> Result<Option<ANR>, Error> {
+pub async fn get(pk: &[u8]) -> Result<Option<Anr>, Error> {
     let map = ANR_STORE.read().await;
     Ok(map.get(pk).cloned())
 }
 
 // get all anrs
-pub async fn get_all() -> Result<Vec<ANR>, Error> {
+pub async fn get_all() -> Result<Vec<Anr>, Error> {
     let map = ANR_STORE.read().await;
-    let anrs: Vec<ANR> = map.values().cloned().collect();
+    let anrs: Vec<Anr> = map.values().cloned().collect();
     Ok(anrs)
 }
 
@@ -337,7 +381,7 @@ pub async fn handshaked_and_valid_ip4(pk: &[u8], ip4: &Ipv4Addr) -> Result<bool,
 }
 
 // get random verified nodes
-pub async fn get_random_verified(count: usize) -> Result<Vec<ANR>, Error> {
+pub async fn get_random_verified(count: usize) -> Result<Vec<Anr>, Error> {
     use rand::seq::SliceRandom;
 
     let pks = handshaked().await?;
@@ -355,7 +399,7 @@ pub async fn get_random_verified(count: usize) -> Result<Vec<ANR>, Error> {
 }
 
 // get random unverified nodes
-pub async fn get_random_unverified(count: usize) -> Result<Vec<(Vec<u8>, Ipv4Addr)>, Error> {
+pub async fn get_random_not_handshaked(count: usize) -> Result<Vec<(Vec<u8>, Ipv4Addr)>, Error> {
     use rand::seq::SliceRandom;
     use std::collections::HashSet;
 
@@ -377,7 +421,7 @@ pub async fn get_random_unverified(count: usize) -> Result<Vec<(Vec<u8>, Ipv4Add
 }
 
 // get all validators from handshaked nodes
-pub async fn all_validators() -> Result<Vec<ANR>, Error> {
+pub async fn all_validators() -> Result<Vec<Anr>, Error> {
     // this would need integration with consensus module to get validator set
     // for now, return all handshaked nodes
     let pks = handshaked().await?;
@@ -421,26 +465,14 @@ pub async fn by_pks_ip<T: AsRef<[u8]>>(pks: &[T]) -> Result<Vec<Ipv4Addr>, Error
 }
 
 // seed initial anrs (called on startup)
-/// my_ip: Optional node IPv4 to use for self-ANR; when None, falls back to PUBLIC_UDP_IPV4 env or 0.0.0.0
-pub async fn seed(
-    seed_anrs: Vec<ANR>,
-    my_sk: &[u8],
-    my_pk: &[u8],
-    my_pop: &[u8],
-    version: String,
-    my_ip: Option<Ipv4Addr>,
-) -> Result<(), Error> {
-    // insert seed anrs
-    for anr in seed_anrs {
+pub async fn seed(config: &Config) -> Result<(), Error> {
+    for anr in config.seed_anrs.iter().cloned().map(Into::into) {
         insert(anr).await?;
     }
 
-    // build and insert our own anr using provided IP when available
-    let my_ip4 = my_ip.unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
-
-    if let Ok(my_anr) = ANR::build(my_sk, my_pk, my_pop, my_ip4, version) {
+    if let Ok(my_anr) = Anr::from_config(config) {
         insert(my_anr).await?;
-        set_handshaked(my_pk).await?;
+        set_handshaked(&config.get_pk()).await?;
     }
 
     Ok(())
@@ -484,7 +516,7 @@ mod tests {
         let version = "1.0.0".to_string();
 
         // manually create ANR without signature verification for testing
-        let anr = ANR {
+        let anr = Anr {
             ip4,
             pk: pk.clone(),
             pop,
@@ -549,7 +581,7 @@ mod tests {
         let version = "1.0.0".to_string();
 
         // insert initial anr
-        let anr1 = ANR {
+        let anr1 = Anr {
             ip4,
             pk: pk.clone(),
             pop: pop.clone(),
@@ -567,7 +599,7 @@ mod tests {
         set_handshaked(&pk).await.unwrap();
 
         // try to insert older anr (should not update)
-        let anr2 = ANR {
+        let anr2 = Anr {
             ip4: Ipv4Addr::new(10, 0, 0, 1),
             pk: pk.clone(),
             pop: pop.clone(),
@@ -590,7 +622,7 @@ mod tests {
         assert!(retrieved.handshaked);
 
         // insert newer anr with same ip (should preserve handshake)
-        let anr3 = ANR {
+        let anr3 = Anr {
             ip4,
             pk: pk.clone(),
             pop: pop.clone(),
@@ -612,7 +644,7 @@ mod tests {
         assert!(retrieved.handshaked); // should be preserved
 
         // insert newer anr with different ip (should reset handshake)
-        let anr4 = ANR {
+        let anr4 = Anr {
             ip4: Ipv4Addr::new(10, 0, 0, 1),
             pk: pk.clone(),
             pop,

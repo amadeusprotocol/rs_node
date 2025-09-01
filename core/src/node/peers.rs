@@ -1,3 +1,4 @@
+use crate::config::Config;
 use crate::consensus;
 use crate::node::anr;
 use crate::utils::misc::get_unix_millis_now;
@@ -254,12 +255,13 @@ impl NodePeers {
     }
 
     /// Seed initial peers with validators
-    pub async fn seed(&self, my_ip: Ipv4Addr) -> Result<(), Error> {
+    pub async fn seed(&self, config: &Config) -> Result<(), Error> {
         let height = consensus::chain_height();
         let validators = consensus::trainers_for_height(height + 1).unwrap_or_default();
         let validators: Vec<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();
 
-        let validator_ips: Vec<_> = anr::by_pks_ip(&validators).await?.into_iter().filter(|ip| *ip != my_ip).collect();
+        let validator_ips: Vec<_> =
+            anr::by_pks_ip(&validators).await?.into_iter().filter(|ip| *ip != config.get_public_ipv4()).collect();
 
         for ip in validator_ips {
             let _ = self.insert_new_peer(Peer {

@@ -1,6 +1,6 @@
 /// The only file where reading environment variables is allowed
 /// Basically, the config for the whole the core library
-use crate::node::anr::ANR;
+use crate::node::anr::Anr;
 use crate::utils::bls12_381;
 pub use crate::utils::bls12_381::generate_sk as gen_sk;
 use crate::utils::ip_resolver::resolve_public_ipv4;
@@ -15,8 +15,32 @@ pub const TX_SIZE: usize = 393216; // 384 KiB
 pub const ATTESTATION_SIZE: usize = 512;
 pub const QUORUM: usize = 3; // quorum size for AMA
 pub const QUORUM_SINGLE: usize = 1; // quorum size for single shard
+pub const CLEANUP_SECS: u64 = 8; // how often node does the cleanup
+pub const ANR_CHECK_SECS: u64 = 1; // how often node checks ANR status
 
 pub const VERSION: [u8; 3] = parse_version();
+
+const fn parse_version() -> [u8; 3] {
+    const S: &str = env!("CRATE_VERSION");
+    let bytes = S.as_bytes();
+    let mut out = [0u8; 3];
+    let mut acc = 0u8;
+    let mut part = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'.' {
+            out[part] = acc;
+            part += 1;
+            acc = 0;
+        } else {
+            acc = acc * 10 + (b - b'0');
+        }
+        i += 1;
+    }
+    out[part] = acc;
+    out
+}
 
 pub const SEED_NODES: &[&str] = &[
     "104.218.45.23",
@@ -117,28 +141,6 @@ pub const SEED_NODES: &[&str] = &[
     "72.9.146.77",
 ];
 
-const fn parse_version() -> [u8; 3] {
-    const S: &str = env!("CRATE_VERSION");
-    let bytes = S.as_bytes();
-    let mut out = [0u8; 3];
-    let mut acc = 0u8;
-    let mut part = 0;
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'.' {
-            out[part] = acc;
-            part += 1;
-            acc = 0;
-        } else {
-            acc = acc * 10 + (b - b'0');
-        }
-        i += 1;
-    }
-    out[part] = acc;
-    out
-}
-
 // seed anr from elixir config/config.exs
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SeedANR {
@@ -204,7 +206,7 @@ pub struct Config {
     pub snapshot_height: u64,
 
     // anr configuration
-    pub anr: Option<ANR>,
+    pub anr: Option<Anr>,
     pub anr_name: Option<String>,
     pub anr_desc: Option<String>,
 }
@@ -225,6 +227,10 @@ impl Config {
         self.trainer_sk
     }
 
+    pub fn get_pop(&self) -> Vec<u8> {
+        self.trainer_pop.clone()
+    }
+
     /// Returns root work folder path
     pub fn get_root(&self) -> &str {
         &self.work_folder
@@ -232,6 +238,13 @@ impl Config {
 
     pub fn get_ver(&self) -> String {
         self.version_3b.iter().map(|b| b.to_string()).collect::<Vec<String>>().join(".")
+    }
+
+    pub fn get_public_ipv4(&self) -> Ipv4Addr {
+        self.public_ipv4
+            .as_ref()
+            .and_then(|s| s.parse::<Ipv4Addr>().ok())
+            .unwrap_or_else(|| Ipv4Addr::new(127, 0, 0, 1))
     }
 
     /// Create Config instance matching elixir config/runtime.exs
@@ -315,7 +328,7 @@ impl Config {
         };
 
         let ver = version_3b.iter().map(|b| b.to_string()).collect::<Vec<String>>().join(".");
-        let anr = my_ip.and_then(|ip| ANR::build(&trainer_sk, &trainer_pk, &trainer_pop, ip, ver.clone()).ok());
+        let anr = my_ip.and_then(|ip| Anr::build(&trainer_sk, &trainer_pk, &trainer_pop, ip, ver.clone()).ok());
         let public_ipv4 = my_ip.map(|ip| ip.to_string());
 
         // anr configuration
