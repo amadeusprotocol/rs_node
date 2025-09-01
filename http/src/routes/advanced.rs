@@ -1,0 +1,15 @@
+use crate::views;
+use ama_core::Context;
+use axum::{Router, extract::State, response::Html, routing::get};
+use std::sync::Arc;
+
+pub fn router(ctx: Arc<Context>) -> Router {
+    Router::new().route("/", get(index)).with_state(ctx)
+}
+
+async fn index(State(ctx): State<Arc<Context>>) -> Html<String> {
+    let snapshot = ctx.get_metrics_snapshot();
+    let peers = ctx.get_peers().await;
+    let entries = ctx.get_entries().await;
+    Html(views::advanced::page(&snapshot, &peers, &entries, &ctx))
+}

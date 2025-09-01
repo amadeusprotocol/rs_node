@@ -172,6 +172,13 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, ctx: 
         <p class="subtitle">Real-time node monitoring and statistics</p>
         
         <div class="cards-grid">
+            <a href="/advanced" class="card">
+                <div class="card-icon">🚀</div>
+                <div class="card-title">Advanced Dashboard</div>
+                <div class="card-sub-stat">comprehensive monitoring</div>
+                <div class="card-main-stat">VIEW</div>
+            </a>
+            
             <a href="/errors" class="card">
                 <div class="card-icon">⚠️</div>
                 <div class="card-title">System Status</div>

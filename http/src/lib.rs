@@ -2,6 +2,7 @@ pub mod models;
 mod routes;
 pub mod utils;
 mod views {
+    pub mod advanced;
     pub mod dashboard;
     pub mod entries;
     pub mod errors;
