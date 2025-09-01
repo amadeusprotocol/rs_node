@@ -768,7 +768,7 @@ impl Protocol for NewPhoneWhoDis {
         println!("received new_phone_who_dis from {:?}, challenge {}, replying with what", src, self.challenge);
 
         // Insert the sender's ANR into our store
-        anr::insert(sender_anr.clone()).await.map_err(Into::<Error>::into)?;
+        ctx.node_registry.insert(sender_anr.clone()).await.map_err(Into::<Error>::into)?;
 
         // Update peer information with ANR data (version and public key)
         if let std::net::IpAddr::V4(sender_ip) = src.ip() {
@@ -931,8 +931,8 @@ impl Protocol for What {
         println!("handshake completed with {:?}, pk: {}", src, bs58::encode(&responder_anr.pk).into_string());
 
         // Insert the responder's ANR and mark as handshaked
-        anr::insert(responder_anr.clone()).await.map_err(|_| Error::BadEtf("anr_insert_failed"))?;
-        anr::set_handshaked(&responder_anr.pk).await.map_err(|_| Error::BadEtf("anr_set_handshaked_failed"))?;
+        ctx.node_registry.insert(responder_anr.clone()).await.map_err(|_| Error::BadEtf("anr_insert_failed"))?;
+        ctx.node_registry.set_handshaked(&responder_anr.pk).await.map_err(|_| Error::BadEtf("anr_set_handshaked_failed"))?;
 
         // Update peer information with ANR data (version and public key)
         if let std::net::IpAddr::V4(responder_ip) = src.ip() {

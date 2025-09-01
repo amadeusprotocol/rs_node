@@ -1,9 +1,9 @@
 use crate::config::{ANR_CHECK_SECS, CLEANUP_SECS};
-use crate::node::anr::Anr;
+use crate::node::anr::{Anr, NodeRegistry};
 use crate::node::peers::HandshakeStatus::SentNewPhoneWhoDis;
 use crate::node::protocol::NewPhoneWhoDis;
 use crate::node::protocol::Protocol;
-use crate::node::{NodeState, anr, peers};
+use crate::node::{NodeState, peers};
 #[cfg(test)]
 use crate::socket::MockSocket;
 use crate::socket::UdpSocketExt;
@@ -53,6 +53,7 @@ pub struct Context {
     pub(crate) metrics: Arc<metrics::Metrics>,
     pub(crate) reassembler: Arc<node::ReedSolomonReassembler>,
     pub(crate) node_peers: Arc<peers::NodePeers>,
+    pub(crate) node_registry: Arc<NodeRegistry>,
     pub(crate) node_state: Arc<RwLock<NodeState>>,
     pub(crate) broadcaster: Option<Arc<dyn node::Broadcaster>>,
     pub(crate) socket: Arc<dyn UdpSocketExt>,
@@ -84,9 +85,10 @@ impl Context {
 
         let metrics = Arc::new(Metrics::new());
         let node_peers = Arc::new(peers::NodePeers::default());
+        let node_registry = Arc::new(NodeRegistry::new());
 
-        anr::seed(&config).await?; // must be done before node_peers.seed()
-        node_peers.seed(&config).await?;
+        node_registry.seed(&config).await?; // must be done before node_peers.seed()
+        node_peers.seed(&config, &node_registry).await?;
 
         {
             // oneshot bootstrap task to send new_phone_who_dis to seed nodes
@@ -141,12 +143,13 @@ impl Context {
             // periodic cleanup task
             let reassembler = reassembler.clone();
             let node_peers = node_peers.clone();
+            let node_registry_cleanup = node_registry.clone();
             spawn(async move {
                 let mut ticker = interval(Duration::from_secs(CLEANUP_SECS));
                 loop {
                     ticker.tick().await;
                     let cleared_shards = reassembler.clear_stale(CLEANUP_SECS).await;
-                    let cleared_peers = node_peers.clear_stale().await;
+                    let cleared_peers = node_peers.clear_stale(&node_registry_cleanup).await;
                     debug!("cleanup: cleared {cleared_shards} stale shards, {cleared_peers} stale peers");
                 }
             });
@@ -158,12 +161,13 @@ impl Context {
             let socket = socket.clone();
             let metrics = metrics.clone();
             let node_peers = node_peers.clone();
+            let node_registry_clone = node_registry.clone();
             spawn(async move {
                 let mut ticker = interval(Duration::from_secs(ANR_CHECK_SECS));
                 loop {
                     ticker.tick().await;
                     // get random unverified anrs and attempt to verify them
-                    match anr::get_random_not_handshaked(3).await {
+                    match node_registry_clone.get_random_not_handshaked(3).await {
                         Ok(unverified_anrs) => {
                             debug!("anrcheck: found {} unverified anrs", unverified_anrs.len());
 
@@ -216,6 +220,7 @@ impl Context {
             metrics,
             reassembler,
             node_peers,
+            node_registry,
             node_state,
             broadcaster: None,
             socket,
@@ -381,11 +386,12 @@ impl Context {
         // ANR verification loop every 1s
         let b2 = broadcaster.clone();
         let my_pk_copy = self.config.trainer_pk.to_vec();
+        let node_registry_clone = self.node_registry.clone();
         self.anr_handle = Some(spawn(async move {
             let mut ticker = interval(Duration::from_secs(1));
             loop {
                 ticker.tick().await;
-                if let Ok(list) = anr::get_random_not_handshaked(3).await {
+                if let Ok(list) = node_registry_clone.get_random_not_handshaked(3).await {
                     for (pk, ip) in list {
                         if pk != my_pk_copy {
                             let payload = Vec::new(); // placeholder new_phone_who_dis
@@ -410,7 +416,7 @@ impl Context {
     pub async fn broadcast_check_anr(&self) {
         if let Some(b) = &self.broadcaster {
             let my_pk = self.config.trainer_pk.to_vec();
-            if let Ok(list) = anr::get_random_not_handshaked(3).await {
+            if let Ok(list) = self.node_registry.get_random_not_handshaked(3).await {
                 for (pk, ip) in list {
                     if pk != my_pk {
                         b.send_to(vec![ip.to_string()], Vec::new());
@@ -424,7 +430,7 @@ impl Context {
     pub async fn cleanup_stale(&self) {
         const CLEANUP_SECS: u64 = 8;
         let cleared_shards = self.reassembler.clear_stale(CLEANUP_SECS).await;
-        let cleared_peers = self.node_peers.clear_stale().await;
+        let cleared_peers = self.node_peers.clear_stale(&self.node_registry).await;
         tracing::info!("cleanup: cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
     }
 
@@ -664,7 +670,7 @@ impl Context {
             .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok())
             .unwrap_or_else(|| std::net::Ipv4Addr::new(127, 0, 0, 1));
 
-        let my_anr = anr::Anr::build(
+        let my_anr = Anr::build(
             &self.config.trainer_sk,
             &self.config.trainer_pk,
             &self.config.trainer_pop,
@@ -829,14 +835,15 @@ mod tests {
         let target_ip = Ipv4Addr::new(127, 0, 0, 1);
 
         // test that ANR creation doesn't panic and handles errors gracefully
-        let my_anr = anr::Anr::build(&config.trainer_sk, &config.trainer_pk, &config.trainer_pop, target_ip, "testver".to_string());
+        let my_anr = Anr::build(&config.trainer_sk, &config.trainer_pk, &config.trainer_pop, target_ip, "testver".to_string());
         assert!(my_anr.is_ok());
     }
 
     #[tokio::test]
     async fn test_get_random_unverified_anrs() {
-        // test the ANR selection logic
-        let result = anr::get_random_not_handshaked(3).await;
+        // test the ANR selection logic - create a test registry
+        let registry = NodeRegistry::new();
+        let result = registry.get_random_not_handshaked(3).await;
 
         // should not panic and should return a result
         assert!(result.is_ok());

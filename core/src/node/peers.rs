@@ -148,12 +148,12 @@ impl NodePeers {
         Self::new(100)
     }
 
-    pub async fn clear_stale(&self) -> usize {
-        self.clear_stale_inner().await.inspect_err(|e| warn!("peer cleanup error: {}", e)).unwrap_or(0)
+    pub async fn clear_stale(&self, node_registry: &anr::NodeRegistry) -> usize {
+        self.clear_stale_inner(node_registry).await.inspect_err(|e| warn!("peer cleanup error: {}", e)).unwrap_or(0)
     }
 
     /// Clear stale peers and add missing validators/handshaked nodes
-    pub async fn clear_stale_inner(&self) -> Result<usize, Error> {
+    pub async fn clear_stale_inner(&self, node_registry: &anr::NodeRegistry) -> Result<usize, Error> {
         let ts_m = get_unix_millis_now() as u64;
 
         // Get validators for current height + 1
@@ -161,10 +161,10 @@ impl NodePeers {
         let validators = consensus::trainers_for_height(height + 1).unwrap_or_default();
         let validators: Vec<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();
 
-        let validator_anr_ips = anr::by_pks_ip(&validators).await?;
+        let validator_anr_ips = node_registry.by_pks_ip(&validators).await?;
         let validators_map: std::collections::HashSet<Vec<u8>> = validators.into_iter().collect();
 
-        let handshaked_ips = anr::handshaked_pk_ip4().await?;
+        let handshaked_ips = node_registry.handshaked_pk_ip4().await?;
 
         let mut cur_ips = Vec::new();
         let mut cur_val_ips = Vec::new();
@@ -255,13 +255,13 @@ impl NodePeers {
     }
 
     /// Seed initial peers with validators
-    pub async fn seed(&self, config: &Config) -> Result<(), Error> {
+    pub async fn seed(&self, config: &Config, node_registry: &anr::NodeRegistry) -> Result<(), Error> {
         let height = consensus::chain_height();
         let validators = consensus::trainers_for_height(height + 1).unwrap_or_default();
         let validators: Vec<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();
 
         let validator_ips: Vec<_> =
-            anr::by_pks_ip(&validators).await?.into_iter().filter(|ip| *ip != config.get_public_ipv4()).collect();
+            node_registry.by_pks_ip(&validators).await?.into_iter().filter(|ip| *ip != config.get_public_ipv4()).collect();
 
         for ip in validator_ips {
             let _ = self.insert_new_peer(Peer {

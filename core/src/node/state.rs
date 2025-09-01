@@ -1,5 +1,5 @@
 // use crate::consensus::entry::Entry; // TODO: Remove when Entry handling is implemented
-use crate::node::{anr, peers};
+use crate::node::{anr::{self, NodeRegistry}, peers};
 use crate::utils::misc::get_unix_millis_now;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -92,19 +92,20 @@ impl NodeState {
         msg: StateMessage,
         peer: &PeerInfo,
         node_peers: &peers::NodePeers,
+        node_registry: &NodeRegistry,
     ) -> Result<Option<Vec<u8>>, Error> {
         match msg {
             StateMessage::NewPhoneWhoDis { anr, challenge } => {
-                self.handle_new_phone_who_dis(anr, challenge, peer).await
+                self.handle_new_phone_who_dis(anr, challenge, peer, node_registry).await
             }
-            StateMessage::What { anr, challenge, signature } => self.handle_what(anr, challenge, signature, peer).await,
+            StateMessage::What { anr, challenge, signature } => self.handle_what(anr, challenge, signature, peer, node_registry).await,
             StateMessage::Ping { temporal, rooted, ts_m } => {
-                self.handle_ping(temporal, rooted, ts_m, peer, node_peers).await
+                self.handle_ping(temporal, rooted, ts_m, peer, node_peers, node_registry).await
             }
             StateMessage::Pong { ts_m } => self.handle_pong(ts_m, peer, node_peers).await,
             StateMessage::TxPool { txs_packed } => self.handle_txpool(txs_packed).await,
-            StateMessage::PeersV2 { anrs } => self.handle_peers_v2(anrs).await,
-            StateMessage::Sol { sol } => self.handle_sol(sol, peer).await,
+            StateMessage::PeersV2 { anrs } => self.handle_peers_v2(anrs, node_registry).await,
+            StateMessage::Sol { sol } => self.handle_sol(sol, peer, node_registry).await,
             StateMessage::Entry { entry_packed, consensus_packed, attestation_packed } => {
                 self.handle_entry(entry_packed, consensus_packed, attestation_packed).await
             }
@@ -129,6 +130,7 @@ impl NodeState {
         anr: anr::Anr,
         challenge: u64,
         peer: &PeerInfo,
+        node_registry: &NodeRegistry,
     ) -> Result<Option<Vec<u8>>, Error> {
         // Verify ANR
         let verified_anr = anr::Anr::verify_and_unpack(anr)?;
@@ -148,7 +150,7 @@ impl NodeState {
         let _signature = [0u8; 96]; // placeholder signature
 
         // Store ANR
-        anr::insert(verified_anr).await?;
+        node_registry.insert(verified_anr).await?;
 
         // Create what? message
         // TODO: Create proper protocol message
@@ -163,6 +165,7 @@ impl NodeState {
         challenge: u64,
         signature: Vec<u8>,
         peer: &PeerInfo,
+        node_registry: &NodeRegistry,
     ) -> Result<Option<Vec<u8>>, Error> {
         // Verify ANR
         let verified_anr = anr::Anr::verify_and_unpack(anr)?;
@@ -187,8 +190,8 @@ impl NodeState {
 
         // Store ANR and mark as handshaked
         let pk = verified_anr.pk.clone();
-        anr::insert(verified_anr).await?;
-        anr::set_handshaked(&pk).await?;
+        node_registry.insert(verified_anr).await?;
+        node_registry.set_handshaked(&pk).await?;
 
         Ok(None)
     }
@@ -201,6 +204,7 @@ impl NodeState {
         ts_m: u128,
         peer: &PeerInfo,
         node_peers: &peers::NodePeers,
+        node_registry: &NodeRegistry,
     ) -> Result<Option<Vec<u8>>, Error> {
         // TODO: Unpack and validate entries
         // For now, just check that entries are not empty
@@ -209,11 +213,11 @@ impl NodeState {
         }
 
         // Check if peer has permission (is handshaked)
-        let has_permission = anr::handshaked_and_valid_ip4(&peer.signer, &peer.ip).await?;
+        let has_permission = node_registry.handshaked_and_valid_ip4(&peer.signer, &peer.ip).await?;
 
         if has_permission {
             // Send random verified ANRs to peer
-            let anrs = anr::get_random_verified(3).await?;
+            let anrs = node_registry.get_random_verified(3).await?;
             if !anrs.is_empty() {
                 // TODO: Send peers_v2 message to peer
                 tracing::debug!("Sending peers_v2 to {}", peer.ip);
@@ -293,7 +297,7 @@ impl NodeState {
     }
 
     /// Handle peers_v2 message
-    async fn handle_peers_v2(&mut self, anrs: Vec<anr::Anr>) -> Result<Option<Vec<u8>>, Error> {
+    async fn handle_peers_v2(&mut self, anrs: Vec<anr::Anr>, node_registry: &NodeRegistry) -> Result<Option<Vec<u8>>, Error> {
         // Verify and insert ANRs
         let mut valid_anrs = Vec::new();
 
@@ -304,14 +308,14 @@ impl NodeState {
         }
 
         for anr in valid_anrs {
-            anr::insert(anr).await?;
+            node_registry.insert(anr).await?;
         }
 
         Ok(None)
     }
 
     /// Handle sol (solution) message
-    async fn handle_sol(&mut self, sol: Vec<u8>, peer: &PeerInfo) -> Result<Option<Vec<u8>>, Error> {
+    async fn handle_sol(&mut self, sol: Vec<u8>, peer: &PeerInfo, _node_registry: &NodeRegistry) -> Result<Option<Vec<u8>>, Error> {
         // TODO: Implement solution validation and processing
         tracing::debug!("Received solution from {}", peer.ip);
 

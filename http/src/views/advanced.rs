@@ -1444,8 +1444,7 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
         
         // Copy pubkey functionality
         function copyPubkey(pubkey) {{
-            navigator.clipboard.writeText(pubkey).then(function() {{
-                // Show success feedback
+            function showSuccessFeedback() {{
                 const badge = document.querySelector('.pubkey-badge');
                 const originalBg = badge.style.background;
                 badge.style.background = 'hsl(142, 76%, 36%)';
@@ -1460,16 +1459,40 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
                     badge.style.borderColor = '';
                     tooltip.textContent = originalText;
                 }}, 1000);
-            }}).catch(function(err) {{
-                console.error('Failed to copy: ', err);
-                // Fallback for older browsers
-                const textArea = document.createElement('textarea');
-                textArea.value = pubkey;
-                document.body.appendChild(textArea);
-                textArea.select();
-                document.execCommand('copy');
-                document.body.removeChild(textArea);
-            }});
+            }}
+            
+            // Check if modern clipboard API is available
+            if (navigator.clipboard && navigator.clipboard.writeText) {{
+                navigator.clipboard.writeText(pubkey).then(function() {{
+                    showSuccessFeedback();
+                }}).catch(function(err) {{
+                    console.error('Clipboard API failed: ', err);
+                    fallbackCopy();
+                }});
+            }} else {{
+                fallbackCopy();
+            }}
+            
+            function fallbackCopy() {{
+                try {{
+                    const textArea = document.createElement('textarea');
+                    textArea.value = pubkey;
+                    textArea.style.position = 'fixed';
+                    textArea.style.left = '-9999px';
+                    document.body.appendChild(textArea);
+                    textArea.select();
+                    const successful = document.execCommand('copy');
+                    document.body.removeChild(textArea);
+                    
+                    if (successful) {{
+                        showSuccessFeedback();
+                    }} else {{
+                        console.error('Fallback copy failed');
+                    }}
+                }} catch (err) {{
+                    console.error('Copy failed: ', err);
+                }}
+            }}
         }}
     </script>
 </body>
