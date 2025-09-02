@@ -1044,19 +1044,19 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
                 <div class="network-stats">
                     <div class="network-row">
                         <div class="network-label">DATA IN:</div>
-                        <div class="network-value">{:.1} MB/s</div>
+                        <div class="network-value">{:.1}</div>
                     </div>
                     <div class="network-row">
                         <div class="network-label">PKT IN:</div>
-                        <div class="network-value">{:.0} pkt/s</div>
+                        <div class="network-value">{:.0}</div>
                     </div>
                     <div class="network-row">
                         <div class="network-label">DATA OUT:</div>
-                        <div class="network-value">{:.1} MB/s</div>
+                        <div class="network-value">{:.1}</div>
                     </div>
                     <div class="network-row">
                         <div class="network-label">PKT OUT:</div>
-                        <div class="network-value">{:.0} pkt/s</div>
+                        <div class="network-value">{:.0}</div>
                     </div>
                 </div>
             </div>
@@ -1307,8 +1307,8 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
                 const networkValues = document.querySelectorAll('.network-value');
                 if (networkValues.length >= 4) {{
                     networkValues[0].textContent = `${{inMbps.toFixed(1)}} MB/s`;
-                    networkValues[1].textContent = `${{outMbps.toFixed(1)}} MB/s`;
-                    networkValues[2].textContent = `${{Math.round(inPps).toLocaleString()}} pkt/s`;
+                    networkValues[1].textContent = `${{Math.round(inPps).toLocaleString()}} pkt/s`;
+                    networkValues[2].textContent = `${{outMbps.toFixed(1)}} MB/s`;
                     networkValues[3].textContent = `${{Math.round(outPps).toLocaleString()}} pkt/s`;
                 }}
             }}
