@@ -285,7 +285,7 @@ impl Entry {
             archiver::store(bin, format!("epoch-{}", epoch), format!("entry-{}", height)).await?;
         }
 
-        Ok(protocol::Instruction::Noop)
+        Ok(protocol::Instruction::Noop { why: "entry handling not implemented".to_string() })
     }
 
     pub fn from_etf_bin_validated(bin: &[u8], entry_size_limit: usize) -> Result<Entry, Error> {

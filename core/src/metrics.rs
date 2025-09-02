@@ -147,24 +147,24 @@ impl Metrics {
     }
 
     #[inline]
-    pub fn add_incoming_proto_by_name(&self, proto_name: &str) {
+    pub fn add_incoming_proto(&self, name: &str) {
         // correct way of handling ownership in scc HashIndex
-        let pn_owned = proto_name.to_string();
-        if let Some(counter) = self.incoming_protos.get(&pn_owned) {
+        let name = name.to_owned();
+        if let Some(counter) = self.incoming_protos.get(&name) {
             counter.fetch_add(1, Ordering::Relaxed);
         } else {
-            let _ = self.incoming_protos.insert(pn_owned, Arc::new(AtomicU64::new(1)));
+            let _ = self.incoming_protos.insert(name, Arc::new(AtomicU64::new(1)));
         }
     }
 
     #[inline]
-    pub fn add_outgoing_proto_by_name(&self, proto_name: &str) {
+    pub fn add_outgoing_proto(&self, name: &str) {
         // correct way of handling ownership in scc HashIndex
-        let pn_owned = proto_name.to_string();
-        if let Some(counter) = self.outgoing_protos.get(&pn_owned) {
+        let name = name.to_owned();
+        if let Some(counter) = self.outgoing_protos.get(&name) {
             counter.fetch_add(1, Ordering::Relaxed);
         } else {
-            let _ = self.outgoing_protos.insert(pn_owned, Arc::new(AtomicU64::new(1)));
+            let _ = self.outgoing_protos.insert(name, Arc::new(AtomicU64::new(1)));
         }
     }
 
@@ -288,9 +288,9 @@ mod tests {
     #[test]
     fn protocol_counters_and_prometheus_include_counts() {
         let m = Metrics::new();
-        m.add_incoming_proto_by_name("ping");
-        m.add_incoming_proto_by_name("ping");
-        m.add_incoming_proto_by_name("peers");
+        m.add_incoming_proto("ping");
+        m.add_incoming_proto("ping");
+        m.add_incoming_proto("peers");
 
         let snapshot = m.get_snapshot();
         assert_eq!(snapshot.incoming_protos.get("ping"), Some(&2));
@@ -347,9 +347,9 @@ mod tests {
     #[test]
     fn sent_packet_counters_and_prometheus_include_counts() {
         let m = Metrics::new();
-        m.add_outgoing_proto_by_name("ping");
-        m.add_outgoing_proto_by_name("ping");
-        m.add_outgoing_proto_by_name("pong");
+        m.add_outgoing_proto("ping");
+        m.add_outgoing_proto("ping");
+        m.add_outgoing_proto("pong");
 
         let snapshot = m.get_snapshot();
         assert_eq!(snapshot.outgoing_protos.get("ping"), Some(&2));
@@ -363,8 +363,8 @@ mod tests {
     #[test]
     fn metrics_snapshot_serialization() {
         let m = Metrics::new();
-        m.add_incoming_proto_by_name("test");
-        m.add_outgoing_proto_by_name("test");
+        m.add_incoming_proto("test");
+        m.add_outgoing_proto("test");
         m.add_incoming_udp_packet(100);
 
         let snapshot = m.get_snapshot();
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn prometheus_generation_from_snapshot() {
         let m = Metrics::new();
-        m.add_incoming_proto_by_name("test_proto");
+        m.add_incoming_proto("test_proto");
         m.add_incoming_udp_packet(50);
 
         let snapshot = m.get_snapshot();

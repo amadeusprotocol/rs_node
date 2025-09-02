@@ -1,31 +1,28 @@
-use ama_core::node::protocol::Instruction;
-use ama_core::socket::UdpSocketExt;
-use ama_core::{Context, read_udp_packet};
+use ama_core::Context;
+use ama_core::config::Config;
+use ama_core::node::protocol::{Instruction, TxPool};
 use client::{UdpSocketWrapper, get_http_port, init_tracing};
 use http::serve;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::spawn;
 use tokio::time::timeout;
-use tracing::info;
+use tracing::{debug, info};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
 
-    let udp_socket = Arc::new(UdpSocketWrapper::bind("0.0.0.0:36969").await.expect("bind udp"));
-
-    let config = ama_core::config::Config::from_fs(None, None).await?;
+    let udp_socket = Arc::new(UdpSocketWrapper::bind("0.0.0.0:36969").await?);
+    let config = Config::from_fs(None, None).await?;
     info!("working inside {}", config.get_root());
-    let ctx = Arc::new(Context::with_config_and_socket(config, udp_socket.clone()).await?);
+    let ctx = Arc::new(Context::with_config_and_socket(config, udp_socket).await?);
 
     // UDP amadeus node
     let ctx_udp = ctx.clone();
-    let socket_clone = udp_socket.clone();
     let udp = spawn(async move {
-        if let Err(e) = recv_loop(socket_clone, ctx_udp).await {
+        if let Err(e) = recv_loop(ctx_udp).await {
             eprintln!("udp loop error: {e}");
         }
     });
@@ -46,57 +43,38 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn recv_loop(socket: Arc<UdpSocketWrapper>, ctx: Arc<Context>) -> anyhow::Result<()> {
-    info!(
-        "udp server listening on {}",
-        socket.local_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".into())
-    );
-
+async fn recv_loop(ctx: Arc<Context>) -> anyhow::Result<()> {
+    info!("udp server listening on {}", ctx.get_config().get_public_ipv4());
     let mut buf = vec![0u8; 65_535];
-    let timeout_secs = Duration::from_secs(10);
 
     loop {
-        match timeout(timeout_secs, socket.recv_from_with_metrics(&mut buf, ctx.get_metrics())).await {
+        match timeout(Duration::from_secs(10), ctx.recv_from(&mut buf)).await {
             Err(_) => {} // timeout
             Ok(Err(e)) => return Err(e.into()),
-            Ok(Ok((len, src))) => match read_udp_packet(&ctx, src, &buf[..len]).await {
-                Some(proto) => {
-                    if let Ok(instruction) = proto.handle_with_metrics(&ctx, src).await {
-                        handle_instruction(&ctx, instruction, src).await?;
-                    }
+            Ok(Ok((len, src))) => {
+                let message = match ctx.parse_udp(&buf[..len], src).await {
+                    Some(p) => p,
+                    None => continue, // no message to process
+                };
+
+                if message.typename() == TxPool::TYPENAME {
+                    // example how to steer the core library
+                    debug!("received ping from {src}");
                 }
-                None => {} // still waiting for more shards
-            },
+
+                let instruction = match ctx.handle(message, src).await {
+                    Ok(i) => i,
+                    Err(_) => continue,
+                };
+
+                if let Instruction::Noop { ref why } = instruction {
+                    // another example how to steer the core library
+                    debug!("noop instruction: {why}");
+                }
+
+                // TODO: refactor to instruction.execute(&ctx).await?;
+                ctx.execute(instruction).await?;
+            }
         }
     }
-}
-
-async fn handle_instruction(_ctx: &Context, instruction: Instruction, src: SocketAddr) -> anyhow::Result<()> {
-    match instruction {
-        Instruction::ReplyPong { ts_m: _ } => {
-            // handle pong reply if needed
-        }
-
-        Instruction::SpecialBusiness { business } => {
-            // handle special business messages
-            println!("received special business from {:?}, data len: {}", src, business.len());
-        }
-
-        Instruction::SpecialBusinessReply { business } => {
-            // handle special business reply messages
-            println!("received special business reply from {:?}, data len: {}", src, business.len());
-        }
-
-        Instruction::Noop => {
-            // Most protocol messages now handle their state internally and return Noop
-            // This is the expected case for NewPhoneWhoDis, What, and other protocol messages
-        }
-
-        _ => {
-            // Handle any other instructions that still need processing
-            // Most have been moved to protocol handle_inner implementations
-        }
-    }
-
-    Ok(())
 }

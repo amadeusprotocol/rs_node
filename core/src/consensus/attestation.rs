@@ -97,7 +97,7 @@ impl Protocol for AttestationBulk {
         _src: std::net::SocketAddr,
     ) -> Result<protocol::Instruction, protocol::Error> {
         // TODO: handle the attestation bulk
-        Ok(protocol::Instruction::Noop)
+        Ok(protocol::Instruction::Noop { why: "attestation bulk handling not implemented".to_string() })
     }
 }
 

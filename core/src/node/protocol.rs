@@ -8,6 +8,7 @@ use crate::consensus::entry::{Entry, EntrySummary};
 use crate::consensus::tx;
 use crate::consensus::{attestation, entry};
 use crate::metrics::Metrics;
+use crate::node::peers::HandshakeStatus;
 use crate::node::{ReedSolomonReassembler, anr, msg_v2, reassembler};
 use crate::socket::UdpSocketExt;
 use crate::utils::bls12_381 as bls;
@@ -19,7 +20,7 @@ use std::collections::HashMap;
 use std::io::Error as IoError;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing::{instrument, warn};
+use tracing::{debug, instrument, warn};
 
 /// Convert an integer to binary representation compatible with Elixir's :erlang.integer_to_binary/1
 /// This creates the minimal big-endian byte representation without leading zeros
@@ -48,11 +49,6 @@ pub trait Protocol: Typename + Send + Sync {
     /// Convert to ETF binary format for network transmission
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error>;
     /// Handle a message returning instructions for upper layers
-    #[instrument(skip(self, ctx), fields(proto = %self.typename()), name = "Proto::handle")]
-    async fn handle_with_metrics(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
-        ctx.metrics.add_incoming_proto_by_name(self.typename());
-        self.handle(ctx, src).await.inspect_err(|e| ctx.metrics.add_error(e))
-    }
     async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error>;
     /// Send this protocol message to a destination using context's UDP socket
     async fn send_to_with_metrics(
@@ -67,7 +63,7 @@ pub trait Protocol: Typename + Send + Sync {
         for shard in &shards {
             socket.send_to_with_metrics(shard, dst, metrics).await?;
         }
-        metrics.add_outgoing_proto_by_name(self.typename());
+        metrics.add_outgoing_proto(self.typename());
         Ok(())
     }
     async fn send_to(&self, config: &Config, socket: Arc<dyn UdpSocketExt>, dst: SocketAddr) -> Result<(), Error> {
@@ -112,11 +108,10 @@ impl Typename for Error {
 }
 
 /// Result of handling an incoming message.
-#[derive(Debug)]
+#[derive(Debug, strum_macros::IntoStaticStr)]
 pub enum Instruction {
-    Noop,
-    ReplyPong { ts_m: u128 },
-    ObservedPong { ts_m: u128, seen_time_ms: u128 },
+    Noop { why: String },
+    SendPong { ts_m: u128, dst: SocketAddr },
     ValidTxs { txs: Vec<Vec<u8>> },
     Peers { ips: Vec<String> },
     ReceivedSol { sol: Solution },
@@ -131,14 +126,21 @@ pub enum Instruction {
     SpecialBusinessReply { business: Vec<u8> },
     SolicitEntry { hash: Vec<u8> },
     SolicitEntry2,
+    SendWhat { what: What, dst: SocketAddr },
     ReplyWhatChallenge { anr: anr::Anr, challenge: u64 },
     ReceivedWhatResponse { responder_anr: anr::Anr, challenge: u64, their_signature: Vec<u8> },
     HandshakeComplete { anr: anr::Anr },
 }
 
+impl Typename for Instruction {
+    fn typename(&self) -> &'static str {
+        self.into()
+    }
+}
+
 /// Does proto parsing and validation
 #[instrument(skip(bin), name = "Proto::from_etf_validated")]
-pub fn from_etf_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
+pub fn parse_etf_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
     // TODO: this function is a main UDP router and is subject to refactoring
     let term = Term::decode(bin)?;
     let map = term.get_term_map().ok_or(Error::BadEtf("map"))?;
@@ -146,12 +148,12 @@ pub fn from_etf_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
     // `op` determines the variant
     let op_atom = map.get_atom("op").ok_or(Error::BadEtf("op"))?;
     let proto: Box<dyn Protocol> = match op_atom.name.as_str() {
-        Ping::NAME => Box::new(Ping::from_etf_map_validated(map)?),
+        Ping::TYPENAME => Box::new(Ping::from_etf_map_validated(map)?),
         Pong::NAME => Box::new(Pong::from_etf_map_validated(map)?),
         Entry::NAME => Box::new(Entry::from_etf_map_validated(map)?),
         AttestationBulk::NAME => Box::new(AttestationBulk::from_etf_map_validated(map)?),
         Solution::NAME => Box::new(Solution::from_etf_map_validated(map)?),
-        TxPool::NAME => Box::new(TxPool::from_etf_map_validated(map)?),
+        TxPool::TYPENAME => Box::new(TxPool::from_etf_map_validated(map)?),
         Peers::NAME => Box::new(Peers::from_etf_map_validated(map)?),
         NewPhoneWhoDis::NAME => Box::new(NewPhoneWhoDis::from_etf_map_validated(map)?),
         What::NAME => Box::new(What::from_etf_map_validated(map)?),
@@ -237,7 +239,7 @@ pub struct SolicitEntry2;
 
 #[derive(Debug)]
 pub struct NewPhoneWhoDis {
-    pub anr: Vec<u8>, // packed ANR binary (legacy format)
+    pub anr: Vec<u8>,           // packed ANR binary (legacy format)
     pub anr_term: Option<Term>, // direct ANR term (more efficient)
     pub challenge: u64,
 }
@@ -251,7 +253,7 @@ pub struct What {
 
 impl Typename for Ping {
     fn typename(&self) -> &'static str {
-        Self::NAME
+        Self::TYPENAME
     }
 }
 
@@ -277,13 +279,100 @@ impl Protocol for Ping {
         term.encode(&mut etf_data)?;
         Ok(etf_data)
     }
-    async fn handle(&self, _ctx: &Context, _src: SocketAddr) -> Result<Instruction, Error> {
-        Ok(Instruction::ReplyPong { ts_m: self.ts_m })
+    async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
+        use crate::utils::bls12_381 as bls;
+
+        // TODO: validate temporal and rooted entry signatures like in Elixir
+        // For now, skip signature validation to fix compilation
+
+        // check if peer has permission slip (handshaked and valid IP)
+        let has_permission_slip = if let std::net::IpAddr::V4(peer_ip) = src.ip() {
+            // check if peer is handshaked by looking up their public key
+            if let Ok(Some(peer)) = ctx.node_peers.by_ip(peer_ip).await {
+                if let Some(ref pk) = peer.pk {
+                    // check if this pk is handshaked with correct ip
+                    match ctx.node_registry.is_handshaked(pk).await {
+                        Ok(handshaked) => handshaked,
+                        Err(_) => false,
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        // TODO: spawn peer broadcast task if has permission slip (simplified for now)
+        if has_permission_slip {
+            debug!("peer {} has permission slip, would broadcast peers", src);
+        }
+
+        // update peer info following Elixir implementation
+        if let std::net::IpAddr::V4(peer_ip) = src.ip() {
+            let current_time_ms = crate::utils::misc::get_unix_millis_now() as u64;
+
+            // get signer from temporal entry header
+            let signer = self.temporal.header.signer.to_vec();
+
+            // check if this is a trainer for current height or has permission slip
+            let is_trainer = match crate::consensus::trainers_for_height(crate::consensus::chain_height()) {
+                Some(trainers) => trainers.iter().any(|pk| pk.as_slice() == signer),
+                None => false,
+            };
+
+            if has_permission_slip || is_trainer {
+                // try to update existing peer
+                let _ = ctx.node_peers.update_peer_activity(peer_ip, "ping").await;
+
+                // update peer with additional ping-specific data
+                if let Ok(Some(_)) = ctx.node_peers.by_ip(peer_ip).await {
+                    // Update via the peers system - use existing methods
+                    let _ = ctx.node_peers.update_peer_from_anr(peer_ip, &signer, "unknown").await;
+                } else {
+                    // create new peer
+                    let new_peer = crate::node::peers::Peer {
+                        ip: peer_ip,
+                        pk: Some(signer.clone()),
+                        version: None, // will be set from ANR later
+                        latency: None,
+                        last_msg: current_time_ms,
+                        last_ping: Some(current_time_ms),
+                        last_pong: None,
+                        shared_secret: if let Ok(shared_key) = bls::get_shared_secret(&signer, &ctx.config.trainer_sk) {
+                            Some(shared_key.to_vec())
+                        } else {
+                            None
+                        },
+                        temporal: Some(crate::node::peers::TemporalInfo {
+                            header_unpacked: crate::node::peers::HeaderInfo {
+                                height: self.temporal.header.height,
+                                prev_hash: Some(self.temporal.header.prev_hash.to_vec()),
+                            },
+                        }),
+                        rooted: Some(crate::node::peers::RootedInfo {
+                            header_unpacked: crate::node::peers::HeaderInfo {
+                                height: self.rooted.header.height,
+                                prev_hash: Some(self.rooted.header.prev_hash.to_vec()),
+                            },
+                        }),
+                        last_seen: current_time_ms,
+                        last_msg_type: Some("ping".to_string()),
+                        handshake_status: crate::node::peers::HandshakeStatus::None,
+                    };
+                    let _ = ctx.node_peers.insert_new_peer(new_peer).await;
+                }
+            }
+        }
+
+        Ok(Instruction::SendPong { ts_m: self.ts_m, dst: src })
     }
 }
 
 impl Ping {
-    pub const NAME: &'static str = "ping";
+    pub const TYPENAME: &'static str = "ping";
     /// Create a new Ping with current timestamp
     pub fn new(temporal: EntrySummary, rooted: EntrySummary) -> Self {
         let ts_m = get_unix_millis_now();
@@ -334,9 +423,45 @@ impl Protocol for Pong {
         Ok(etf_data)
     }
 
-    async fn handle(&self, _ctx: &Context, _src: SocketAddr) -> Result<Instruction, Error> {
-        // TODO: update ETS-like peer table with latency now_ms - p.ts_m
-        Ok(Instruction::Noop)
+    async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
+        // calculate latency and update peer information following Elixir implementation
+        if let std::net::IpAddr::V4(peer_ip) = src.ip() {
+            let current_time_ms = crate::utils::misc::get_unix_millis_now() as u64;
+            let latency = current_time_ms.saturating_sub(self.ts_m as u64);
+
+            debug!("observed pong from {} with latency {}ms", peer_ip, latency);
+
+            // try to update existing peer activity first
+            let _ = ctx.node_peers.update_peer_activity(peer_ip, "pong").await;
+
+            // check if peer exists and update with latency info
+            if let Ok(Some(_)) = ctx.node_peers.by_ip(peer_ip).await {
+                // For now, just update activity - could add latency update method to NodePeers later
+                debug!("updated existing peer {} activity", peer_ip);
+            } else {
+                // create new peer
+                let new_peer = crate::node::peers::Peer {
+                    ip: peer_ip,
+                    pk: None, // will be set from handshake later
+                    version: None,
+                    latency: Some(latency),
+                    last_msg: current_time_ms,
+                    last_ping: None,
+                    last_pong: Some(current_time_ms),
+                    shared_secret: None,
+                    temporal: None,
+                    rooted: None,
+                    last_seen: current_time_ms,
+                    last_msg_type: Some("pong".to_string()),
+                    handshake_status: crate::node::peers::HandshakeStatus::None,
+                };
+                let _ = ctx.node_peers.insert_new_peer(new_peer).await;
+            }
+
+            return Ok(Instruction::Noop { why: "pong processed".to_string() });
+        }
+
+        Ok(Instruction::Noop { why: "ipv6 pong was not processed".to_string() })
     }
 }
 
@@ -346,7 +471,7 @@ impl Pong {
 
 impl Typename for TxPool {
     fn typename(&self) -> &'static str {
-        Self::NAME
+        Self::TYPENAME
     }
 }
 
@@ -362,7 +487,7 @@ impl Protocol for TxPool {
         // create list of transaction binaries (txs_packed is directly a list of binaries)
         let tx_terms: Vec<Term> = self.valid_txs.iter().map(|tx| Term::from(Binary { bytes: tx.clone() })).collect();
         let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
         // txs_packed is directly a list of binary terms, not a binary containing an encoded list
         m.insert(Term::Atom(Atom::from("txs_packed")), Term::from(List { elements: tx_terms }));
         let term = Term::from(Map { map: m });
@@ -373,12 +498,12 @@ impl Protocol for TxPool {
 
     async fn handle(&self, _ctx: &Context, _src: SocketAddr) -> Result<Instruction, Error> {
         // TODO: update ETS-like tx pool with valid_txs
-        Ok(Instruction::Noop)
+        Ok(Instruction::Noop { why: "txpool handling not implemented".to_string() })
     }
 }
 
 impl TxPool {
-    pub const NAME: &'static str = "txpool";
+    pub const TYPENAME: &'static str = "txpool";
 
     fn get_valid_txs_from_list(txs_list: &[Term]) -> Result<Vec<Vec<u8>>, Error> {
         let mut good: Vec<Vec<u8>> = Vec::with_capacity(txs_list.len());
@@ -434,7 +559,7 @@ impl Protocol for Peers {
 
     async fn handle(&self, _ctx: &Context, _src: SocketAddr) -> Result<Instruction, Error> {
         // TODO: update ETS-like peer table with new IPs
-        Ok(Instruction::Noop)
+        Ok(Instruction::Noop { why: "peers handling not implemented".to_string() })
     }
 }
 
@@ -466,7 +591,7 @@ mod tests {
         let bin = ping.to_etf_bin().expect("should serialize");
 
         // deserialize back
-        let result = from_etf_bin(&bin).expect("should deserialize");
+        let result = parse_etf_bin(&bin).expect("should deserialize");
 
         // check that we get the right type
         assert_eq!(result.typename(), "ping");
@@ -477,7 +602,7 @@ mod tests {
         let pong = Pong { ts_m: 1234567890, seen_time_ms: 9876543210 };
 
         let bin = pong.to_etf_bin().expect("should serialize");
-        let result = from_etf_bin(&bin).expect("should deserialize");
+        let result = parse_etf_bin(&bin).expect("should deserialize");
 
         // check that the result type is Pong
         assert_eq!(result.typename(), "pong");
@@ -488,7 +613,7 @@ mod tests {
         let txpool = TxPool { valid_txs: vec![vec![1, 2, 3], vec![4, 5, 6]] };
 
         let bin = txpool.to_etf_bin().expect("should serialize");
-        let result = from_etf_bin(&bin).expect("should deserialize");
+        let result = parse_etf_bin(&bin).expect("should deserialize");
 
         assert_eq!(result.typename(), "txpool");
     }
@@ -498,7 +623,7 @@ mod tests {
         let peers = Peers { ips: vec!["192.168.1.1".to_string(), "10.0.0.1".to_string()] };
 
         let bin = peers.to_etf_bin().expect("should serialize");
-        let result = from_etf_bin(&bin).expect("should deserialize");
+        let result = parse_etf_bin(&bin).expect("should deserialize");
 
         assert_eq!(result.typename(), "peers");
     }
@@ -522,7 +647,7 @@ mod tests {
 
         // roundtrip serialize/deserialize
         let bin = msg.to_etf_bin().expect("serialize");
-        let parsed = from_etf_bin(&bin).expect("deserialize");
+        let parsed = parse_etf_bin(&bin).expect("deserialize");
         assert_eq!(parsed.typename(), "new_phone_who_dis");
 
         // Test that message can be parsed (handle_inner now does state updates directly)
@@ -570,7 +695,7 @@ mod tests {
         let msg = What::new(responder_anr.clone(), challenge, sig.clone()).expect("what new");
 
         let bin = msg.to_etf_bin().expect("serialize");
-        let parsed = from_etf_bin(&bin).expect("deserialize");
+        let parsed = parse_etf_bin(&bin).expect("deserialize");
         assert_eq!(parsed.typename(), "what?");
 
         let _src = SocketAddr::V4(SocketAddrV4::new(ip, 36969));
@@ -621,13 +746,13 @@ mod tests {
         assert_eq!(integer_to_binary(255), vec![255]);
         assert_eq!(integer_to_binary(256), vec![1, 0]);
         assert_eq!(integer_to_binary(1000), vec![3, 232]); // 0x03E8
-        
+
         // Test typical Unix timestamp (around current time)
         let timestamp = 1693958400u64; // Example timestamp
         let bytes = integer_to_binary(timestamp);
         assert!(bytes.len() <= 8); // Should be compact representation
         assert!(bytes.len() >= 1); // Should have at least one byte
-        
+
         // Test that it's the minimal representation (no leading zeros)
         assert_ne!(bytes[0], 0);
     }
@@ -646,32 +771,33 @@ mod tests {
 
         // Test edge case challenge values to ensure ETF encoding works correctly
         let test_challenges = vec![
-            0u64,                    // Zero
-            1u64,                    // Minimum positive
-            255u64,                  // Max FixInteger (u8)
-            256u64,                  // First BigInteger case  
-            65535u64,                // Max u16
-            65536u64,                // First u16 overflow
-            (i32::MAX as u64),       // Max i32 (FixInteger boundary)
-            (i32::MAX as u64) + 1,   // First BigInteger case
-            1693958400u64,           // Typical Unix timestamp
-            (i64::MAX as u64) - 1,   // Near maximum i64 value
+            0u64,                  // Zero
+            1u64,                  // Minimum positive
+            255u64,                // Max FixInteger (u8)
+            256u64,                // First BigInteger case
+            65535u64,              // Max u16
+            65536u64,              // First u16 overflow
+            (i32::MAX as u64),     // Max i32 (FixInteger boundary)
+            (i32::MAX as u64) + 1, // First BigInteger case
+            1693958400u64,         // Typical Unix timestamp
+            (i64::MAX as u64) - 1, // Near maximum i64 value
         ];
 
         for challenge in test_challenges {
             // Create message with this challenge
-            let msg = NewPhoneWhoDis::new(my_anr.clone(), challenge).expect(&format!("npwd new with challenge {}", challenge));
+            let msg = NewPhoneWhoDis::new(my_anr.clone(), challenge)
+                .expect(&format!("npwd new with challenge {}", challenge));
 
             // Serialize to ETF
             let bin = msg.to_etf_bin().expect(&format!("serialize challenge {}", challenge));
 
             // Deserialize back
-            let parsed = from_etf_bin(&bin).expect(&format!("deserialize challenge {}", challenge));
+            let parsed = parse_etf_bin(&bin).expect(&format!("deserialize challenge {}", challenge));
             assert_eq!(parsed.typename(), "new_phone_who_dis");
 
             // Cast back to NewPhoneWhoDis to verify challenge field
             if let Ok(parsed_msg) = NewPhoneWhoDis::from_etf_map_validated(
-                Term::decode(&bin[..]).expect("decode").get_term_map().expect("map")
+                Term::decode(&bin[..]).expect("decode").get_term_map().expect("map"),
             ) {
                 assert_eq!(parsed_msg.challenge, challenge, "Challenge mismatch for value {}", challenge);
             }
@@ -689,21 +815,21 @@ mod tests {
         let pop = bls::sign(&sk, &pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("pop");
         let ip = Ipv4Addr::new(127, 0, 0, 1);
         let responder_anr = anr::Anr::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
-        
+
         let signature = vec![1u8; 96]; // Mock signature
 
         // Test same edge case challenge values for What messages
         let test_challenges = vec![
-            0u64,                    
-            1u64,                    
-            255u64,                  
-            256u64,                  
-            65535u64,                
-            65536u64,                
-            (i32::MAX as u64),       
-            (i32::MAX as u64) + 1,   
-            1693958400u64,           
-            (i64::MAX as u64) - 1,   // Near maximum i64 value
+            0u64,
+            1u64,
+            255u64,
+            256u64,
+            65535u64,
+            65536u64,
+            (i32::MAX as u64),
+            (i32::MAX as u64) + 1,
+            1693958400u64,
+            (i64::MAX as u64) - 1, // Near maximum i64 value
         ];
 
         for challenge in test_challenges {
@@ -715,13 +841,13 @@ mod tests {
             let bin = msg.to_etf_bin().expect(&format!("serialize what challenge {}", challenge));
 
             // Deserialize back
-            let parsed = from_etf_bin(&bin).expect(&format!("deserialize what challenge {}", challenge));
+            let parsed = parse_etf_bin(&bin).expect(&format!("deserialize what challenge {}", challenge));
             assert_eq!(parsed.typename(), "what?");
 
             // Cast back to What to verify challenge field
-            if let Ok(parsed_msg) = What::from_etf_map_validated(
-                Term::decode(&bin[..]).expect("decode").get_term_map().expect("map")
-            ) {
+            if let Ok(parsed_msg) =
+                What::from_etf_map_validated(Term::decode(&bin[..]).expect("decode").get_term_map().expect("map"))
+            {
                 assert_eq!(parsed_msg.challenge, challenge, "What challenge mismatch for value {}", challenge);
             }
         }
@@ -736,45 +862,49 @@ mod tests {
         // Create two different ANRs for sender and responder
         let sender_sk = bls::generate_sk();
         let sender_pk = bls::get_public_key(&sender_sk).expect("sender pk");
-        let sender_pop = bls::sign(&sender_sk, &sender_pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("sender pop");
-        
-        let responder_sk = bls::generate_sk(); 
+        let sender_pop =
+            bls::sign(&sender_sk, &sender_pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("sender pop");
+
+        let responder_sk = bls::generate_sk();
         let responder_pk = bls::get_public_key(&responder_sk).expect("responder pk");
-        let responder_pop = bls::sign(&responder_sk, &responder_pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("responder pop");
-        
+        let responder_pop = bls::sign(&responder_sk, &responder_pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_")
+            .expect("responder pop");
+
         let ip = Ipv4Addr::new(127, 0, 0, 1);
-        let _sender_anr = anr::Anr::build(&sender_sk, &sender_pk, &sender_pop, ip, "sender".to_string()).expect("sender anr");
-        let responder_anr = anr::Anr::build(&responder_sk, &responder_pk, &responder_pop, ip, "responder".to_string()).expect("responder anr");
+        let _sender_anr =
+            anr::Anr::build(&sender_sk, &sender_pk, &sender_pop, ip, "sender".to_string()).expect("sender anr");
+        let responder_anr = anr::Anr::build(&responder_sk, &responder_pk, &responder_pop, ip, "responder".to_string())
+            .expect("responder anr");
 
         // Test with various challenge values including boundary cases
         let test_challenges = vec![
-            42u64,                    // Small value (FixInteger)
-            1000u64,                  // Medium value (FixInteger)
-            (i32::MAX as u64),        // Boundary (FixInteger)
-            (i32::MAX as u64) + 1,    // First BigInteger
-            1693958400u64,            // Typical timestamp (BigInteger)
+            42u64,                 // Small value (FixInteger)
+            1000u64,               // Medium value (FixInteger)
+            (i32::MAX as u64),     // Boundary (FixInteger)
+            (i32::MAX as u64) + 1, // First BigInteger
+            1693958400u64,         // Typical timestamp (BigInteger)
         ];
 
         for challenge in test_challenges {
             // Test the signature generation/verification cycle with different integer encodings
-            
+
             // Simulate what happens in NewPhoneWhoDis::handle - responder signs (sender_pk || challenge)
             let mut challenge_msg_sign = sender_pk.to_vec();
             let challenge_bytes = integer_to_binary(challenge);
             challenge_msg_sign.extend_from_slice(&challenge_bytes);
-            
+
             let signature = bls::sign(&responder_sk, &challenge_msg_sign, crate::consensus::DST_ANR_CHALLENGE)
                 .expect(&format!("sign challenge {}", challenge));
 
-            // Create What message with the signature  
+            // Create What message with the signature
             let what_msg = What::new(responder_anr.clone(), challenge, signature.to_vec())
                 .expect(&format!("what create challenge {}", challenge));
 
             // Serialize/deserialize the What message to test ETF encoding
             let bin = what_msg.to_etf_bin().expect(&format!("what serialize challenge {}", challenge));
-            let parsed_what = What::from_etf_map_validated(
-                Term::decode(&bin[..]).expect("decode").get_term_map().expect("map")
-            ).expect(&format!("what deserialize challenge {}", challenge));
+            let parsed_what =
+                What::from_etf_map_validated(Term::decode(&bin[..]).expect("decode").get_term_map().expect("map"))
+                    .expect(&format!("what deserialize challenge {}", challenge));
 
             // Verify the signature using the same format as What::handle - should verify (sender_pk || challenge)
             let mut challenge_msg_verify = sender_pk.to_vec();
@@ -782,12 +912,17 @@ mod tests {
             challenge_msg_verify.extend_from_slice(&challenge_bytes_verify);
 
             // This should succeed, proving signature compatibility
-            bls::verify(&responder_pk, &parsed_what.signature, &challenge_msg_verify, crate::consensus::DST_ANR_CHALLENGE)
-                .expect(&format!("verify challenge {} signature", challenge));
+            bls::verify(
+                &responder_pk,
+                &parsed_what.signature,
+                &challenge_msg_verify,
+                crate::consensus::DST_ANR_CHALLENGE,
+            )
+            .expect(&format!("verify challenge {} signature", challenge));
 
             // Double-check: the challenge round-tripped correctly
             assert_eq!(parsed_what.challenge, challenge, "Challenge roundtrip failed for {}", challenge);
-            
+
             // Double-check: the signature bytes are preserved
             assert_eq!(parsed_what.signature, signature.to_vec(), "Signature mismatch for challenge {}", challenge);
         }
@@ -886,7 +1021,7 @@ impl Protocol for NewPhoneWhoDis {
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
-        
+
         // Use direct ANR term if available (more efficient), otherwise fallback to binary
         let anr_term = if let Some(ref term) = self.anr_term {
             term.clone()
@@ -894,7 +1029,7 @@ impl Protocol for NewPhoneWhoDis {
             Term::Binary(Binary::from(self.anr.clone()))
         };
         m.insert(Term::Atom(Atom::from("anr")), anr_term);
-        
+
         // Use native integer encoding compatible with Elixir - prefer FixInteger for small values
         let challenge_term = if self.challenge <= (i32::MAX as u64) {
             Term::FixInteger(eetf::FixInteger { value: self.challenge as i32 })
@@ -930,12 +1065,10 @@ impl Protocol for NewPhoneWhoDis {
     }
 
     async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
-        // deserialize the sender's ANR from binary
         let anr_term = Term::decode(&self.anr[..])?;
         let anr_map = anr_term.get_term_map().ok_or(Error::BadEtf("anr_map"))?;
 
-        // extract ANR fields
-        // IP4 is stored as string in Elixir format: "127.0.0.1"
+        // ip4 is stored as string in Elixir format: "127.0.0.1"
         let ip4_str = anr_map.get_string("ip4").ok_or(Error::BadEtf("ip4"))?;
         let ip4 = ip4_str.parse::<std::net::Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse"))?;
 
@@ -957,56 +1090,43 @@ impl Protocol for NewPhoneWhoDis {
             version,
             anr_name: None,
             anr_desc: None,
-            handshaked: false,
+            handshaked: true,
             hasChainPop: false,
             error: None,
             error_tries: 0,
             next_check: ts + 3,
         };
 
-        // validate ANR signature
         if !sender_anr.verify_signature() {
-            return Ok(Instruction::Noop);
+            warn!("received new_phone_who_dis with invalid anr signature from {src}");
+            return Err(Error::BadEtf("anr_signature_invalid"));
         }
 
-        // Validate that sender's IP matches ANR's IP4 field (security requirement)
+        // SECURITY: validate that sender ip matches anr ip4 field
         if std::net::IpAddr::V4(ip4) != src.ip() {
-            return Ok(Instruction::Noop);
+            warn!("received new_phone_who_dis with mismatched ip from {src}, anr ip4 {ip4}");
+            return Err(Error::BadEtf("anr_ip_mismatch"));
         }
 
-        // Validate challenge is a reasonable integer
         if self.challenge == 0 {
-            return Ok(Instruction::Noop);
+            warn!("received new_phone_who_dis with zero challenge from {:?}", src);
+            return Err(Error::BadEtf("challenge_zero"));
         }
 
-        // Handle the state updates directly here
-        println!("received new_phone_who_dis from {:?}, challenge {}, replying with what", src, self.challenge);
-
-        // Insert the sender's ANR into our store
-        ctx.node_registry.insert(sender_anr.clone()).await.map_err(Into::<Error>::into)?;
+        debug!("received new_phone_who_dis from {src}, challenge {}, replying with what", self.challenge);
+        ctx.node_registry.insert(sender_anr.clone()).await?;
 
         // Update peer information with ANR data (version and public key)
         if let std::net::IpAddr::V4(sender_ip) = src.ip() {
-            let _ = ctx.update_peer_from_anr(sender_ip, &sender_anr.pk, &sender_anr.version).await;
-            let _ = ctx.set_peer_handshake_status(sender_ip, crate::node::peers::HandshakeStatus::SentWhat).await;
+            if let Err(e) = ctx.update_peer_from_anr(sender_ip, &sender_anr.pk, &sender_anr.version).await {
+                warn!("failed to update peer info from ANR for {sender_ip}: {e}");
+            }
+            if let Err(e) = ctx.set_peer_handshake_status(sender_ip, HandshakeStatus::SentWhat).await {
+                warn!("failed to set handshake status for {sender_ip}: {e}");
+            }
         }
 
-        // Get our own ANR to include in the What response
-        let my_ip = ctx
-            .get_config()
-            .public_ipv4
-            .as_ref()
-            .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok())
-            .unwrap_or_else(|| std::net::Ipv4Addr::new(127, 0, 0, 1));
-
-        let my_anr = anr::Anr::build(
-            &ctx.get_config().trainer_sk,
-            &ctx.get_config().trainer_pk,
-            &ctx.get_config().trainer_pop,
-            my_ip,
-            ctx.get_config().get_ver(),
-        )
-        .map_err(|_| Error::BadEtf("my_anr_build_failed"))?;
+        let my_anr = anr::Anr::from_config(&ctx.get_config())?;
 
         // Sign the challenge: signature = BLS(sender_pk || challenge) with OUR private key
         // Use Elixir-compatible integer_to_binary format instead of fixed 8-byte encoding
@@ -1018,13 +1138,10 @@ impl Protocol for NewPhoneWhoDis {
             .map_err(|_| Error::BadEtf("challenge_sign_failed"))?;
 
         // Create What response with OUR ANR
-        let what_msg = What::new(my_anr, self.challenge, signature.to_vec())
+        let what = What::new(my_anr, self.challenge, signature.to_vec())
             .map_err(|_| Error::BadEtf("what_msg_create_failed"))?;
 
-        // Send the What message directly
-        what_msg.send_to_with_metrics(&ctx.config, ctx.socket.clone(), src, &ctx.metrics).await.map_err(|_| Error::BadEtf("what_send_failed"))?;
-
-        Ok(Instruction::Noop)
+        Ok(Instruction::SendWhat { what, dst: src })
     }
 }
 
@@ -1125,12 +1242,12 @@ impl Protocol for What {
 
         // validate the responder's ANR signature
         if !responder_anr.verify_signature() {
-            return Ok(Instruction::Noop);
+            return Ok(Instruction::Noop { why: "invalid anr signature".to_string() });
         }
 
         // Validate that sender's IP matches ANR's IP4 field (security requirement)
         if std::net::IpAddr::V4(ip4) != src.ip() {
-            return Ok(Instruction::Noop);
+            return Ok(Instruction::Noop { why: "ip mismatch".to_string() });
         }
 
         // Validate timestamp within 6-second window (replay attack prevention)
@@ -1139,7 +1256,7 @@ impl Protocol for What {
         let delta =
             if current_time > challenge_time { current_time - challenge_time } else { challenge_time - current_time };
         if delta > 6 {
-            return Ok(Instruction::Noop);
+            return Ok(Instruction::Noop { why: "stale challenge".to_string() });
         }
 
         // Handle the state updates directly here
@@ -1156,14 +1273,17 @@ impl Protocol for What {
             bls::verify(&responder_anr.pk, &self.signature, &challenge_msg, crate::consensus::DST_ANR_CHALLENGE)
         {
             println!("signature verification failed: {}", e);
-            return Ok(Instruction::Noop);
+            return Ok(Instruction::Noop { why: "signature verification failed".to_string() });
         }
 
         println!("handshake completed with {:?}, pk: {}", src, bs58::encode(&responder_anr.pk).into_string());
 
         // Insert the responder's ANR and mark as handshaked
         ctx.node_registry.insert(responder_anr.clone()).await.map_err(|_| Error::BadEtf("anr_insert_failed"))?;
-        ctx.node_registry.set_handshaked(&responder_anr.pk).await.map_err(|_| Error::BadEtf("anr_set_handshaked_failed"))?;
+        ctx.node_registry
+            .set_handshaked(&responder_anr.pk)
+            .await
+            .map_err(|_| Error::BadEtf("anr_set_handshaked_failed"))?;
 
         // Update peer information with ANR data (version and public key)
         if let std::net::IpAddr::V4(responder_ip) = src.ip() {
@@ -1178,7 +1298,7 @@ impl Protocol for What {
 
         println!("peer {} is now handshaked", bs58::encode(&responder_anr.pk).into_string());
 
-        Ok(Instruction::Noop)
+        Ok(Instruction::Noop { why: "handshake completed".to_string() })
     }
 }
 

@@ -1,14 +1,12 @@
 use crate::config::{ANR_CHECK_SECS, CLEANUP_SECS};
 use crate::node::anr::{Anr, NodeRegistry};
 use crate::node::peers::HandshakeStatus::SentNewPhoneWhoDis;
-use crate::node::protocol::NewPhoneWhoDis;
-use crate::node::protocol::Protocol;
+use crate::node::protocol::*;
+use crate::node::protocol::{Instruction, NewPhoneWhoDis};
 use crate::node::{NodeState, peers};
-use crate::utils::misc::TermExt;
-#[cfg(test)]
-use crate::socket::MockSocket;
 use crate::socket::UdpSocketExt;
-use crate::utils::misc::get_unix_secs_now;
+use crate::utils::misc::{TermExt, Typename};
+use crate::utils::misc::get_unix_millis_now;
 use crate::{Error, config, metrics, node};
 use rand::random;
 use serde::{Deserialize, Serialize};
@@ -19,34 +17,6 @@ use std::sync::Arc;
 use tokio::spawn;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
-
-/// Reads UDP datagram and silently does parsing, validation and reassembly
-/// If the protocol message is complete, returns Some(Protocol)
-pub async fn read_udp_packet(ctx: &Context, src: SocketAddr, buf: &[u8]) -> Option<Box<dyn Protocol>> {
-    use crate::node::protocol::from_etf_bin;
-    ctx.metrics.add_incoming_udp_packet(buf.len());
-
-    match ctx.reassembler.add_shard(buf).await {
-        Ok(Some(packet)) => match from_etf_bin(&packet) {
-            Ok(proto) => {
-                let _last_ts = get_unix_secs_now();
-                let last_msg = proto.typename().to_string();
-
-                // Extract IP from SocketAddr and update peer info
-                if let std::net::IpAddr::V4(ipv4) = src.ip() {
-                    let _ = ctx.update_peer_activity(ipv4, &last_msg).await;
-                }
-
-                return Some(proto);
-            }
-            Err(e) => ctx.metrics.add_error(&e),
-        },
-        Ok(None) => {} // waiting for more shards, not an error
-        Err(e) => ctx.metrics.add_error(&e),
-    }
-
-    None
-}
 
 /// Runtime container for config, metrics, reassembler, and node state.
 pub struct Context {
@@ -111,15 +81,13 @@ impl Context {
                 // Add detailed logging to debug the ANR format being sent
                 info!("bootstrap: created new_phone_who_dis with challenge {}", challenge);
                 info!("bootstrap: ANR size: {} bytes (Elixir limit: 390 bytes) ✅", new_phone_who_dis.anr.len());
-                
+
                 // Log ANR structure for debugging
                 if let Ok(anr_term) = eetf::Term::decode(&new_phone_who_dis.anr[..]) {
                     if let Some(anr_map) = anr_term.get_term_map() {
-                        let fields: Vec<String> = anr_map.0.keys()
-                            .map(|k| format!("{:?}", k))
-                            .collect();
+                        let fields: Vec<String> = anr_map.0.keys().map(|k| format!("{:?}", k)).collect();
                         info!("bootstrap: ANR fields: [{}]", fields.join(", "));
-                        
+
                         // Check specific field formats
                         if let Some(ip4_term) = anr_map.0.get(&eetf::Term::Atom(eetf::Atom::from("ip4"))) {
                             info!("bootstrap: ANR ip4 field type: {:?}", ip4_term);
@@ -141,7 +109,8 @@ impl Context {
                 if let Ok(etf_bin) = new_phone_who_dis.to_etf_bin() {
                     info!("bootstrap: complete new_phone_who_dis message size: {} bytes", etf_bin.len());
                     // Note: The 390-byte limit in Elixir applies only to the ANR itself, not the complete message
-                    if etf_bin.len() > 1000 {  // Only warn if message is extremely large
+                    if etf_bin.len() > 1000 {
+                        // Only warn if message is extremely large
                         warn!("bootstrap: message is very large ({}B), may cause network issues", etf_bin.len());
                     }
                 }
@@ -229,12 +198,18 @@ impl Context {
                             };
 
                             // Log ANR details for verification attempts too
-                            debug!("anrcheck: ANR size: {} bytes (Elixir limit: 390 bytes) ✅", new_phone_who_dis.anr.len());
+                            debug!(
+                                "anrcheck: ANR size: {} bytes (Elixir limit: 390 bytes) ✅",
+                                new_phone_who_dis.anr.len()
+                            );
                             if let Ok(etf_bin) = new_phone_who_dis.to_etf_bin() {
                                 debug!("anrcheck: complete message size: {} bytes", etf_bin.len());
                                 // The 390-byte limit applies only to ANR, not complete message
                                 if new_phone_who_dis.anr.len() > 390 {
-                                    warn!("anrcheck: ANR size ({} bytes) exceeds Elixir's 390-byte limit!", new_phone_who_dis.anr.len());
+                                    warn!(
+                                        "anrcheck: ANR size ({} bytes) exceeds Elixir's 390-byte limit!",
+                                        new_phone_who_dis.anr.len()
+                                    );
                                 }
                             }
 
@@ -295,14 +270,22 @@ impl Context {
     }
 
     /// Convenience function to receive UDP data with metrics tracking  
-    pub async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, std::net::SocketAddr)> {
+    pub async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
         self.socket.recv_from_with_metrics(buf, &self.metrics).await
     }
 
-    pub async fn update_peer_activity(&self, ip: Ipv4Addr, last_msg: &str) -> Result<(), Error> {
-        // Update peer activity using the node_peers instance
-        self.node_peers.update_peer_activity(ip, last_msg).await.map_err(|e| Error::String(e.to_string()))?;
-        Ok(())
+    pub async fn update_peer_with_metrics(&self, src: SocketAddr, name: &str) -> Result<(), Error> {
+        use std::net::IpAddr::V4;
+        if let V4(ip) = src.ip() {
+            self.node_peers.update_peer_activity(ip, name).await.map_err(|e| {
+                warn!("can't update peer activity for {src}: {e}");
+                self.metrics.add_error(&e);
+                e.into()
+            })
+        } else {
+            warn!("can't update peer activity for ipv6 {}", src);
+            Err(Error::String("can't update ipv6 peer".into()))
+        }
     }
 
     pub async fn get_peers(&self) -> HashMap<String, PeerInfo> {
@@ -485,38 +468,64 @@ impl Context {
         tracing::info!("cleanup: cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
     }
 
-    /// Handle instruction processing following the Elixir reference implementation
-    pub async fn handle_instruction(
-        &self,
-        instruction: crate::node::protocol::Instruction,
-        src: std::net::SocketAddr,
-    ) -> Result<(), crate::Error> {
-        use crate::node::protocol::Instruction;
-        use tracing::{debug, info, warn};
+    /// Reads UDP datagram and silently does parsing, validation and reassembly
+    /// If the protocol message is complete, returns Some(Protocol)
+    pub async fn parse_udp(&self, buf: &[u8], src: SocketAddr) -> Option<Box<dyn Protocol>> {
+        self.metrics.add_incoming_udp_packet(buf.len());
+        match self.reassembler.add_shard(buf).await {
+            Ok(Some(packet)) => match parse_etf_bin(&packet) {
+                Ok(proto) => {
+                    self.update_peer_with_metrics(src, proto.typename()).await.ok()?;
+                    self.metrics.add_incoming_proto(proto.typename());
+                    return Some(proto);
+                }
+                Err(e) => self.metrics.add_error(&e),
+            },
+            Ok(None) => {} // waiting for more shards, not an error
+            Err(e) => self.metrics.add_error(&e),
+        }
 
+        None
+    }
+
+    pub async fn handle(&self, message: Box<dyn Protocol>, src: SocketAddr) -> Result<Instruction, Error> {
+        self.metrics.add_incoming_proto(message.typename());
+        message.handle(self, src).await.map_err(|e| {
+            warn!("can't handle {}: {e}", message.typename());
+            self.metrics.add_error(&e);
+            e.into()
+        })
+    }
+
+    pub async fn execute(&self, instruction: Instruction) -> Result<(), Error> {
+        let name = instruction.typename();
+        self.execute_inner(instruction).await.inspect_err(|e| warn!("can't execute {name}: {e}"))
+    }
+
+    /// Handle instruction processing following the Elixir reference implementation
+    pub async fn execute_inner(&self, instruction: Instruction) -> Result<(), Error> {
         match instruction {
-            Instruction::Noop => {
-                // Do nothing
+            Instruction::Noop { why } => {
+                debug!("noop: {why}");
                 Ok(())
             }
 
-            Instruction::ReplyPong { ts_m } => {
+            Instruction::SendWhat { what, dst } => {
+                // Send the specified protocol message to the destination
+                let Context { config, socket, metrics, .. } = self;
+                what.send_to_with_metrics(config, socket.clone(), dst, metrics)
+                    .await
+                    .map_err(|e| crate::Error::String(format!("Failed to send SendWhat to {}: {:?}", dst, e)))?;
+                Ok(())
+            }
+
+            Instruction::SendPong { ts_m, dst } => {
                 // Reply with pong message
-                use crate::node::protocol::{Pong, Protocol};
-                let pong = Pong { ts_m, seen_time_ms: crate::utils::misc::get_unix_millis_now() };
-                pong.send_to_with_metrics(&self.config, self.socket.clone(), src, &self.metrics)
+                let seen_time_ms = get_unix_millis_now();
+                let pong = Pong { ts_m, seen_time_ms };
+                pong.send_to_with_metrics(&self.config, self.socket.clone(), dst, &self.metrics)
                     .await
                     .map_err(|e| crate::Error::String(format!("Failed to send pong: {:?}", e)))
-            }
-
-            Instruction::ObservedPong { ts_m, seen_time_ms } => {
-                // Update peer latency information
-                if let std::net::IpAddr::V4(peer_ip) = src.ip() {
-                    let latency = seen_time_ms.saturating_sub(ts_m);
-                    debug!("observed pong from {} with latency {}ms", peer_ip, latency);
-                    // TODO: update peer latency in NodePeers
-                }
-                Ok(())
             }
 
             Instruction::ValidTxs { txs } => {
@@ -540,7 +549,7 @@ impl Context {
 
             Instruction::ReceivedSol { sol: _ } => {
                 // Handle received solution
-                info!("received solution from {}", src);
+                info!("received solution");
                 // TODO: validate solution and potentially submit to tx pool
                 // Following Elixir implementation:
                 // - Check epoch matches current epoch
@@ -553,7 +562,7 @@ impl Context {
 
             Instruction::ReceivedEntry { entry } => {
                 // Handle received blockchain entry
-                info!("received entry from {}, height: {}", src, entry.header.height);
+                info!("received entry, height: {}", entry.header.height);
                 // TODO: implement entry validation and insertion
                 // Following Elixir implementation:
                 // - Check if entry already exists by hash
@@ -564,7 +573,7 @@ impl Context {
 
             Instruction::AttestationBulk { bulk } => {
                 // Handle bulk attestations
-                info!("received attestation bulk with {} attestations from {}", bulk.attestations.len(), src);
+                info!("received attestation bulk with {} attestations", bulk.attestations.len());
                 // TODO: process each attestation
                 // Following Elixir implementation:
                 // - Unpack and validate each attestation
@@ -574,7 +583,7 @@ impl Context {
 
             Instruction::ConsensusesPacked { packed: _ } => {
                 // Handle packed consensuses
-                info!("received consensus bulk from {}", src);
+                info!("received consensus bulk");
                 // TODO: unpack and validate consensuses
                 // Following Elixir implementation:
                 // - Unpack each consensus
@@ -584,7 +593,7 @@ impl Context {
 
             Instruction::CatchupEntryReq { heights } => {
                 // Handle catchup entry request
-                info!("received catchup entry request for {} heights from {}", heights.len(), src);
+                info!("received catchup entry request for {} heights", heights.len());
                 if heights.len() > 100 {
                     warn!("catchup entry request too large: {} heights", heights.len());
                     return Ok(());
@@ -598,7 +607,7 @@ impl Context {
 
             Instruction::CatchupTriReq { heights } => {
                 // Handle catchup tri request (entries with attestations/consensus)
-                info!("received catchup tri request for {} heights from {}", heights.len(), src);
+                info!("received catchup tri request for {} heights", heights.len());
                 if heights.len() > 30 {
                     warn!("catchup tri request too large: {} heights", heights.len());
                     return Ok(());
@@ -612,7 +621,7 @@ impl Context {
 
             Instruction::CatchupBiReq { heights } => {
                 // Handle catchup bi request (attestations and consensuses)
-                info!("received catchup bi request for {} heights from {}", heights.len(), src);
+                info!("received catchup bi request for {} heights", heights.len());
                 if heights.len() > 30 {
                     warn!("catchup bi request too large: {} heights", heights.len());
                     return Ok(());
@@ -626,7 +635,7 @@ impl Context {
 
             Instruction::CatchupAttestationReq { hashes } => {
                 // Handle catchup attestation request
-                info!("received catchup attestation request for {} hashes from {}", hashes.len(), src);
+                info!("received catchup attestation request for {} hashes", hashes.len());
                 if hashes.len() > 30 {
                     warn!("catchup attestation request too large: {} hashes", hashes.len());
                     return Ok(());
@@ -640,7 +649,7 @@ impl Context {
 
             Instruction::SpecialBusiness { business: _ } => {
                 // Handle special business messages
-                info!("received special business from {}", src);
+                info!("received special business");
                 // TODO: implement special business handling
                 // Following Elixir implementation:
                 // - Parse business operation (slash_trainer_tx, slash_trainer_entry)
@@ -651,7 +660,7 @@ impl Context {
 
             Instruction::SpecialBusinessReply { business: _ } => {
                 // Handle special business reply messages
-                info!("received special business reply from {}", src);
+                info!("received special business reply");
                 // TODO: implement special business reply handling
                 // Following Elixir implementation:
                 // - Parse reply operation
@@ -662,7 +671,7 @@ impl Context {
 
             Instruction::SolicitEntry { hash: _ } => {
                 // Handle solicit entry request
-                info!("received solicit entry request from {}", src);
+                info!("received solicit entry request");
                 // TODO: implement solicit entry handling
                 // Following Elixir implementation:
                 // - Check if peer is authorized trainer
@@ -673,7 +682,7 @@ impl Context {
 
             Instruction::SolicitEntry2 => {
                 // Handle solicit entry2 request
-                info!("received solicit entry2 request from {}", src);
+                info!("received solicit entry2 request");
                 // TODO: implement solicit entry2 handling
                 // Following Elixir implementation:
                 // - Check if peer is authorized trainer for next height
@@ -684,7 +693,7 @@ impl Context {
 
             Instruction::ReplyWhatChallenge { anr: _, challenge: _ } => {
                 // Handle what challenge reply (part of handshake)
-                info!("replying to what challenge from {}", src);
+                info!("replying to what challenge");
                 // TODO: implement what challenge reply
                 // This is handled internally by NewPhoneWhoDis protocol handler
                 Ok(())
@@ -692,7 +701,7 @@ impl Context {
 
             Instruction::ReceivedWhatResponse { responder_anr: _, challenge: _, their_signature: _ } => {
                 // Handle received what response (handshake completion)
-                info!("received what response from {}", src);
+                info!("received what response");
                 // TODO: implement what response handling
                 // This is handled internally by What protocol handler
                 Ok(())
@@ -700,7 +709,7 @@ impl Context {
 
             Instruction::HandshakeComplete { anr: _ } => {
                 // Handle handshake completion
-                info!("handshake completed with peer {}", src);
+                info!("handshake completed with peer");
                 // TODO: mark peer as handshaked
                 // This is handled internally by What protocol handler
                 Ok(())
@@ -758,7 +767,7 @@ impl Context {
                 }
 
                 // Track sent packet metric
-                self.metrics.add_outgoing_proto_by_name("new_phone_who_dis");
+                self.metrics.add_outgoing_proto("new_phone_who_dis");
 
                 // Set handshake status to SentNewPhoneWhoDis for this peer
                 if let Ok(seed_ip) = ip.parse::<std::net::Ipv4Addr>() {
@@ -823,6 +832,7 @@ fn format_duration(duration: std::time::Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::socket::MockSocket;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn tokio_rwlock_allows_concurrent_reads() {
@@ -886,7 +896,8 @@ mod tests {
         let target_ip = Ipv4Addr::new(127, 0, 0, 1);
 
         // test that ANR creation doesn't panic and handles errors gracefully
-        let my_anr = Anr::build(&config.trainer_sk, &config.trainer_pk, &config.trainer_pop, target_ip, "testver".to_string());
+        let my_anr =
+            Anr::build(&config.trainer_sk, &config.trainer_pk, &config.trainer_pop, target_ip, "testver".to_string());
         assert!(my_anr.is_ok());
     }
 

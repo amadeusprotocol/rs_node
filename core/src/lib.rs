@@ -13,7 +13,7 @@ pub mod socket;
 pub mod utils;
 pub mod wasm;
 
-pub use context::{Context, PeerInfo, read_udp_packet};
+pub use context::{Context, PeerInfo};
 pub use metrics::{MetricsSnapshot, UdpStats};
 
 #[derive(Debug, thiserror::Error)]
@@ -22,6 +22,8 @@ pub enum Error {
     Fabric(#[from] consensus::fabric::Error),
     #[error(transparent)]
     Archiver(#[from] utils::archiver::Error),
+    #[error(transparent)]
+    Protocol(#[from] node::protocol::Error),
     #[error(transparent)]
     Config(#[from] config::Error),
     #[error(transparent)]

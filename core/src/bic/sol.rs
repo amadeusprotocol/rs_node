@@ -126,7 +126,7 @@ impl Protocol for Solution {
         _src: std::net::SocketAddr,
     ) -> Result<protocol::Instruction, protocol::Error> {
         // cache the solution
-        Ok(protocol::Instruction::Noop)
+        Ok(protocol::Instruction::Noop { why: "solution handling not implemented".to_string() })
     }
 }
 
