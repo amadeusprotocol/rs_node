@@ -239,8 +239,7 @@ pub struct SolicitEntry2;
 
 #[derive(Debug)]
 pub struct NewPhoneWhoDis {
-    pub anr: Vec<u8>,           // packed ANR binary (legacy format)
-    pub anr_term: Option<Term>, // direct ANR term (more efficient)
+    pub anr: Vec<u8>,           // packed ANR binary
     pub challenge: u64,
 }
 
@@ -1022,12 +1021,8 @@ impl Protocol for NewPhoneWhoDis {
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
 
-        // Use direct ANR term if available (more efficient), otherwise fallback to binary
-        let anr_term = if let Some(ref term) = self.anr_term {
-            term.clone()
-        } else {
-            Term::Binary(Binary::from(self.anr.clone()))
-        };
+        // Decode ANR from binary back to term to get proper nested map structure
+        let anr_term = Term::decode(&self.anr[..])?;
         m.insert(Term::Atom(Atom::from("anr")), anr_term);
 
         // Use native integer encoding compatible with Elixir - prefer FixInteger for small values
@@ -1061,7 +1056,7 @@ impl Protocol for NewPhoneWhoDis {
         };
 
         let challenge = map.get_integer("challenge").ok_or(Error::BadEtf("challenge"))?;
-        Ok(Self { anr: anr_binary, anr_term: None, challenge })
+        Ok(Self { anr: anr_binary, challenge })
     }
 
     async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
@@ -1076,7 +1071,10 @@ impl Protocol for NewPhoneWhoDis {
         let pop = anr_map.get_binary::<Vec<u8>>("pop").ok_or(Error::BadEtf("pop"))?;
         let port = anr_map.get_integer::<u16>("port").ok_or(Error::BadEtf("port"))?;
         let signature = anr_map.get_binary::<Vec<u8>>("signature").ok_or(Error::BadEtf("signature"))?;
-        let ts = anr_map.get_integer::<u64>("ts").ok_or(Error::BadEtf("ts"))?;
+        // Handle u128 timestamp - try u128 first, fallback to u64 for compatibility
+        let ts = anr_map.get_integer::<u128>("ts")
+            .or_else(|| anr_map.get_integer::<u64>("ts").map(|v| v as u128))
+            .ok_or(Error::BadEtf("ts"))?;
         let version_bytes = anr_map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version"))?;
         let version = String::from_utf8_lossy(&version_bytes).to_string();
 
@@ -1094,7 +1092,7 @@ impl Protocol for NewPhoneWhoDis {
             hasChainPop: false,
             error: None,
             error_tries: 0,
-            next_check: ts + 3,
+            next_check: (ts + 3) as u64,
         };
 
         if !sender_anr.verify_signature() {
@@ -1149,11 +1147,8 @@ impl NewPhoneWhoDis {
     pub const NAME: &'static str = "new_phone_who_dis";
 
     pub fn new(anr: anr::Anr, challenge: u64) -> Result<Self, Error> {
-        // Use direct ANR term for more efficient serialization
-        let anr_term = anr.to_etf_term()?;
-        // Keep binary format as backup for compatibility
         let anr_binary = anr.to_etf_binary()?;
-        Ok(Self { anr: anr_binary, anr_term: Some(anr_term), challenge })
+        Ok(Self { anr: anr_binary, challenge })
     }
 }
 
@@ -1168,7 +1163,9 @@ impl Protocol for What {
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
-        m.insert(Term::Atom(Atom::from("anr")), Term::Binary(Binary::from(self.anr.clone())));
+        // Decode ANR from binary back to term to get proper nested map structure
+        let anr_term = Term::decode(&self.anr[..])?;
+        m.insert(Term::Atom(Atom::from("anr")), anr_term);
         // Use native integer encoding compatible with Elixir - prefer FixInteger for small values
         let challenge_term = if self.challenge <= (i32::MAX as u64) {
             Term::FixInteger(eetf::FixInteger { value: self.challenge as i32 })
@@ -1219,7 +1216,10 @@ impl Protocol for What {
         let pop = anr_map.get_binary::<Vec<u8>>("pop").ok_or(Error::BadEtf("pop"))?;
         let port = anr_map.get_integer::<u16>("port").ok_or(Error::BadEtf("port"))?;
         let signature_anr = anr_map.get_binary::<Vec<u8>>("signature").ok_or(Error::BadEtf("signature"))?;
-        let ts = anr_map.get_integer::<u64>("ts").ok_or(Error::BadEtf("ts"))?;
+        // Handle u128 timestamp - try u128 first, fallback to u64 for compatibility
+        let ts = anr_map.get_integer::<u128>("ts")
+            .or_else(|| anr_map.get_integer::<u64>("ts").map(|v| v as u128))
+            .ok_or(Error::BadEtf("ts"))?;
         let version_bytes = anr_map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version"))?;
         let version = String::from_utf8_lossy(&version_bytes).to_string();
 
@@ -1237,7 +1237,7 @@ impl Protocol for What {
             hasChainPop: false,
             error: None,
             error_tries: 0,
-            next_check: ts + 3,
+            next_check: (ts + 3) as u64,
         };
 
         // validate the responder's ANR signature

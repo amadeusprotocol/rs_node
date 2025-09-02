@@ -328,12 +328,24 @@ impl Config {
         };
 
         let ver = version_3b.iter().map(|b| b.to_string()).collect::<Vec<String>>().join(".");
-        let anr = my_ip.and_then(|ip| Anr::build(&trainer_sk, &trainer_pk, &trainer_pop, ip, ver.clone()).ok());
         let public_ipv4 = my_ip.map(|ip| ip.to_string());
 
         // anr configuration
         let anr_name = std::env::var("ANR_NAME").ok();
         let anr_desc = std::env::var("ANR_DESC").ok();
+
+        let anr = my_ip.and_then(|ip| {
+            Anr::build_with_name_desc(
+                &trainer_sk,
+                &trainer_pk,
+                &trainer_pop,
+                ip,
+                ver.clone(),
+                anr_name.clone(),
+                anr_desc.clone(),
+            )
+            .ok()
+        });
 
         // seed anrs from config.exs
         let seed_anrs = vec![SeedANR {

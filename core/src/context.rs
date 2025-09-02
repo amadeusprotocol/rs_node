@@ -5,8 +5,8 @@ use crate::node::protocol::*;
 use crate::node::protocol::{Instruction, NewPhoneWhoDis};
 use crate::node::{NodeState, peers};
 use crate::socket::UdpSocketExt;
-use crate::utils::misc::{TermExt, Typename};
 use crate::utils::misc::get_unix_millis_now;
+use crate::utils::misc::{TermExt, Typename};
 use crate::{Error, config, metrics, node};
 use rand::random;
 use serde::{Deserialize, Serialize};
@@ -126,6 +126,18 @@ impl Context {
                     };
 
                     info!("bootstrap: sending new_phone_who_dis to {}:36969", addr);
+
+                    // Print message bytes in Elixir iex format for verification
+                    // if let Ok(etf_bytes) = new_phone_who_dis.to_etf_bin() {
+                    //     let byte_list: Vec<String> = etf_bytes.iter().map(|b| b.to_string()).collect();
+                    //     println!("🔍 Elixir verification command (paste in iex):");
+                    //     println!("bytes = [{}]", byte_list.join(", "));
+                    //     println!(":erlang.binary_to_term(:erlang.list_to_binary(bytes))");
+                    //     println!("# Should show nested map with ANR fields: ip4, pk, pop, port, signature, ts, version");
+                    //     println!("# Challenge value: {}", challenge);
+                    //     println!();
+                    // }
+
                     if let Err(e) = new_phone_who_dis
                         .send_to_with_metrics(&config, socket.clone(), SocketAddr::new(addr.into(), 36969), &metrics)
                         .await
@@ -215,6 +227,19 @@ impl Context {
 
                             for (_, ip) in unverified_anrs.iter().cloned() {
                                 debug!("anrcheck: sending new_phone_who_dis to {}:36969", ip);
+
+                                // Print message bytes in Elixir iex format for verification (debug level)
+                                // if let Ok(etf_bytes) = new_phone_who_dis.to_etf_bin() {
+                                //     let byte_list: Vec<String> = etf_bytes.iter().map(|b| b.to_string()).collect();
+                                //     println!("🔍 ANR Check - Elixir verification command (paste in iex):");
+                                //     println!("bytes = [{}]", byte_list.join(", "));
+                                //     println!(":erlang.binary_to_term(:erlang.list_to_binary(bytes))");
+                                //     println!(
+                                //         "# Should show nested map with ANR fields: ip4, pk, pop, port, signature, ts, version"
+                                //     );
+                                //     println!();
+                                // }
+
                                 if let Err(e) = new_phone_who_dis
                                     .send_to_with_metrics(
                                         &config,
@@ -269,7 +294,7 @@ impl Context {
         self.socket.send_to_with_metrics(buf, target, &self.metrics).await
     }
 
-    /// Convenience function to receive UDP data with metrics tracking  
+    /// Convenience function to receive UDP data with metrics tracking
     pub async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
         self.socket.recv_from_with_metrics(buf, &self.metrics).await
     }
@@ -749,6 +774,15 @@ impl Context {
         let payload = new_phone_who_dis
             .to_etf_bin()
             .map_err(|e| Error::String(format!("Failed to serialize NewPhoneWhoDis: {:?}", e)))?;
+
+        // Print message bytes in Elixir iex format for verification
+        let byte_list: Vec<String> = payload.iter().map(|b| b.to_string()).collect();
+        println!("🔍 Manual Bootstrap - Elixir verification command (paste in iex):");
+        println!("bytes = [{}]", byte_list.join(", "));
+        println!(":erlang.binary_to_term(:erlang.list_to_binary(bytes))");
+        println!("# Should show nested map with ANR fields: ip4, pk, pop, port, signature, ts, version");
+        println!("# Challenge value: {}", challenge);
+        println!();
 
         // build shards for transmission
         let shards = node::ReedSolomonReassembler::build_shards(&self.config, &payload)

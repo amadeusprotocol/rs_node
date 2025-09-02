@@ -45,7 +45,7 @@ pub struct Anr {
     pub pop: Vec<u8>,
     pub port: u16,
     pub signature: Vec<u8>,
-    pub ts: u64,
+    pub ts: u128,
     pub version: String,
     pub anr_name: Option<String>,
     pub anr_desc: Option<String>,
@@ -71,7 +71,7 @@ impl From<SeedANR> for Anr {
             pop: vec![0u8; 96], // seed anrs don't include pop in config
             port: seed.port,
             signature: seed.signature,
-            ts: seed.ts,
+            ts: seed.ts as u128,
             version: seed.version,
             anr_name: None,
             anr_desc: None,
@@ -87,35 +87,31 @@ impl From<SeedANR> for Anr {
 impl Anr {
     // build a new anr with signature
     pub fn from_config(config: &Config) -> Result<Self, Error> {
-        let ts = get_unix_secs_now();
-        let mut anr = Anr {
-            ip4: config.get_public_ipv4(),
-            pk: config.get_pk().to_vec(),
-            pop: config.get_pop(),
-            port: 36969,
-            ts,
-            version: config.get_ver(),
-            anr_name: None,  // Remove optional fields to minimize size
-            anr_desc: None,  // Remove optional fields to minimize size
-            signature: vec![],
-            handshaked: false,
-            hasChainPop: false,
-            error: None,
-            error_tries: 0,
-            next_check: ts + 3,
-        };
-
-        // create signature over erlang term format like elixir
-        let to_sign = anr.to_erlang_term_for_signing()?;
-        let dst = crate::consensus::DST_ANR;
-        let sig_array = sign(&config.get_sk(), &to_sign, dst)?;
-        anr.signature = sig_array.to_vec();
-
-        Ok(anr)
+        Self::build_with_name_desc(
+            &config.get_sk(),
+            &config.get_pk(),
+            &config.get_pop(),
+            config.get_public_ipv4(),
+            config.get_ver(),
+            config.anr_name.clone(),
+            config.anr_desc.clone(),
+        )
     }
 
     pub fn build(sk: &[u8], pk: &[u8], pop: &[u8], ip4: Ipv4Addr, version: String) -> Result<Self, Error> {
-        let ts = get_unix_secs_now();
+        Self::build_with_name_desc(sk, pk, pop, ip4, version, None, None)
+    }
+
+    pub fn build_with_name_desc(
+        sk: &[u8],
+        pk: &[u8],
+        pop: &[u8],
+        ip4: Ipv4Addr,
+        version: String,
+        anr_name: Option<String>,
+        anr_desc: Option<String>,
+    ) -> Result<Self, Error> {
+        let ts = get_unix_millis_now();
         let mut anr = Anr {
             ip4,
             pk: pk.to_vec(),
@@ -123,14 +119,14 @@ impl Anr {
             port: 36969,
             ts,
             version,
-            anr_name: None,
-            anr_desc: None,
+            anr_name,
+            anr_desc,
             signature: vec![],
             handshaked: false,
             hasChainPop: false,
             error: None,
             error_tries: 0,
-            next_check: ts + 3,
+            next_check: get_unix_secs_now() + 3,
         };
 
         // create signature over erlang term format like elixir
@@ -148,7 +144,7 @@ impl Anr {
     fn to_erlang_term_for_signing(&self) -> Result<Vec<u8>, Error> {
         use indexmap::IndexMap;
         let mut index_map = IndexMap::new();
-        
+
         // Map with keys in same order as Elixir @keys_for_signature = [:ip4, :pk, :pop, :port, :ts, :version, :anr_name, :anr_desc]
         // IP4 as string (not binary) to match Elixir format
         index_map.insert(
@@ -158,17 +154,29 @@ impl Anr {
         index_map.insert(Term::Atom(Atom::from("pk")), Term::Binary(Binary::from(self.pk.clone())));
         index_map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
         index_map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
-        index_map.insert(Term::Atom(Atom::from("ts")), Term::BigInteger(BigInteger::from(self.ts as i64)));
+        // Handle u128 timestamp - use get_integer pattern for compatibility
+        let ts_term = if self.ts <= (i64::MAX as u128) {
+            Term::BigInteger(BigInteger::from(self.ts as i64))
+        } else {
+            // For very large u128 values, encode as string to avoid overflow
+            Term::Binary(Binary::from(self.ts.to_string().as_bytes().to_vec()))
+        };
+        index_map.insert(Term::Atom(Atom::from("ts")), ts_term);
         index_map
             .insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec())));
-        
-        // Include optional fields if present (to match Elixir behavior)
-        if let Some(ref anr_name) = self.anr_name {
-            index_map.insert(Term::Atom(Atom::from("anr_name")), Term::Binary(Binary::from(anr_name.as_bytes().to_vec())));
-        }
-        if let Some(ref anr_desc) = self.anr_desc {
-            index_map.insert(Term::Atom(Atom::from("anr_desc")), Term::Binary(Binary::from(anr_desc.as_bytes().to_vec())));
-        }
+
+        // Include optional fields always (to match Elixir behavior), use nil atom if not present
+        let anr_name_term = match &self.anr_name {
+            Some(name) => Term::Binary(Binary::from(name.as_bytes().to_vec())),
+            None => Term::Atom(Atom::from("nil")),
+        };
+        index_map.insert(Term::Atom(Atom::from("anr_name")), anr_name_term);
+
+        let anr_desc_term = match &self.anr_desc {
+            Some(desc) => Term::Binary(Binary::from(desc.as_bytes().to_vec())),
+            None => Term::Atom(Atom::from("nil")),
+        };
+        index_map.insert(Term::Atom(Atom::from("anr_desc")), anr_desc_term);
 
         let map = Map { map: index_map.into_iter().collect() };
         let term = Term::Map(map);
@@ -230,15 +238,20 @@ impl Anr {
         let mut index_map = IndexMap::new();
         // alphabetical order: anr_desc, anr_name, ip4, pk, pop, port, signature, ts, version
         // Use Elixir format: ip4 as string (not binary)
-        
-        // Include optional fields first (alphabetically)
-        if let Some(ref anr_desc) = self.anr_desc {
-            index_map.insert(Term::Atom(Atom::from("anr_desc")), Term::Binary(Binary::from(anr_desc.as_bytes().to_vec())));
-        }
-        if let Some(ref anr_name) = self.anr_name {
-            index_map.insert(Term::Atom(Atom::from("anr_name")), Term::Binary(Binary::from(anr_name.as_bytes().to_vec())));
-        }
-        
+
+        // Include optional fields first (alphabetically), use nil atom if not present
+        let anr_desc_term = match &self.anr_desc {
+            Some(desc) => Term::Binary(Binary::from(desc.as_bytes().to_vec())),
+            None => Term::Atom(Atom::from("nil")),
+        };
+        index_map.insert(Term::Atom(Atom::from("anr_desc")), anr_desc_term);
+
+        let anr_name_term = match &self.anr_name {
+            Some(name) => Term::Binary(Binary::from(name.as_bytes().to_vec())),
+            None => Term::Atom(Atom::from("nil")),
+        };
+        index_map.insert(Term::Atom(Atom::from("anr_name")), anr_name_term);
+
         index_map.insert(
             Term::Atom(Atom::from("ip4")),
             Term::Binary(Binary::from(self.ip4.to_string().as_bytes().to_vec())),
@@ -247,7 +260,14 @@ impl Anr {
         index_map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
         index_map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
         index_map.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
-        index_map.insert(Term::Atom(Atom::from("ts")), Term::BigInteger(BigInteger::from(self.ts as i64)));
+        // Handle u128 timestamp - use get_integer pattern for compatibility  
+        let ts_term = if self.ts <= (i64::MAX as u128) {
+            Term::BigInteger(BigInteger::from(self.ts as i64))
+        } else {
+            // For very large u128 values, encode as string to avoid overflow
+            Term::Binary(Binary::from(self.ts.to_string().as_bytes().to_vec()))
+        };
+        index_map.insert(Term::Atom(Atom::from("ts")), ts_term);
         index_map
             .insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec())));
 
@@ -311,15 +331,20 @@ impl Anr {
     pub fn to_etf_term(&self) -> Result<Term, Error> {
         use indexmap::IndexMap;
         let mut index_map = IndexMap::new();
-        
-        // Include optional fields first (alphabetically)
-        if let Some(ref anr_desc) = self.anr_desc {
-            index_map.insert(Term::Atom(Atom::from("anr_desc")), Term::Binary(Binary::from(anr_desc.as_bytes().to_vec())));
-        }
-        if let Some(ref anr_name) = self.anr_name {
-            index_map.insert(Term::Atom(Atom::from("anr_name")), Term::Binary(Binary::from(anr_name.as_bytes().to_vec())));
-        }
-        
+
+        // Include optional fields first (alphabetically), use nil atom if not present
+        let anr_desc_term = match &self.anr_desc {
+            Some(desc) => Term::Binary(Binary::from(desc.as_bytes().to_vec())),
+            None => Term::Atom(Atom::from("nil")),
+        };
+        index_map.insert(Term::Atom(Atom::from("anr_desc")), anr_desc_term);
+
+        let anr_name_term = match &self.anr_name {
+            Some(name) => Term::Binary(Binary::from(name.as_bytes().to_vec())),
+            None => Term::Atom(Atom::from("nil")),
+        };
+        index_map.insert(Term::Atom(Atom::from("anr_name")), anr_name_term);
+
         index_map.insert(
             Term::Atom(Atom::from("ip4")),
             Term::Binary(Binary::from(self.ip4.to_string().as_bytes().to_vec())),
@@ -328,7 +353,14 @@ impl Anr {
         index_map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
         index_map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
         index_map.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
-        index_map.insert(Term::Atom(Atom::from("ts")), Term::BigInteger(BigInteger::from(self.ts as i64)));
+        // Handle u128 timestamp - use get_integer pattern for compatibility  
+        let ts_term = if self.ts <= (i64::MAX as u128) {
+            Term::BigInteger(BigInteger::from(self.ts as i64))
+        } else {
+            // For very large u128 values, encode as string to avoid overflow
+            Term::Binary(Binary::from(self.ts.to_string().as_bytes().to_vec()))
+        };
+        index_map.insert(Term::Atom(Atom::from("ts")), ts_term);
         index_map
             .insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec())));
 
@@ -347,9 +379,7 @@ pub struct NodeRegistry {
 impl NodeRegistry {
     /// Create a new NodeRegistry instance
     pub fn new() -> Self {
-        Self {
-            store: Arc::new(RwLock::new(HashMap::new())),
-        }
+        Self { store: Arc::new(RwLock::new(HashMap::new())) }
     }
 
     /// Create with default configuration
@@ -580,7 +610,7 @@ mod tests {
     #[tokio::test]
     async fn test_anr_operations() {
         let registry = NodeRegistry::new();
-        
+
         // create test keys with unique pk to avoid conflicts
         let _sk = [1; 32];
         let mut pk = vec![2; 48];
@@ -652,7 +682,7 @@ mod tests {
     #[tokio::test]
     async fn test_anr_update() {
         let registry = NodeRegistry::new();
-        
+
         // create unique pk for this test
         let mut pk = vec![1; 48];
         let pid_bytes = std::process::id().to_le_bytes();
