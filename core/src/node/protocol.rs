@@ -1078,6 +1078,15 @@ impl Protocol for NewPhoneWhoDis {
         let version_bytes = anr_map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version"))?;
         let version = String::from_utf8_lossy(&version_bytes).to_string();
 
+        // Parse optional anr_name and anr_desc fields (they may be nil or missing)
+        let anr_name = anr_map.get_binary::<Vec<u8>>("anr_name")
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .filter(|s| !s.is_empty());
+        
+        let anr_desc = anr_map.get_binary::<Vec<u8>>("anr_desc")
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .filter(|s| !s.is_empty());
+
         let sender_anr = anr::Anr {
             ip4,
             pk,
@@ -1086,8 +1095,8 @@ impl Protocol for NewPhoneWhoDis {
             signature,
             ts,
             version,
-            anr_name: None,
-            anr_desc: None,
+            anr_name,
+            anr_desc,
             handshaked: true,
             hasChainPop: false,
             error: None,
