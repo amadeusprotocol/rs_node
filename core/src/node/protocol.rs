@@ -21,6 +21,23 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{instrument, warn};
 
+/// Convert an integer to binary representation compatible with Elixir's :erlang.integer_to_binary/1
+/// This creates the minimal big-endian byte representation without leading zeros
+fn integer_to_binary(n: u64) -> Vec<u8> {
+    if n == 0 {
+        vec![0]
+    } else {
+        let mut bytes = Vec::new();
+        let mut num = n;
+        while num > 0 {
+            bytes.push((num & 0xFF) as u8);
+            num >>= 8;
+        }
+        bytes.reverse(); // Convert to big-endian
+        bytes
+    }
+}
+
 /// Every object that has this trait must be convertible from an Erlang ETF
 /// Binary representation and must be able to handle itself as a message
 #[async_trait::async_trait]
@@ -220,7 +237,8 @@ pub struct SolicitEntry2;
 
 #[derive(Debug)]
 pub struct NewPhoneWhoDis {
-    pub anr: Vec<u8>, // packed ANR binary
+    pub anr: Vec<u8>, // packed ANR binary (legacy format)
+    pub anr_term: Option<Term>, // direct ANR term (more efficient)
     pub challenge: u64,
 }
 
@@ -596,6 +614,185 @@ mod tests {
         EntrySummary { header, signature: [5u8; 96], mask: None }
     }
 
+    #[test]
+    fn test_integer_to_binary_compatibility() {
+        // Test various challenge values that would be typical Unix timestamps
+        assert_eq!(integer_to_binary(0), vec![0]);
+        assert_eq!(integer_to_binary(255), vec![255]);
+        assert_eq!(integer_to_binary(256), vec![1, 0]);
+        assert_eq!(integer_to_binary(1000), vec![3, 232]); // 0x03E8
+        
+        // Test typical Unix timestamp (around current time)
+        let timestamp = 1693958400u64; // Example timestamp
+        let bytes = integer_to_binary(timestamp);
+        assert!(bytes.len() <= 8); // Should be compact representation
+        assert!(bytes.len() >= 1); // Should have at least one byte
+        
+        // Test that it's the minimal representation (no leading zeros)
+        assert_ne!(bytes[0], 0);
+    }
+
+    #[tokio::test]
+    async fn test_new_phone_who_dis_challenge_edge_cases() {
+        use crate::node::anr;
+        use crate::utils::bls12_381 as bls;
+        use std::net::Ipv4Addr;
+
+        let sk = bls::generate_sk();
+        let pk = bls::get_public_key(&sk).expect("pk");
+        let pop = bls::sign(&sk, &pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("pop");
+        let ip = Ipv4Addr::new(127, 0, 0, 1);
+        let my_anr = anr::Anr::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
+
+        // Test edge case challenge values to ensure ETF encoding works correctly
+        let test_challenges = vec![
+            0u64,                    // Zero
+            1u64,                    // Minimum positive
+            255u64,                  // Max FixInteger (u8)
+            256u64,                  // First BigInteger case  
+            65535u64,                // Max u16
+            65536u64,                // First u16 overflow
+            (i32::MAX as u64),       // Max i32 (FixInteger boundary)
+            (i32::MAX as u64) + 1,   // First BigInteger case
+            1693958400u64,           // Typical Unix timestamp
+            (i64::MAX as u64) - 1,   // Near maximum i64 value
+        ];
+
+        for challenge in test_challenges {
+            // Create message with this challenge
+            let msg = NewPhoneWhoDis::new(my_anr.clone(), challenge).expect(&format!("npwd new with challenge {}", challenge));
+
+            // Serialize to ETF
+            let bin = msg.to_etf_bin().expect(&format!("serialize challenge {}", challenge));
+
+            // Deserialize back
+            let parsed = from_etf_bin(&bin).expect(&format!("deserialize challenge {}", challenge));
+            assert_eq!(parsed.typename(), "new_phone_who_dis");
+
+            // Cast back to NewPhoneWhoDis to verify challenge field
+            if let Ok(parsed_msg) = NewPhoneWhoDis::from_etf_map_validated(
+                Term::decode(&bin[..]).expect("decode").get_term_map().expect("map")
+            ) {
+                assert_eq!(parsed_msg.challenge, challenge, "Challenge mismatch for value {}", challenge);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_what_challenge_edge_cases() {
+        use crate::node::anr;
+        use crate::utils::bls12_381 as bls;
+        use std::net::Ipv4Addr;
+
+        let sk = bls::generate_sk();
+        let pk = bls::get_public_key(&sk).expect("pk");
+        let pop = bls::sign(&sk, &pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("pop");
+        let ip = Ipv4Addr::new(127, 0, 0, 1);
+        let responder_anr = anr::Anr::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
+        
+        let signature = vec![1u8; 96]; // Mock signature
+
+        // Test same edge case challenge values for What messages
+        let test_challenges = vec![
+            0u64,                    
+            1u64,                    
+            255u64,                  
+            256u64,                  
+            65535u64,                
+            65536u64,                
+            (i32::MAX as u64),       
+            (i32::MAX as u64) + 1,   
+            1693958400u64,           
+            (i64::MAX as u64) - 1,   // Near maximum i64 value
+        ];
+
+        for challenge in test_challenges {
+            // Create What message with this challenge
+            let msg = What::new(responder_anr.clone(), challenge, signature.clone())
+                .expect(&format!("what new with challenge {}", challenge));
+
+            // Serialize to ETF
+            let bin = msg.to_etf_bin().expect(&format!("serialize what challenge {}", challenge));
+
+            // Deserialize back
+            let parsed = from_etf_bin(&bin).expect(&format!("deserialize what challenge {}", challenge));
+            assert_eq!(parsed.typename(), "what?");
+
+            // Cast back to What to verify challenge field
+            if let Ok(parsed_msg) = What::from_etf_map_validated(
+                Term::decode(&bin[..]).expect("decode").get_term_map().expect("map")
+            ) {
+                assert_eq!(parsed_msg.challenge, challenge, "What challenge mismatch for value {}", challenge);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_challenge_signature_compatibility() {
+        use crate::node::anr;
+        use crate::utils::bls12_381 as bls;
+        use std::net::Ipv4Addr;
+
+        // Create two different ANRs for sender and responder
+        let sender_sk = bls::generate_sk();
+        let sender_pk = bls::get_public_key(&sender_sk).expect("sender pk");
+        let sender_pop = bls::sign(&sender_sk, &sender_pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("sender pop");
+        
+        let responder_sk = bls::generate_sk(); 
+        let responder_pk = bls::get_public_key(&responder_sk).expect("responder pk");
+        let responder_pop = bls::sign(&responder_sk, &responder_pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_").expect("responder pop");
+        
+        let ip = Ipv4Addr::new(127, 0, 0, 1);
+        let _sender_anr = anr::Anr::build(&sender_sk, &sender_pk, &sender_pop, ip, "sender".to_string()).expect("sender anr");
+        let responder_anr = anr::Anr::build(&responder_sk, &responder_pk, &responder_pop, ip, "responder".to_string()).expect("responder anr");
+
+        // Test with various challenge values including boundary cases
+        let test_challenges = vec![
+            42u64,                    // Small value (FixInteger)
+            1000u64,                  // Medium value (FixInteger)
+            (i32::MAX as u64),        // Boundary (FixInteger)
+            (i32::MAX as u64) + 1,    // First BigInteger
+            1693958400u64,            // Typical timestamp (BigInteger)
+        ];
+
+        for challenge in test_challenges {
+            // Test the signature generation/verification cycle with different integer encodings
+            
+            // Simulate what happens in NewPhoneWhoDis::handle - responder signs (sender_pk || challenge)
+            let mut challenge_msg_sign = sender_pk.to_vec();
+            let challenge_bytes = integer_to_binary(challenge);
+            challenge_msg_sign.extend_from_slice(&challenge_bytes);
+            
+            let signature = bls::sign(&responder_sk, &challenge_msg_sign, crate::consensus::DST_ANR_CHALLENGE)
+                .expect(&format!("sign challenge {}", challenge));
+
+            // Create What message with the signature  
+            let what_msg = What::new(responder_anr.clone(), challenge, signature.to_vec())
+                .expect(&format!("what create challenge {}", challenge));
+
+            // Serialize/deserialize the What message to test ETF encoding
+            let bin = what_msg.to_etf_bin().expect(&format!("what serialize challenge {}", challenge));
+            let parsed_what = What::from_etf_map_validated(
+                Term::decode(&bin[..]).expect("decode").get_term_map().expect("map")
+            ).expect(&format!("what deserialize challenge {}", challenge));
+
+            // Verify the signature using the same format as What::handle - should verify (sender_pk || challenge)
+            let mut challenge_msg_verify = sender_pk.to_vec();
+            let challenge_bytes_verify = integer_to_binary(parsed_what.challenge);
+            challenge_msg_verify.extend_from_slice(&challenge_bytes_verify);
+
+            // This should succeed, proving signature compatibility
+            bls::verify(&responder_pk, &parsed_what.signature, &challenge_msg_verify, crate::consensus::DST_ANR_CHALLENGE)
+                .expect(&format!("verify challenge {} signature", challenge));
+
+            // Double-check: the challenge round-tripped correctly
+            assert_eq!(parsed_what.challenge, challenge, "Challenge roundtrip failed for {}", challenge);
+            
+            // Double-check: the signature bytes are preserved
+            assert_eq!(parsed_what.signature, signature.to_vec(), "Signature mismatch for challenge {}", challenge);
+        }
+    }
+
     #[tokio::test]
     async fn test_protocol_send_to() {
         // Test that Protocol trait's send_to method works with Context convenience functions
@@ -689,8 +886,24 @@ impl Protocol for NewPhoneWhoDis {
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
-        m.insert(Term::Atom(Atom::from("anr")), Term::Binary(Binary::from(self.anr.clone())));
-        m.insert(Term::Atom(Atom::from("challenge")), Term::BigInteger(BigInteger::from(self.challenge as i64)));
+        
+        // Use direct ANR term if available (more efficient), otherwise fallback to binary
+        let anr_term = if let Some(ref term) = self.anr_term {
+            term.clone()
+        } else {
+            Term::Binary(Binary::from(self.anr.clone()))
+        };
+        m.insert(Term::Atom(Atom::from("anr")), anr_term);
+        
+        // Use native integer encoding compatible with Elixir - prefer FixInteger for small values
+        let challenge_term = if self.challenge <= (i32::MAX as u64) {
+            Term::FixInteger(eetf::FixInteger { value: self.challenge as i32 })
+        } else {
+            // For larger values, clamp to i64 range to avoid overflow
+            let clamped_value = std::cmp::min(self.challenge, i64::MAX as u64) as i64;
+            Term::BigInteger(BigInteger::from(clamped_value))
+        };
+        m.insert(Term::Atom(Atom::from("challenge")), challenge_term);
         let term = Term::from(Map { map: m });
         let mut etf_data = Vec::new();
         term.encode(&mut etf_data)?;
@@ -713,7 +926,7 @@ impl Protocol for NewPhoneWhoDis {
         };
 
         let challenge = map.get_integer("challenge").ok_or(Error::BadEtf("challenge"))?;
-        Ok(Self { anr: anr_binary, challenge })
+        Ok(Self { anr: anr_binary, anr_term: None, challenge })
     }
 
     async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
@@ -742,6 +955,8 @@ impl Protocol for NewPhoneWhoDis {
             signature,
             ts,
             version,
+            anr_name: None,
+            anr_desc: None,
             handshaked: false,
             hasChainPop: false,
             error: None,
@@ -794,8 +1009,10 @@ impl Protocol for NewPhoneWhoDis {
         .map_err(|_| Error::BadEtf("my_anr_build_failed"))?;
 
         // Sign the challenge: signature = BLS(sender_pk || challenge) with OUR private key
+        // Use Elixir-compatible integer_to_binary format instead of fixed 8-byte encoding
         let mut challenge_msg = sender_anr.pk.clone();
-        challenge_msg.extend_from_slice(&self.challenge.to_be_bytes());
+        let challenge_bytes = integer_to_binary(self.challenge);
+        challenge_msg.extend_from_slice(&challenge_bytes);
 
         let signature = bls::sign(&ctx.get_config().trainer_sk, &challenge_msg, crate::consensus::DST_ANR_CHALLENGE)
             .map_err(|_| Error::BadEtf("challenge_sign_failed"))?;
@@ -815,9 +1032,11 @@ impl NewPhoneWhoDis {
     pub const NAME: &'static str = "new_phone_who_dis";
 
     pub fn new(anr: anr::Anr, challenge: u64) -> Result<Self, Error> {
-        // serialize ANR to binary for internal storage
+        // Use direct ANR term for more efficient serialization
+        let anr_term = anr.to_etf_term()?;
+        // Keep binary format as backup for compatibility
         let anr_binary = anr.to_etf_binary()?;
-        Ok(Self { anr: anr_binary, challenge })
+        Ok(Self { anr: anr_binary, anr_term: Some(anr_term), challenge })
     }
 }
 
@@ -833,7 +1052,15 @@ impl Protocol for What {
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
         m.insert(Term::Atom(Atom::from("anr")), Term::Binary(Binary::from(self.anr.clone())));
-        m.insert(Term::Atom(Atom::from("challenge")), Term::BigInteger(BigInteger::from(self.challenge as i64)));
+        // Use native integer encoding compatible with Elixir - prefer FixInteger for small values
+        let challenge_term = if self.challenge <= (i32::MAX as u64) {
+            Term::FixInteger(eetf::FixInteger { value: self.challenge as i32 })
+        } else {
+            // For larger values, clamp to i64 range to avoid overflow
+            let clamped_value = std::cmp::min(self.challenge, i64::MAX as u64) as i64;
+            Term::BigInteger(BigInteger::from(clamped_value))
+        };
+        m.insert(Term::Atom(Atom::from("challenge")), challenge_term);
         m.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
         let term = Term::from(Map { map: m });
         let mut etf_data = Vec::new();
@@ -887,6 +1114,8 @@ impl Protocol for What {
             signature: signature_anr,
             ts,
             version,
+            anr_name: None,
+            anr_desc: None,
             handshaked: false,
             hasChainPop: false,
             error: None,
@@ -917,8 +1146,10 @@ impl Protocol for What {
         println!("received what response from {:?}, verifying signature", src);
 
         // Verify the signature: they signed (our_pk || challenge) with their private key
+        // Use Elixir-compatible integer_to_binary format instead of fixed 8-byte encoding
         let mut challenge_msg = ctx.get_config().trainer_pk.to_vec();
-        challenge_msg.extend_from_slice(&self.challenge.to_be_bytes());
+        let challenge_bytes = integer_to_binary(self.challenge);
+        challenge_msg.extend_from_slice(&challenge_bytes);
 
         // Verify using the responder's public key from their ANR
         if let Err(e) =

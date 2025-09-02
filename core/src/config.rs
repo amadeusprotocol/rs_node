@@ -306,7 +306,7 @@ impl Config {
         };
 
         // generate proof of possession
-        let trainer_pop = bls12_381::sign(&trainer_sk, &trainer_pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_")
+        let trainer_pop = bls12_381::sign(&trainer_sk, &trainer_pk, crate::consensus::DST_POP)
             .map(|sig| sig.to_vec())
             .unwrap_or_else(|_| vec![0u8; 96]);
 
@@ -393,7 +393,7 @@ impl Config {
     pub fn from_sk(sk: [u8; 64]) -> Self {
         let pk = get_pk(&sk);
         let pk_b58 = bs58::encode(pk).into_string();
-        let pop = bls12_381::sign(&sk, &pk, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_")
+        let pop = bls12_381::sign(&sk, &pk, crate::consensus::DST_POP)
             .map(|sig| sig.to_vec())
             .unwrap_or_else(|_| vec![0u8; 96]);
 

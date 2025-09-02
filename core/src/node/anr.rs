@@ -1,7 +1,7 @@
 use crate::config::{Config, SeedANR};
 use crate::utils::bls12_381::{sign, verify};
 use crate::utils::misc::{get_unix_millis_now, get_unix_secs_now};
-use eetf::{Atom, BigInteger, Binary, FixInteger, Map, Term, Tuple};
+use eetf::{Atom, BigInteger, Binary, FixInteger, Map, Term};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -47,6 +47,8 @@ pub struct Anr {
     pub signature: Vec<u8>,
     pub ts: u64,
     pub version: String,
+    pub anr_name: Option<String>,
+    pub anr_desc: Option<String>,
     // runtime fields
     #[serde(skip)]
     pub handshaked: bool,
@@ -71,6 +73,8 @@ impl From<SeedANR> for Anr {
             signature: seed.signature,
             ts: seed.ts,
             version: seed.version,
+            anr_name: None,
+            anr_desc: None,
             handshaked: false,
             hasChainPop: false,
             error: None,
@@ -91,6 +95,8 @@ impl Anr {
             port: 36969,
             ts,
             version: config.get_ver(),
+            anr_name: None,  // Remove optional fields to minimize size
+            anr_desc: None,  // Remove optional fields to minimize size
             signature: vec![],
             handshaked: false,
             hasChainPop: false,
@@ -101,7 +107,7 @@ impl Anr {
 
         // create signature over erlang term format like elixir
         let to_sign = anr.to_erlang_term_for_signing()?;
-        let dst = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_ANR";
+        let dst = crate::consensus::DST_ANR;
         let sig_array = sign(&config.get_sk(), &to_sign, dst)?;
         anr.signature = sig_array.to_vec();
 
@@ -117,6 +123,8 @@ impl Anr {
             port: 36969,
             ts,
             version,
+            anr_name: None,
+            anr_desc: None,
             signature: vec![],
             handshaked: false,
             hasChainPop: false,
@@ -127,7 +135,7 @@ impl Anr {
 
         // create signature over erlang term format like elixir
         let to_sign = anr.to_erlang_term_for_signing()?;
-        let dst = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_ANR";
+        let dst = crate::consensus::DST_ANR;
         let sig_array = sign(sk, &to_sign, dst)?;
         anr.signature = sig_array.to_vec();
 
@@ -136,19 +144,34 @@ impl Anr {
 
     // convert to erlang term format for signing (excludes signature field)
     // matches elixir :erlang.term_to_binary([:deterministic])
+    // Uses MAP format like Elixir, not tuple - order: ip4, pk, pop, port, ts, version, anr_name, anr_desc
     fn to_erlang_term_for_signing(&self) -> Result<Vec<u8>, Error> {
-        // create a tuple instead of map for deterministic ordering
-        // order: ip4, pk, pop, port, ts, version
-        let tuple = Tuple::from(vec![
-            Term::Binary(Binary::from(self.ip4.octets().to_vec())),
-            Term::Binary(Binary::from(self.pk.clone())),
-            Term::Binary(Binary::from(self.pop.clone())),
-            Term::FixInteger(FixInteger::from(self.port as i32)),
-            Term::BigInteger(BigInteger::from(self.ts as i64)),
-            Term::Binary(Binary::from(self.version.as_bytes().to_vec())),
-        ]);
+        use indexmap::IndexMap;
+        let mut index_map = IndexMap::new();
+        
+        // Map with keys in same order as Elixir @keys_for_signature = [:ip4, :pk, :pop, :port, :ts, :version, :anr_name, :anr_desc]
+        // IP4 as string (not binary) to match Elixir format
+        index_map.insert(
+            Term::Atom(Atom::from("ip4")),
+            Term::Binary(Binary::from(self.ip4.to_string().as_bytes().to_vec())),
+        );
+        index_map.insert(Term::Atom(Atom::from("pk")), Term::Binary(Binary::from(self.pk.clone())));
+        index_map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
+        index_map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
+        index_map.insert(Term::Atom(Atom::from("ts")), Term::BigInteger(BigInteger::from(self.ts as i64)));
+        index_map
+            .insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec())));
+        
+        // Include optional fields if present (to match Elixir behavior)
+        if let Some(ref anr_name) = self.anr_name {
+            index_map.insert(Term::Atom(Atom::from("anr_name")), Term::Binary(Binary::from(anr_name.as_bytes().to_vec())));
+        }
+        if let Some(ref anr_desc) = self.anr_desc {
+            index_map.insert(Term::Atom(Atom::from("anr_desc")), Term::Binary(Binary::from(anr_desc.as_bytes().to_vec())));
+        }
 
-        let term = Term::Tuple(tuple);
+        let map = Map { map: index_map.into_iter().collect() };
+        let term = Term::Map(map);
         let mut buf = Vec::new();
         term.encode(&mut buf)?;
         Ok(buf)
@@ -157,8 +180,8 @@ impl Anr {
     // verify anr signature and proof of possession
     pub fn verify_signature(&self) -> bool {
         if let Ok(to_sign) = self.to_erlang_term_for_signing() {
-            let dst_anr = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_ANR";
-            let dst_pop = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
+            let dst_anr = crate::consensus::DST_ANR;
+            let dst_pop = crate::consensus::DST_POP;
 
             // verify main signature
             if verify(&self.pk, &self.signature, &to_sign, dst_anr).is_err() {
@@ -205,8 +228,17 @@ impl Anr {
         // create map with fields in deterministic order using IndexMap
         use indexmap::IndexMap;
         let mut index_map = IndexMap::new();
-        // alphabetical order: ip4, pk, pop, port, signature, ts, version
+        // alphabetical order: anr_desc, anr_name, ip4, pk, pop, port, signature, ts, version
         // Use Elixir format: ip4 as string (not binary)
+        
+        // Include optional fields first (alphabetically)
+        if let Some(ref anr_desc) = self.anr_desc {
+            index_map.insert(Term::Atom(Atom::from("anr_desc")), Term::Binary(Binary::from(anr_desc.as_bytes().to_vec())));
+        }
+        if let Some(ref anr_name) = self.anr_name {
+            index_map.insert(Term::Atom(Atom::from("anr_name")), Term::Binary(Binary::from(anr_name.as_bytes().to_vec())));
+        }
+        
         index_map.insert(
             Term::Atom(Atom::from("ip4")),
             Term::Binary(Binary::from(self.ip4.to_string().as_bytes().to_vec())),
@@ -237,6 +269,8 @@ impl Anr {
                 signature: anr.signature,
                 ts: anr.ts,
                 version: anr.version,
+                anr_name: anr.anr_name,
+                anr_desc: anr.anr_desc,
                 handshaked: false,
                 hasChainPop: false,
                 error: None,
@@ -258,6 +292,8 @@ impl Anr {
             signature: self.signature.clone(),
             ts: self.ts,
             version: self.version.clone(),
+            anr_name: self.anr_name.clone(),
+            anr_desc: self.anr_desc.clone(),
             handshaked: false,
             hasChainPop: false,
             error: None,
@@ -269,6 +305,35 @@ impl Anr {
     // convert ANR to ETF binary format for protocol transmission
     pub fn to_etf_binary(&self) -> Result<Vec<u8>, Error> {
         self.to_erlang_term_binary()
+    }
+
+    // convert ANR to ETF Term (map) for direct embedding in messages (reduces size overhead)
+    pub fn to_etf_term(&self) -> Result<Term, Error> {
+        use indexmap::IndexMap;
+        let mut index_map = IndexMap::new();
+        
+        // Include optional fields first (alphabetically)
+        if let Some(ref anr_desc) = self.anr_desc {
+            index_map.insert(Term::Atom(Atom::from("anr_desc")), Term::Binary(Binary::from(anr_desc.as_bytes().to_vec())));
+        }
+        if let Some(ref anr_name) = self.anr_name {
+            index_map.insert(Term::Atom(Atom::from("anr_name")), Term::Binary(Binary::from(anr_name.as_bytes().to_vec())));
+        }
+        
+        index_map.insert(
+            Term::Atom(Atom::from("ip4")),
+            Term::Binary(Binary::from(self.ip4.to_string().as_bytes().to_vec())),
+        );
+        index_map.insert(Term::Atom(Atom::from("pk")), Term::Binary(Binary::from(self.pk.clone())));
+        index_map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
+        index_map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
+        index_map.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
+        index_map.insert(Term::Atom(Atom::from("ts")), Term::BigInteger(BigInteger::from(self.ts as i64)));
+        index_map
+            .insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec())));
+
+        let map = Map { map: index_map.into_iter().collect() };
+        Ok(Term::Map(map))
     }
 }
 
@@ -539,6 +604,8 @@ mod tests {
             signature: vec![0; 96],
             ts: 1234567890,
             version,
+            anr_name: None,
+            anr_desc: None,
             handshaked: false,
             hasChainPop: false,
             error: None,
@@ -606,6 +673,8 @@ mod tests {
             signature: vec![0; 96],
             ts: 1000,
             version: version.clone(),
+            anr_name: None,
+            anr_desc: None,
             handshaked: true,
             hasChainPop: false,
             error: None,
@@ -624,6 +693,8 @@ mod tests {
             signature: vec![0; 96],
             ts: 999,
             version: version.clone(),
+            anr_name: None,
+            anr_desc: None,
             handshaked: false,
             hasChainPop: false,
             error: None,
@@ -647,6 +718,8 @@ mod tests {
             signature: vec![0; 96],
             ts: 2000,
             version: "2.0.0".to_string(),
+            anr_name: None,
+            anr_desc: None,
             handshaked: false,
             hasChainPop: false,
             error: None,
@@ -669,6 +742,8 @@ mod tests {
             signature: vec![0; 96],
             ts: 3000,
             version: "3.0.0".to_string(),
+            anr_name: None,
+            anr_desc: None,
             handshaked: true,
             hasChainPop: false,
             error: Some("old error".to_string()),
