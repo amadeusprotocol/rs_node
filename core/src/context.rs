@@ -125,8 +125,6 @@ impl Context {
                         }
                     };
 
-                    info!("bootstrap: sending new_phone_who_dis to {}:36969", addr);
-
                     // Print message bytes in Elixir iex format for verification
                     // if let Ok(etf_bytes) = new_phone_who_dis.to_etf_bin() {
                     //     let byte_list: Vec<String> = etf_bytes.iter().map(|b| b.to_string()).collect();

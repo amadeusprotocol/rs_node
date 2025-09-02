@@ -130,7 +130,7 @@ impl Anr {
         };
 
         // create signature over erlang term format like elixir
-        let to_sign = anr.to_erlang_term_for_signing()?;
+        let to_sign = anr.to_erlang_term_for_signing();
         let dst = crate::consensus::DST_ANR;
         let sig_array = sign(sk, &to_sign, dst)?;
         anr.signature = sig_array.to_vec();
@@ -140,67 +140,92 @@ impl Anr {
 
     // convert to erlang term format for signing (excludes signature field)
     // matches elixir :erlang.term_to_binary([:deterministic])
-    // Uses MAP format like Elixir, not tuple - order: ip4, pk, pop, port, ts, version, anr_name, anr_desc
-    fn to_erlang_term_for_signing(&self) -> Result<Vec<u8>, Error> {
-        use indexmap::IndexMap;
-        let mut index_map = IndexMap::new();
-
-        // Map with keys in same order as Elixir @keys_for_signature = [:ip4, :pk, :pop, :port, :ts, :version, :anr_name, :anr_desc]
-        // IP4 as string (not binary) to match Elixir format
-        index_map.insert(
-            Term::Atom(Atom::from("ip4")),
-            Term::Binary(Binary::from(self.ip4.to_string().as_bytes().to_vec())),
-        );
-        index_map.insert(Term::Atom(Atom::from("pk")), Term::Binary(Binary::from(self.pk.clone())));
-        index_map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
-        index_map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
-        // Handle u128 timestamp - use get_integer pattern for compatibility
-        let ts_term = if self.ts <= (i64::MAX as u128) {
-            Term::BigInteger(BigInteger::from(self.ts as i64))
-        } else {
-            // For very large u128 values, encode as string to avoid overflow
-            Term::Binary(Binary::from(self.ts.to_string().as_bytes().to_vec()))
-        };
-        index_map.insert(Term::Atom(Atom::from("ts")), ts_term);
-        index_map
-            .insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec())));
-
-        // Include optional fields always (to match Elixir behavior), use nil atom if not present
-        let anr_name_term = match &self.anr_name {
-            Some(name) => Term::Binary(Binary::from(name.as_bytes().to_vec())),
-            None => Term::Atom(Atom::from("nil")),
-        };
-        index_map.insert(Term::Atom(Atom::from("anr_name")), anr_name_term);
-
-        let anr_desc_term = match &self.anr_desc {
-            Some(desc) => Term::Binary(Binary::from(desc.as_bytes().to_vec())),
-            None => Term::Atom(Atom::from("nil")),
-        };
-        index_map.insert(Term::Atom(Atom::from("anr_desc")), anr_desc_term);
-
-        let map = Map { map: index_map.into_iter().collect() };
-        let term = Term::Map(map);
+    // Since the ETF library doesn't preserve order, manually create the exact bytes Elixir produces
+    fn to_erlang_term_for_signing(&self) -> Vec<u8> {
+        // Manually construct ETF bytes to match Elixir's deterministic encoding
+        // Elixir excludes nil fields and uses small atoms (119) in deterministic order: ip4, pk, pop, port, ts, version
         let mut buf = Vec::new();
-        term.encode(&mut buf)?;
-        Ok(buf)
+
+        // ETF version marker
+        buf.push(131);
+
+        // Map header: type (116) + 4 bytes for count
+        buf.push(116);
+        buf.extend_from_slice(&6u32.to_be_bytes()); // 6 fields (excluding nil anr_name/anr_desc)
+
+        // Field 1: ip4 (small atom + binary)
+        buf.push(119); // small atom
+        buf.push(3); // length
+        buf.extend_from_slice(b"ip4");
+
+        // ip4 value as binary string
+        let ip4_str = self.ip4.to_string();
+        buf.push(109); // binary
+        buf.extend_from_slice(&(ip4_str.len() as u32).to_be_bytes());
+        buf.extend_from_slice(ip4_str.as_bytes());
+
+        // Field 2: pk (small atom + binary)
+        buf.push(119); // small atom
+        buf.push(2); // length
+        buf.extend_from_slice(b"pk");
+
+        // pk value as binary
+        buf.push(109); // binary
+        buf.extend_from_slice(&(self.pk.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&self.pk);
+
+        // Field 3: pop (small atom + binary)
+        buf.push(119); // small atom
+        buf.push(3); // length
+        buf.extend_from_slice(b"pop");
+
+        // pop value as binary
+        buf.push(109); // binary
+        buf.extend_from_slice(&(self.pop.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&self.pop);
+
+        // Field 4: port (small atom + integer)
+        buf.push(119); // small atom
+        buf.push(4); // length
+        buf.extend_from_slice(b"port");
+
+        // port value as integer
+        buf.push(98); // integer
+        buf.extend_from_slice(&(self.port as u32).to_be_bytes());
+
+        // Field 5: ts (small atom + big integer)
+        buf.push(119); // small atom
+        buf.push(2); // length
+        buf.extend_from_slice(b"ts");
+
+        // ts value as big integer
+        buf.push(98); // integer (fits in 32-bit)
+        buf.extend_from_slice(&(self.ts as u32).to_be_bytes());
+
+        // Field 6: version (small atom + binary)
+        buf.push(119); // small atom
+        buf.push(7); // length
+        buf.extend_from_slice(b"version");
+
+        // version value as binary
+        buf.push(109); // binary
+        buf.extend_from_slice(&(self.version.len() as u32).to_be_bytes());
+        buf.extend_from_slice(self.version.as_bytes());
+
+        buf
     }
 
     // verify anr signature and proof of possession
     pub fn verify_signature(&self) -> bool {
-        if let Ok(to_sign) = self.to_erlang_term_for_signing() {
-            let dst_anr = crate::consensus::DST_ANR;
-            let dst_pop = crate::consensus::DST_POP;
+        let to_sign = self.to_erlang_term_for_signing();
 
-            // verify main signature
-            if verify(&self.pk, &self.signature, &to_sign, dst_anr).is_err() {
-                return false;
-            }
-
-            // verify proof of possession (pop is signature of pk with pk as key)
-            verify(&self.pk, &self.pop, &self.pk, dst_pop).is_ok()
-        } else {
-            false
+        // verify main signature
+        if verify(&self.pk, &self.signature, &to_sign, crate::consensus::DST_ANR).is_err() {
+            return false;
         }
+
+        // verify proof of possession (pop is signature of pk with pk as key)
+        verify(&self.pk, &self.pop, &self.pk, crate::consensus::DST_POP).is_ok()
     }
 
     // verify and unpack anr from untrusted source
@@ -260,7 +285,7 @@ impl Anr {
         index_map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
         index_map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
         index_map.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
-        // Handle u128 timestamp - use get_integer pattern for compatibility  
+        // Handle u128 timestamp - use get_integer pattern for compatibility
         let ts_term = if self.ts <= (i64::MAX as u128) {
             Term::BigInteger(BigInteger::from(self.ts as i64))
         } else {
@@ -353,7 +378,7 @@ impl Anr {
         index_map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
         index_map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
         index_map.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
-        // Handle u128 timestamp - use get_integer pattern for compatibility  
+        // Handle u128 timestamp - use get_integer pattern for compatibility
         let ts_term = if self.ts <= (i64::MAX as u128) {
             Term::BigInteger(BigInteger::from(self.ts as i64))
         } else {

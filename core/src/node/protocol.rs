@@ -239,7 +239,7 @@ pub struct SolicitEntry2;
 
 #[derive(Debug)]
 pub struct NewPhoneWhoDis {
-    pub anr: Vec<u8>,           // packed ANR binary
+    pub anr: Vec<u8>, // packed ANR binary
     pub challenge: u64,
 }
 
@@ -1072,18 +1072,21 @@ impl Protocol for NewPhoneWhoDis {
         let port = anr_map.get_integer::<u16>("port").ok_or(Error::BadEtf("port"))?;
         let signature = anr_map.get_binary::<Vec<u8>>("signature").ok_or(Error::BadEtf("signature"))?;
         // Handle u128 timestamp - try u128 first, fallback to u64 for compatibility
-        let ts = anr_map.get_integer::<u128>("ts")
+        let ts = anr_map
+            .get_integer::<u128>("ts")
             .or_else(|| anr_map.get_integer::<u64>("ts").map(|v| v as u128))
             .ok_or(Error::BadEtf("ts"))?;
         let version_bytes = anr_map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version"))?;
         let version = String::from_utf8_lossy(&version_bytes).to_string();
 
         // Parse optional anr_name and anr_desc fields (they may be nil or missing)
-        let anr_name = anr_map.get_binary::<Vec<u8>>("anr_name")
+        let anr_name = anr_map
+            .get_binary::<Vec<u8>>("anr_name")
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .filter(|s| !s.is_empty());
-        
-        let anr_desc = anr_map.get_binary::<Vec<u8>>("anr_desc")
+
+        let anr_desc = anr_map
+            .get_binary::<Vec<u8>>("anr_desc")
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .filter(|s| !s.is_empty());
 
@@ -1226,7 +1229,8 @@ impl Protocol for What {
         let port = anr_map.get_integer::<u16>("port").ok_or(Error::BadEtf("port"))?;
         let signature_anr = anr_map.get_binary::<Vec<u8>>("signature").ok_or(Error::BadEtf("signature"))?;
         // Handle u128 timestamp - try u128 first, fallback to u64 for compatibility
-        let ts = anr_map.get_integer::<u128>("ts")
+        let ts = anr_map
+            .get_integer::<u128>("ts")
             .or_else(|| anr_map.get_integer::<u64>("ts").map(|v| v as u128))
             .ok_or(Error::BadEtf("ts"))?;
         let version_bytes = anr_map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version"))?;
@@ -1392,5 +1396,107 @@ impl SpecialBusinessReply {
         let mut etf_data = Vec::new();
         term.encode(&mut etf_data)?;
         Ok(etf_data)
+    }
+}
+
+#[cfg(test)]
+mod special_tests {
+    // use eetf::Term;
+    // use tracing::warn;
+    // use crate::node::anr;
+    // use crate::node::protocol::{Error, NewPhoneWhoDis};
+    use super::*;
+
+    #[test]
+    fn signature_test() {
+        let npwd = NewPhoneWhoDis {
+            anr: vec![
+                131, 116, 0, 0, 0, 7, 100, 0, 3, 112, 111, 112, 109, 0, 0, 0, 96, 168, 31, 146, 80, 172, 146, 183, 32,
+                98, 207, 148, 149, 142, 102, 60, 149, 228, 164, 93, 60, 206, 179, 24, 195, 7, 89, 105, 163, 214, 254,
+                193, 67, 128, 32, 132, 65, 170, 115, 127, 40, 5, 93, 10, 78, 187, 169, 38, 198, 22, 13, 14, 248, 56,
+                81, 72, 192, 27, 248, 25, 181, 80, 248, 8, 156, 58, 140, 92, 68, 249, 252, 237, 234, 180, 162, 186,
+                234, 169, 47, 151, 191, 129, 163, 156, 3, 35, 194, 87, 235, 94, 16, 133, 34, 34, 252, 29, 183, 100, 0,
+                4, 112, 111, 114, 116, 98, 0, 0, 144, 105, 100, 0, 2, 116, 115, 98, 104, 180, 172, 144, 100, 0, 2, 112,
+                107, 109, 0, 0, 0, 48, 146, 145, 166, 151, 129, 88, 203, 230, 57, 183, 61, 91, 18, 236, 139, 232, 87,
+                36, 188, 74, 29, 197, 51, 51, 101, 97, 80, 251, 9, 101, 188, 106, 130, 18, 162, 10, 113, 196, 180, 31,
+                121, 193, 213, 28, 14, 191, 116, 133, 100, 0, 3, 105, 112, 52, 109, 0, 0, 0, 14, 50, 48, 55, 46, 50,
+                52, 52, 46, 50, 51, 54, 46, 56, 50, 100, 0, 9, 115, 105, 103, 110, 97, 116, 117, 114, 101, 109, 0, 0,
+                0, 96, 179, 16, 9, 55, 13, 55, 194, 11, 126, 254, 201, 15, 129, 226, 86, 184, 196, 226, 43, 78, 119,
+                190, 60, 145, 59, 229, 68, 56, 32, 207, 163, 13, 232, 221, 109, 250, 144, 231, 198, 168, 255, 12, 49,
+                79, 28, 35, 12, 219, 18, 241, 96, 204, 220, 62, 11, 127, 103, 17, 194, 133, 240, 231, 210, 97, 16, 37,
+                234, 136, 95, 224, 60, 195, 178, 174, 119, 248, 156, 244, 14, 123, 133, 87, 8, 205, 119, 4, 132, 66,
+                225, 201, 16, 70, 106, 140, 152, 146, 100, 0, 7, 118, 101, 114, 115, 105, 111, 110, 109, 0, 0, 0, 5,
+                49, 46, 49, 46, 53,
+            ],
+            challenge: 1756854329,
+        };
+
+        let anr_term = Term::decode(&npwd.anr[..]).unwrap();
+        let anr_map = anr_term.get_term_map().ok_or(Error::BadEtf("anr_map")).unwrap();
+
+        // ip4 is stored as string in Elixir format: "127.0.0.1"
+        let ip4_str = anr_map.get_string("ip4").ok_or(Error::BadEtf("ip4")).unwrap();
+        let ip4 = ip4_str.parse::<std::net::Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse")).unwrap();
+
+        let pk = anr_map.get_binary::<Vec<u8>>("pk").ok_or(Error::BadEtf("pk")).unwrap();
+        let pop = anr_map.get_binary::<Vec<u8>>("pop").ok_or(Error::BadEtf("pop")).unwrap();
+        let port = anr_map.get_integer::<u16>("port").ok_or(Error::BadEtf("port")).unwrap();
+        let signature = anr_map.get_binary::<Vec<u8>>("signature").ok_or(Error::BadEtf("signature")).unwrap();
+        // Handle u128 timestamp - try u128 first, fallback to u64 for compatibility
+        let ts = anr_map
+            .get_integer::<u128>("ts")
+            .or_else(|| anr_map.get_integer::<u128>("ts").map(|v| v))
+            .ok_or(Error::BadEtf("ts"))
+            .unwrap();
+        let version_bytes = anr_map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version")).unwrap();
+        let version = String::from_utf8_lossy(&version_bytes).to_string();
+
+        // Parse optional anr_name and anr_desc fields (they may be nil or missing)
+        let anr_name = anr_map
+            .get_binary::<Vec<u8>>("anr_name")
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .filter(|s| !s.is_empty());
+
+        let anr_desc = anr_map
+            .get_binary::<Vec<u8>>("anr_desc")
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .filter(|s| !s.is_empty());
+
+        let sender_anr = anr::Anr {
+            ip4,
+            pk,
+            pop,
+            port,
+            signature,
+            ts,
+            version,
+            anr_name,
+            anr_desc,
+            handshaked: true,
+            hasChainPop: false,
+            error: None,
+            error_tries: 0,
+            next_check: (ts + 3) as u64,
+        };
+
+        println!("{sender_anr:?}");
+
+        // these must be bytes for signing
+        // 131, 116, 0, 0, 0, 6, 119, 3, 105, 112, 52, 109, 0, 0, 0, 14, 50, 48, 55, 46,
+        //   50, 52, 52, 46, 50, 51, 54, 46, 56, 50, 119, 2, 112, 107, 109, 0, 0, 0, 48,
+        //   146, 145, 166, 151, 129, 88, 203, 230, 57, 183, 61, 91, 18, 236, 139, 232, 87,
+        //   36, 188, 74, 29, 197, 51, 51, 101, 97, 80, 251, 9, 101, 188, 106, 130, 18,
+        //   162, 10, 113, 196, 180, 31, 121, 193, 213, 28, 14, 191, 116, 133, 119, 3, 112,
+        //   111, 112, 109, 0, 0, 0, 96, 168, 31, 146, 80, 172, 146, 183, 32, 98, 207, 148,
+        //   149, 142, 102, 60, 149, 228, 164, 93, 60, 206, 179, 24, 195, 7, 89, 105, 163,
+        //   214, 254, 193, 67, 128, 32, 132, 65, 170, 115, 127, 40, 5, 93, 10, 78, 187,
+        //   169, 38, 198, 22, 13, 14, 248, 56, 81, 72, 192, 27, 248, 25, 181, 80, 248, 8,
+        //   156, 58, 140, 92, 68, 249, 252, 237, 234, 180, 162, 186, 234, 169, 47, 151,
+        //   191, 129, 163, 156, 3, 35, 194, 87, 235, 94, 16, 133, 34, 34, 252, 29, 183,
+        //   119, 4, 112, 111, 114, 116, 98, 0, 0, 144, 105, 119, 2, 116, 115, 98, 104,
+        //   180, 172, 144, 119, 7, 118, 101, 114, 115, 105, 111, 110, 109, 0, 0, 0, 5, 49,
+        //   46, 49, 46, 53
+
+        assert!(sender_anr.verify_signature());
     }
 }
