@@ -1047,12 +1047,12 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
                         <div class="network-value">{:.1} MB/s</div>
                     </div>
                     <div class="network-row">
-                        <div class="network-label">DATA OUT:</div>
-                        <div class="network-value">{:.1} MB/s</div>
-                    </div>
-                    <div class="network-row">
                         <div class="network-label">PKT IN:</div>
                         <div class="network-value">{:.0} pkt/s</div>
+                    </div>
+                    <div class="network-row">
+                        <div class="network-label">DATA OUT:</div>
+                        <div class="network-value">{:.1} MB/s</div>
                     </div>
                     <div class="network-row">
                         <div class="network-label">PKT OUT:</div>
@@ -1503,8 +1503,8 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
         version,
         peers_count,
         network_in_mbps,
-        network_out_mbps,
         network_in_pps,
+        network_out_mbps,
         network_out_pps,
         uptime,
         cpu_usage,
