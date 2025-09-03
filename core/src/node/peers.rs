@@ -260,8 +260,12 @@ impl NodePeers {
         let validators = consensus::trainers_for_height(height + 1).unwrap_or_default();
         let validators: Vec<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();
 
-        let validator_ips: Vec<_> =
-            node_registry.by_pks_ip(&validators).await?.into_iter().filter(|ip| *ip != config.get_public_ipv4()).collect();
+        let validator_ips: Vec<_> = node_registry
+            .by_pks_ip(&validators)
+            .await?
+            .into_iter()
+            .filter(|ip| *ip != config.get_public_ipv4())
+            .collect();
 
         for ip in validator_ips {
             let _ = self.insert_new_peer(Peer {

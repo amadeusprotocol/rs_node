@@ -5,11 +5,12 @@ fn generate_protocol_items(protocols: &HashMap<String, u64>) -> String {
     if protocols.is_empty() {
         return r#"<div class="empty-state">No data available</div>"#.to_string();
     }
-    
+
     let mut items: Vec<_> = protocols.iter().collect();
     items.sort_by(|a, b| b.1.cmp(a.1)); // Sort by count descending
-    
-    items.into_iter()
+
+    items
+        .into_iter()
         .take(10) // Show top 10
         .map(|(name, count)| {
             format!(
@@ -17,15 +18,19 @@ fn generate_protocol_items(protocols: &HashMap<String, u64>) -> String {
                     <div class="message-type-name">{}</div>
                     <div class="message-type-count">{}</div>
                 </div>"#,
-                name,
-                count
+                name, count
             )
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entries: &Vec<(u64, u64, u64)>, ctx: &Context) -> String {
+pub fn page(
+    snapshot: &MetricsSnapshot,
+    peers: &HashMap<String, PeerInfo>,
+    _entries: &Vec<(u64, u64, u64)>,
+    ctx: &Context,
+) -> String {
     let peers_count = peers.len();
     let uptime = ctx.get_uptime();
     let version = ctx.get_config().get_ver();
@@ -34,43 +39,28 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
 
     // Get uptime in seconds from metrics snapshot
     let uptime_seconds = snapshot.uptime as f64;
-    
+
     // Calculate network I/O rates from actual metrics
     let incoming_bytes = snapshot.udp.incoming_bytes as f64;
     let outgoing_bytes = snapshot.udp.outgoing_bytes as f64;
     let incoming_packets = snapshot.udp.incoming_packets;
     let outgoing_packets = snapshot.udp.outgoing_packets;
-    
-    let network_in_mbps = if uptime_seconds > 0.0 {
-        (incoming_bytes / uptime_seconds) / (1024.0 * 1024.0)
-    } else {
-        0.0
-    };
-    let network_out_mbps = if uptime_seconds > 0.0 {
-        (outgoing_bytes / uptime_seconds) / (1024.0 * 1024.0)
-    } else {
-        0.0
-    };
-    let network_in_pps = if uptime_seconds > 0.0 {
-        incoming_packets as f64 / uptime_seconds
-    } else {
-        0.0
-    };
-    let network_out_pps = if uptime_seconds > 0.0 {
-        outgoing_packets as f64 / uptime_seconds
-    } else {
-        0.0
-    };
+
+    let network_in_mbps =
+        if uptime_seconds > 0.0 { (incoming_bytes / uptime_seconds) / (1024.0 * 1024.0) } else { 0.0 };
+    let network_out_mbps =
+        if uptime_seconds > 0.0 { (outgoing_bytes / uptime_seconds) / (1024.0 * 1024.0) } else { 0.0 };
+    let network_in_pps = if uptime_seconds > 0.0 { incoming_packets as f64 / uptime_seconds } else { 0.0 };
+    let network_out_pps = if uptime_seconds > 0.0 { outgoing_packets as f64 / uptime_seconds } else { 0.0 };
 
     // System resources (stub values for now - will be read from context later)
-    let total_messages = snapshot.incoming_protos.values().sum::<u64>() + 
-                       snapshot.outgoing_protos.values().sum::<u64>();
-    
+    let total_messages =
+        snapshot.incoming_protos.values().sum::<u64>() + snapshot.outgoing_protos.values().sum::<u64>();
+
     // Stub system resource values - these will be replaced with real values from context later
     let cpu_usage = std::cmp::min(85, std::cmp::max(15, (total_messages / 50) as i32 + 25)); // Simulated CPU usage
     let memory_usage = std::cmp::min(80, std::cmp::max(20, peers_count as i32 * 3 + 35)); // Simulated memory usage
     let disk_usage = std::cmp::min(60, std::cmp::max(10, (snapshot.uptime / 7200) as i32 + 25)); // Simulated disk usage
-
 
     format!(
         r#"
@@ -1498,7 +1488,7 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, _entr
 </body>
 </html>
 "#,
-        pubkey, // Full pubkey for onclick
+        pubkey,       // Full pubkey for onclick
         &pubkey[..8], // Shortened pubkey for display (first 8 chars)
         version,
         peers_count,

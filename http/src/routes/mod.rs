@@ -36,8 +36,5 @@ async fn api_metrics(State(ctx): State<Arc<Context>>) -> Json<Value> {
 }
 
 fn api_router(ctx: Arc<Context>) -> Router {
-    Router::new()
-        .route("/peers", get(api_peers))
-        .route("/metrics", get(api_metrics))
-        .with_state(ctx)
+    Router::new().route("/peers", get(api_peers)).route("/metrics", get(api_metrics)).with_state(ctx)
 }

@@ -17,6 +17,7 @@ async fn main() -> anyhow::Result<()> {
     let udp_socket = Arc::new(UdpSocketWrapper::bind("0.0.0.0:36969").await?);
     let config = Config::from_fs(None, None).await?;
     info!("working inside {}", config.get_root());
+    info!("public address {}", config.get_public_ipv4());
     let ctx = Arc::new(Context::with_config_and_socket(config, udp_socket).await?);
 
     // UDP amadeus node
@@ -44,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn recv_loop(ctx: Arc<Context>) -> anyhow::Result<()> {
-    info!("udp server listening on {}", ctx.get_config().get_public_ipv4());
+    info!("udp server listening on 0.0.0.0:36969");
     let mut buf = vec![0u8; 65_535];
 
     loop {

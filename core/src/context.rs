@@ -5,8 +5,8 @@ use crate::node::protocol::*;
 use crate::node::protocol::{Instruction, NewPhoneWhoDis};
 use crate::node::{NodeState, peers};
 use crate::socket::UdpSocketExt;
+use crate::utils::misc::Typename;
 use crate::utils::misc::get_unix_millis_now;
-use crate::utils::misc::{TermExt, Typename};
 use crate::{Error, config, metrics, node};
 use rand::random;
 use serde::{Deserialize, Serialize};
@@ -78,43 +78,6 @@ impl Context {
                     }
                 };
 
-                // Add detailed logging to debug the ANR format being sent
-                info!("bootstrap: created new_phone_who_dis with challenge {}", challenge);
-                info!("bootstrap: ANR size: {} bytes (Elixir limit: 390 bytes) ✅", new_phone_who_dis.anr.len());
-
-                // Log ANR structure for debugging
-                if let Ok(anr_term) = eetf::Term::decode(&new_phone_who_dis.anr[..]) {
-                    if let Some(anr_map) = anr_term.get_term_map() {
-                        let fields: Vec<String> = anr_map.0.keys().map(|k| format!("{:?}", k)).collect();
-                        info!("bootstrap: ANR fields: [{}]", fields.join(", "));
-
-                        // Check specific field formats
-                        if let Some(ip4_term) = anr_map.0.get(&eetf::Term::Atom(eetf::Atom::from("ip4"))) {
-                            info!("bootstrap: ANR ip4 field type: {:?}", ip4_term);
-                        }
-                        if let Some(ts_term) = anr_map.0.get(&eetf::Term::Atom(eetf::Atom::from("ts"))) {
-                            info!("bootstrap: ANR ts field type: {:?}", ts_term);
-                        }
-                        if let Some(sig_term) = anr_map.0.get(&eetf::Term::Atom(eetf::Atom::from("signature"))) {
-                            if let eetf::Term::Binary(bin) = sig_term {
-                                info!("bootstrap: ANR signature size: {} bytes", bin.bytes.len());
-                            }
-                        }
-                    }
-                } else {
-                    warn!("bootstrap: failed to decode ANR binary for logging");
-                }
-
-                // Log the complete message size that will be sent
-                if let Ok(etf_bin) = new_phone_who_dis.to_etf_bin() {
-                    info!("bootstrap: complete new_phone_who_dis message size: {} bytes", etf_bin.len());
-                    // Note: The 390-byte limit in Elixir applies only to the ANR itself, not the complete message
-                    if etf_bin.len() > 1000 {
-                        // Only warn if message is extremely large
-                        warn!("bootstrap: message is very large ({}B), may cause network issues", etf_bin.len());
-                    }
-                }
-
                 let mut sent_count = 0;
                 for ip in &config.seed_nodes {
                     let addr = match ip.parse::<Ipv4Addr>() {
@@ -124,17 +87,6 @@ impl Context {
                             continue;
                         }
                     };
-
-                    // Print message bytes in Elixir iex format for verification
-                    // if let Ok(etf_bytes) = new_phone_who_dis.to_etf_bin() {
-                    //     let byte_list: Vec<String> = etf_bytes.iter().map(|b| b.to_string()).collect();
-                    //     println!("🔍 Elixir verification command (paste in iex):");
-                    //     println!("bytes = [{}]", byte_list.join(", "));
-                    //     println!(":erlang.binary_to_term(:erlang.list_to_binary(bytes))");
-                    //     println!("# Should show nested map with ANR fields: ip4, pk, pop, port, signature, ts, version");
-                    //     println!("# Challenge value: {}", challenge);
-                    //     println!();
-                    // }
 
                     if let Err(e) = new_phone_who_dis
                         .send_to_with_metrics(&config, socket.clone(), SocketAddr::new(addr.into(), 36969), &metrics)
@@ -207,36 +159,8 @@ impl Context {
                                 }
                             };
 
-                            // Log ANR details for verification attempts too
-                            debug!(
-                                "anrcheck: ANR size: {} bytes (Elixir limit: 390 bytes) ✅",
-                                new_phone_who_dis.anr.len()
-                            );
-                            if let Ok(etf_bin) = new_phone_who_dis.to_etf_bin() {
-                                debug!("anrcheck: complete message size: {} bytes", etf_bin.len());
-                                // The 390-byte limit applies only to ANR, not complete message
-                                if new_phone_who_dis.anr.len() > 390 {
-                                    warn!(
-                                        "anrcheck: ANR size ({} bytes) exceeds Elixir's 390-byte limit!",
-                                        new_phone_who_dis.anr.len()
-                                    );
-                                }
-                            }
-
                             for (_, ip) in unverified_anrs.iter().cloned() {
-                                debug!("anrcheck: sending new_phone_who_dis to {}:36969", ip);
-
-                                // Print message bytes in Elixir iex format for verification (debug level)
-                                // if let Ok(etf_bytes) = new_phone_who_dis.to_etf_bin() {
-                                //     let byte_list: Vec<String> = etf_bytes.iter().map(|b| b.to_string()).collect();
-                                //     println!("🔍 ANR Check - Elixir verification command (paste in iex):");
-                                //     println!("bytes = [{}]", byte_list.join(", "));
-                                //     println!(":erlang.binary_to_term(:erlang.list_to_binary(bytes))");
-                                //     println!(
-                                //         "# Should show nested map with ANR fields: ip4, pk, pop, port, signature, ts, version"
-                                //     );
-                                //     println!();
-                                // }
+                                // debug!("anrcheck: sending new_phone_who_dis to {}:36969", ip);
 
                                 if let Err(e) = new_phone_who_dis
                                     .send_to_with_metrics(

@@ -1,5 +1,8 @@
 // use crate::consensus::entry::Entry; // TODO: Remove when Entry handling is implemented
-use crate::node::{anr::{self, NodeRegistry}, peers};
+use crate::node::{
+    anr::{self, NodeRegistry},
+    peers,
+};
 use crate::utils::misc::get_unix_millis_now;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -98,7 +101,9 @@ impl NodeState {
             StateMessage::NewPhoneWhoDis { anr, challenge } => {
                 self.handle_new_phone_who_dis(anr, challenge, peer, node_registry).await
             }
-            StateMessage::What { anr, challenge, signature } => self.handle_what(anr, challenge, signature, peer, node_registry).await,
+            StateMessage::What { anr, challenge, signature } => {
+                self.handle_what(anr, challenge, signature, peer, node_registry).await
+            }
             StateMessage::Ping { temporal, rooted, ts_m } => {
                 self.handle_ping(temporal, rooted, ts_m, peer, node_peers, node_registry).await
             }
@@ -297,7 +302,11 @@ impl NodeState {
     }
 
     /// Handle peers_v2 message
-    async fn handle_peers_v2(&mut self, anrs: Vec<anr::Anr>, node_registry: &NodeRegistry) -> Result<Option<Vec<u8>>, Error> {
+    async fn handle_peers_v2(
+        &mut self,
+        anrs: Vec<anr::Anr>,
+        node_registry: &NodeRegistry,
+    ) -> Result<Option<Vec<u8>>, Error> {
         // Verify and insert ANRs
         let mut valid_anrs = Vec::new();
 
@@ -315,7 +324,12 @@ impl NodeState {
     }
 
     /// Handle sol (solution) message
-    async fn handle_sol(&mut self, sol: Vec<u8>, peer: &PeerInfo, _node_registry: &NodeRegistry) -> Result<Option<Vec<u8>>, Error> {
+    async fn handle_sol(
+        &mut self,
+        sol: Vec<u8>,
+        peer: &PeerInfo,
+        _node_registry: &NodeRegistry,
+    ) -> Result<Option<Vec<u8>>, Error> {
         // TODO: Implement solution validation and processing
         tracing::debug!("Received solution from {}", peer.ip);
 
