@@ -7,6 +7,7 @@ use crate::consensus::{fabric, tx};
 use crate::node::protocol;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381;
+use crate::utils::etf_small_atoms::encode_with_small_atoms;
 use crate::utils::misc::{TermExt, TermMap, bitvec_to_bools, bools_to_bitvec, get_unix_millis_now};
 use crate::utils::{archiver, blake3};
 use crate::{bic, consensus};
@@ -160,8 +161,7 @@ impl EntryHeader {
         map.insert(Term::Atom(Atom::from("txs_hash")), Term::from(Binary { bytes: self.txs_hash.to_vec() }));
 
         let term = Term::Map(Map { map });
-        let mut out = Vec::new();
-        term.encode(&mut out)?;
+        let out = encode_with_small_atoms(&term);
         Ok(out)
     }
 }
@@ -220,8 +220,7 @@ impl Protocol for Entry {
         m.insert(Term::Atom(Atom::from("entry_packed")), Term::from(Binary { bytes: entry_bin }));
 
         let term = Term::from(Map { map: m });
-        let mut out = Vec::new();
-        term.encode(&mut out).map_err(protocol::Error::EtfEncode)?;
+        let out = encode_with_small_atoms(&term);
         Ok(out)
     }
 
@@ -257,8 +256,7 @@ impl Entry {
         m.insert(Term::Atom(Atom::from("entry_packed")), Term::from(Binary { bytes: entry_bin }));
 
         let term = Term::from(Map { map: m });
-        let mut out = Vec::new();
-        term.encode(&mut out).map_err(protocol::Error::EtfEncode)?;
+        let out = encode_with_small_atoms(&term);
         Ok(out)
     }
 

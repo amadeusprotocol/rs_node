@@ -4,6 +4,7 @@ use crate::node::protocol;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381 as bls;
 use crate::utils::bls12_381::Error as BlsError;
+use crate::utils::etf_small_atoms::encode_with_small_atoms;
 use crate::utils::misc::{TermExt, TermMap};
 use eetf::DecodeError as EtfDecodeError;
 use eetf::EncodeError as EtfEncodeError;
@@ -73,8 +74,7 @@ impl Protocol for AttestationBulk {
             Term::from(List { elements: attestation_terms.map_err(protocol::Error::Att)? }),
         );
         let term = Term::from(eetf::Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data).map_err(protocol::Error::EtfEncode)?;
+        let etf_data = encode_with_small_atoms(&term);
         Ok(etf_data)
     }
     #[instrument(skip(map), name = "AttestationBulk::from_etf_map_validated")]
@@ -150,8 +150,7 @@ impl Attestation {
         m.insert(Term::Atom(Atom::from("signer")), Term::from(Binary { bytes: self.signer.to_vec() }));
         m.insert(Term::Atom(Atom::from("signature")), Term::from(Binary { bytes: self.signature.to_vec() }));
         let term = Term::from(eetf::Map { map: m });
-        let mut out = Vec::new();
-        term.encode(&mut out).map_err(Error::EtfEncode)?;
+        let out = encode_with_small_atoms(&term);
         Ok(out)
     }
 

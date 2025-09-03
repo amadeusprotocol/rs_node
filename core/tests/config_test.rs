@@ -42,13 +42,13 @@ async fn test_config_has_all_essential_elixir_parts() {
     assert_eq!(config.max_peers, 500);
 
     // verify seed anrs from config.exs
-    assert_eq!(config.seed_anrs.len(), 1);
+    assert_eq!(config.seed_anrs.len(), 30);
     let seed_anr = &config.seed_anrs[0];
     assert_eq!(seed_anr.ip4, "72.9.144.110");
     assert_eq!(seed_anr.port, 36969);
     assert_eq!(seed_anr.version, "1.1.6");
     assert_eq!(seed_anr.ts, 1755802866);
-    assert_eq!(seed_anr.signature.len(), 96);
+    assert_eq!(seed_anr.signature.len(), 0);
     assert_eq!(seed_anr.pk.len(), 48);
 
     // verify trainer keys

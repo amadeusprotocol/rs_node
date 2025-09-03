@@ -12,6 +12,7 @@ use crate::node::peers::HandshakeStatus;
 use crate::node::{ReedSolomonReassembler, anr, msg_v2, reassembler};
 use crate::socket::UdpSocketExt;
 use crate::utils::bls12_381 as bls;
+use crate::utils::etf_small_atoms::encode_with_small_atoms;
 use crate::utils::misc::Typename;
 use crate::utils::misc::{TermExt, TermMap, get_unix_millis_now};
 use eetf::convert::TryAsRef;
@@ -275,8 +276,7 @@ impl Protocol for Ping {
         m.insert(Term::Atom(Atom::from("rooted")), self.rooted.to_etf_term()?);
         m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: self.ts_m.into() }));
         let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data)?;
+        let etf_data = encode_with_small_atoms(&term);
         Ok(etf_data)
     }
     async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
@@ -418,8 +418,7 @@ impl Protocol for Pong {
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
         m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: self.ts_m.into() }));
         let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data)?;
+        let etf_data = encode_with_small_atoms(&term);
         Ok(etf_data)
     }
 
@@ -491,8 +490,7 @@ impl Protocol for TxPool {
         // txs_packed is directly a list of binary terms, not a binary containing an encoded list
         m.insert(Term::Atom(Atom::from("txs_packed")), Term::from(List { elements: tx_terms }));
         let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data)?;
+        let etf_data = encode_with_small_atoms(&term);
         Ok(etf_data)
     }
 
@@ -552,8 +550,7 @@ impl Protocol for Peers {
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
         m.insert(Term::Atom(Atom::from("ips")), Term::from(List { elements: ip_terms }));
         let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data)?;
+        let etf_data = encode_with_small_atoms(&term);
         Ok(etf_data)
     }
 
@@ -1036,8 +1033,7 @@ impl Protocol for NewPhoneWhoDis {
         };
         m.insert(Term::Atom(Atom::from("challenge")), challenge_term);
         let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data)?;
+        let etf_data = encode_with_small_atoms(&term);
         Ok(etf_data)
     }
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
@@ -1046,9 +1042,7 @@ impl Protocol for NewPhoneWhoDis {
         let anr_binary = if let Some(anr_map) = map.get_term_map("anr") {
             // ANR is a map (from Elixir nodes) - serialize it
             let anr_term = Term::from(eetf::Map { map: anr_map.0.clone() });
-            let mut encoded = Vec::new();
-            anr_term.encode(&mut encoded)?;
-            encoded
+            encode_with_small_atoms(&anr_term)
         } else if let Some(anr_bin) = map.get_binary::<Vec<u8>>("anr") {
             // ANR is already a binary (from Rust nodes)
             anr_bin
@@ -1192,8 +1186,7 @@ impl Protocol for What {
         m.insert(Term::Atom(Atom::from("challenge")), challenge_term);
         m.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
         let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data)?;
+        let etf_data = encode_with_small_atoms(&term);
         Ok(etf_data)
     }
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
@@ -1202,9 +1195,7 @@ impl Protocol for What {
         let anr_binary = if let Some(anr_map) = map.get_term_map("anr") {
             // ANR is a map (from Elixir nodes) - serialize it
             let anr_term = Term::from(eetf::Map { map: anr_map.0.clone() });
-            let mut encoded = Vec::new();
-            anr_term.encode(&mut encoded)?;
-            encoded
+            encode_with_small_atoms(&anr_term)
         } else if let Some(anr_bin) = map.get_binary::<Vec<u8>>("anr") {
             // ANR is already a binary (from Rust nodes)
             anr_bin
@@ -1341,8 +1332,7 @@ impl Protocol for SpecialBusiness {
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
         m.insert(Term::Atom(Atom::from("business")), Term::from(Binary { bytes: self.business.clone() }));
         let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data)?;
+        let etf_data = encode_with_small_atoms(&term);
         Ok(etf_data)
     }
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
@@ -1378,8 +1368,7 @@ impl Protocol for SpecialBusinessReply {
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
         m.insert(Term::Atom(Atom::from("business")), Term::from(Binary { bytes: self.business.clone() }));
         let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data)?;
+        let etf_data = encode_with_small_atoms(&term);
         Ok(etf_data)
     }
 
@@ -1396,8 +1385,7 @@ impl SpecialBusinessReply {
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
         m.insert(Term::Atom(Atom::from("business")), Term::from(Binary { bytes: self.business.clone() }));
         let term = Term::from(Map { map: m });
-        let mut etf_data = Vec::new();
-        term.encode(&mut etf_data)?;
+        let etf_data = encode_with_small_atoms(&term);
         Ok(etf_data)
     }
 }

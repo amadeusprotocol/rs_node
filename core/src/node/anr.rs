@@ -1,5 +1,6 @@
 use crate::config::{Config, SeedANR};
 use crate::utils::bls12_381::{sign, verify};
+use crate::utils::etf_small_atoms::encode_with_small_atoms;
 use crate::utils::misc::{get_unix_millis_now, get_unix_secs_now};
 use eetf::{Atom, BigInteger, Binary, FixInteger, Map, Term};
 use serde::{Deserialize, Serialize};
@@ -266,17 +267,17 @@ impl Anr {
         // Use Elixir format: ip4 as string (not binary)
 
         // Include optional fields first (alphabetically), use nil atom if not present
-        let anr_desc_term = match &self.anr_desc {
-            Some(desc) => Term::Binary(Binary::from(desc.as_bytes().to_vec())),
-            None => Term::Atom(Atom::from("nil")),
-        };
-        index_map.insert(Term::Atom(Atom::from("anr_desc")), anr_desc_term);
-
-        let anr_name_term = match &self.anr_name {
-            Some(name) => Term::Binary(Binary::from(name.as_bytes().to_vec())),
-            None => Term::Atom(Atom::from("nil")),
-        };
-        index_map.insert(Term::Atom(Atom::from("anr_name")), anr_name_term);
+        // let anr_desc_term = match &self.anr_desc {
+        //     Some(desc) => Term::Binary(Binary::from(desc.as_bytes().to_vec())),
+        //     None => Term::Atom(Atom::from("nil")),
+        // };
+        // index_map.insert(Term::Atom(Atom::from("anr_desc")), anr_desc_term);
+        //
+        // let anr_name_term = match &self.anr_name {
+        //     Some(name) => Term::Binary(Binary::from(name.as_bytes().to_vec())),
+        //     None => Term::Atom(Atom::from("nil")),
+        // };
+        // index_map.insert(Term::Atom(Atom::from("anr_name")), anr_name_term);
 
         index_map.insert(
             Term::Atom(Atom::from("ip4")),
@@ -299,8 +300,7 @@ impl Anr {
 
         let map = Map { map: index_map.into_iter().collect() };
         let term = Term::Map(map);
-        let mut buf = Vec::new();
-        term.encode(&mut buf)?;
+        let buf = encode_with_small_atoms(&term);
         Ok(buf)
     }
 

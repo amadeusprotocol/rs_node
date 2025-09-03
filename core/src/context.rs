@@ -5,10 +5,9 @@ use crate::node::protocol::*;
 use crate::node::protocol::{Instruction, NewPhoneWhoDis};
 use crate::node::{NodeState, peers};
 use crate::socket::UdpSocketExt;
-use crate::utils::misc::Typename;
 use crate::utils::misc::get_unix_millis_now;
+use crate::utils::misc::{Typename, get_unix_secs_now};
 use crate::{Error, config, metrics, node};
-use rand::random;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -69,7 +68,7 @@ impl Context {
             let node_peers = node_peers.clone();
             let anr = Anr::from_config(&config)?;
             spawn(async move {
-                let challenge = random::<u64>();
+                let challenge = get_unix_secs_now();
                 let new_phone_who_dis = match NewPhoneWhoDis::new(anr.clone(), challenge) {
                     Ok(msg) => msg,
                     Err(e) => {
@@ -150,7 +149,7 @@ impl Context {
                                 }
                             };
 
-                            let challenge = random::<u64>();
+                            let challenge = get_unix_secs_now();
                             let new_phone_who_dis = match NewPhoneWhoDis::new(anr, challenge) {
                                 Ok(msg) => msg,
                                 Err(e) => {
@@ -685,8 +684,7 @@ impl Context {
             self.config.get_ver(),
         )?;
 
-        // generate a random challenge
-        let challenge = random::<u64>();
+        let challenge = get_unix_secs_now();
 
         // create NewPhoneWhoDis message
         let new_phone_who_dis = NewPhoneWhoDis::new(my_anr, challenge)

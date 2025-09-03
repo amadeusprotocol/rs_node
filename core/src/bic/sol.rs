@@ -2,6 +2,7 @@ use crate::Context;
 use crate::node::protocol;
 use crate::node::protocol::Protocol;
 use crate::utils::blake3;
+use crate::utils::etf_small_atoms::encode_with_small_atoms;
 use crate::utils::misc::TermMap;
 use eetf::{Atom, Term};
 use once_cell::sync::Lazy;
@@ -115,8 +116,7 @@ impl Protocol for Solution {
         m.insert(Term::Atom(Atom::from("sol")), Term::from(eetf::Binary { bytes: sol_bin }));
 
         let term = Term::from(eetf::Map { map: m });
-        let mut out = Vec::new();
-        term.encode(&mut out).map_err(protocol::Error::EtfEncode)?;
+        let out = encode_with_small_atoms(&term);
         Ok(out)
     }
 
@@ -175,8 +175,7 @@ impl Solution {
         m.insert(Term::Atom(Atom::from("sol")), Term::from(eetf::Binary { bytes: sol_bin }));
 
         let term = Term::from(eetf::Map { map: m });
-        let mut out = Vec::new();
-        term.encode(&mut out).map_err(protocol::Error::EtfEncode)?;
+        let out = encode_with_small_atoms(&term);
         Ok(out)
     }
 
