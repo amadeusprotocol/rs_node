@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::debug;
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
 pub enum Error {
@@ -71,7 +72,7 @@ impl From<SeedANR> for Anr {
             pop: vec![0u8; 96], // seed anrs don't include pop in config
             port: seed.port,
             signature: seed.signature,
-            ts: seed.ts as u128,
+            ts: seed.ts,
             version: seed.version,
             anr_name: None,
             anr_desc: None,
@@ -79,7 +80,7 @@ impl From<SeedANR> for Anr {
             hasChainPop: false,
             error: None,
             error_tries: 0,
-            next_check: seed.ts + 3,
+            next_check: seed.ts as u64 + 3,
         }
     }
 }
@@ -111,7 +112,7 @@ impl Anr {
         anr_name: Option<String>,
         anr_desc: Option<String>,
     ) -> Result<Self, Error> {
-        let ts = get_unix_millis_now();
+        let ts = get_unix_secs_now() as u128;
         let mut anr = Anr {
             ip4,
             pk: pk.to_vec(),
@@ -126,7 +127,7 @@ impl Anr {
             hasChainPop: false,
             error: None,
             error_tries: 0,
-            next_check: get_unix_secs_now() + 3,
+            next_check: ts as u64 + 3,
         };
 
         // create signature over erlang term format like elixir
@@ -397,11 +398,11 @@ impl Anr {
 /// NodeRegistry manages the network-wide identity verification system
 /// Tracks ANR (Amadeus Network Record) entries with cryptographic signatures
 #[derive(Debug, Clone)]
-pub struct NodeRegistry {
+pub struct NodeAnrs {
     store: Arc<RwLock<HashMap<Vec<u8>, Anr>>>,
 }
 
-impl NodeRegistry {
+impl NodeAnrs {
     /// Create a new NodeRegistry instance
     pub fn new() -> Self {
         Self { store: Arc::new(RwLock::new(HashMap::new())) }
@@ -413,10 +414,9 @@ impl NodeRegistry {
     }
 
     /// Insert or update anr record
-    pub async fn insert(&self, anr: Anr) -> Result<(), Error> {
+    pub async fn insert(&self, mut anr: Anr) -> Result<(), Error> {
         // check if we have chain pop for this pk (would need consensus module)
         // let hasChainPop = consensus::chain_pop(&anr.pk).is_some();
-        let mut anr = anr;
         anr.hasChainPop = false; // placeholder
 
         let pk = anr.pk.clone();
@@ -492,11 +492,13 @@ impl NodeRegistry {
     pub async fn not_handshaked_pk_ip4(&self) -> Result<Vec<(Vec<u8>, Ipv4Addr)>, Error> {
         let map = self.store.read().await;
         let mut results = Vec::new();
+
         for (k, v) in map.iter() {
             if !v.handshaked {
                 results.push((k.clone(), v.ip4));
             }
         }
+
         Ok(results)
     }
 
@@ -535,16 +537,16 @@ impl NodeRegistry {
         use rand::seq::SliceRandom;
         use std::collections::HashSet;
 
-        let pairs = self.not_handshaked_pk_ip4().await?;
-
         // deduplicate by ip4
         let mut seen_ips = HashSet::new();
         let mut unique_pairs = Vec::new();
-        for (pk, ip4) in pairs {
+        for (pk, ip4) in self.not_handshaked_pk_ip4().await? {
             if seen_ips.insert(ip4) {
                 unique_pairs.push((pk, ip4));
             }
         }
+
+        debug!("selecting {count} unverified anrs from {}", unique_pairs.len());
 
         let mut rng = rand::thread_rng();
         let selected: Vec<_> = unique_pairs.choose_multiple(&mut rng, count).cloned().collect();
@@ -598,7 +600,7 @@ impl NodeRegistry {
 
     /// Seed initial anrs (called on startup)
     pub async fn seed(&self, config: &Config) -> Result<(), Error> {
-        for anr in config.seed_anrs.iter().cloned().map(Into::into) {
+        for anr in config.seed_anrs.iter().cloned().map(Into::<Anr>::into) {
             self.insert(anr).await?;
         }
 
@@ -606,6 +608,9 @@ impl NodeRegistry {
             self.insert(my_anr).await?;
             self.set_handshaked(&config.get_pk()).await?;
         }
+
+        let all = self.get_all().await?;
+        debug!("seeded {} ANRs from config", all.len());
 
         Ok(())
     }
@@ -634,7 +639,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_anr_operations() {
-        let registry = NodeRegistry::new();
+        let registry = NodeAnrs::new();
 
         // create test keys with unique pk to avoid conflicts
         let _sk = [1; 32];
@@ -706,7 +711,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_anr_update() {
-        let registry = NodeRegistry::new();
+        let registry = NodeAnrs::new();
 
         // create unique pk for this test
         let mut pk = vec![1; 48];
@@ -813,6 +818,62 @@ mod tests {
         assert!(!retrieved.handshaked); // should be reset
         assert_eq!(retrieved.error, None); // should be reset
         assert_eq!(retrieved.error_tries, 0); // should be reset
+
+        // cleanup
+        registry.clear_all().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_random_not_handshaked_multiple() {
+        let registry = NodeAnrs::new();
+
+        // Create 5 unique not-handshaked ANRs
+        for i in 1..=5 {
+            let mut pk = vec![i as u8; 48];
+            // Make unique by adding time component
+            let time_bytes =
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos().to_le_bytes();
+            pk[40..48].copy_from_slice(&time_bytes[..8]);
+
+            let anr = Anr {
+                ip4: Ipv4Addr::new(192, 168, 1, i), // different IPs
+                pk: pk.clone(),
+                pop: vec![i as u8; 96],
+                port: 36969,
+                signature: vec![i as u8; 96],
+                ts: 1000 + i as u128,
+                version: format!("1.0.{}", i),
+                anr_name: None,
+                anr_desc: None,
+                handshaked: false, // Explicitly not handshaked
+                hasChainPop: false,
+                error: None,
+                error_tries: 0,
+                next_check: 2000,
+            };
+
+            registry.insert(anr).await.unwrap();
+        }
+
+        // Test multiple calls to ensure randomness and correct count
+        for run in 1..=10 {
+            let result = registry.get_random_not_handshaked(3).await.unwrap();
+            println!("Run {}: got {} results", run, result.len());
+
+            // Should return 3 results since we have 5 candidates
+            assert_eq!(result.len(), 3, "Run {}: expected 3 results, got {}", run, result.len());
+
+            // All should have different IPs (uniqueness check)
+            let mut ips = std::collections::HashSet::new();
+            for (pk, ip) in &result {
+                assert!(ips.insert(*ip), "Run {}: duplicate IP found: {}", run, ip);
+                println!("  - IP: {}, PK: {}", ip, bs58::encode(pk).into_string());
+            }
+        }
+
+        // Test asking for more than available
+        let result = registry.get_random_not_handshaked(10).await.unwrap();
+        assert_eq!(result.len(), 5, "Should return all 5 when asking for 10");
 
         // cleanup
         registry.clear_all().await.unwrap();

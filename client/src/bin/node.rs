@@ -14,10 +14,12 @@ use tracing::{debug, info};
 async fn main() -> anyhow::Result<()> {
     init_tracing();
 
-    let udp_socket = Arc::new(UdpSocketWrapper::bind("0.0.0.0:36969").await?);
     let config = Config::from_fs(None, None).await?;
     info!("working inside {}", config.get_root());
     info!("public address {}", config.get_public_ipv4());
+    info!("public key {}", bs58::encode(config.get_pk()).into_string());
+
+    let udp_socket = Arc::new(UdpSocketWrapper::bind("0.0.0.0:36969").await?);
     let ctx = Arc::new(Context::with_config_and_socket(config, udp_socket).await?);
 
     // UDP amadeus node

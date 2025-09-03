@@ -148,12 +148,12 @@ impl NodePeers {
         Self::new(100)
     }
 
-    pub async fn clear_stale(&self, node_registry: &anr::NodeRegistry) -> usize {
+    pub async fn clear_stale(&self, node_registry: &anr::NodeAnrs) -> usize {
         self.clear_stale_inner(node_registry).await.inspect_err(|e| warn!("peer cleanup error: {}", e)).unwrap_or(0)
     }
 
     /// Clear stale peers and add missing validators/handshaked nodes
-    pub async fn clear_stale_inner(&self, node_registry: &anr::NodeRegistry) -> Result<usize, Error> {
+    pub async fn clear_stale_inner(&self, node_registry: &anr::NodeAnrs) -> Result<usize, Error> {
         let ts_m = get_unix_millis_now() as u64;
 
         // Get validators for current height + 1
@@ -255,7 +255,7 @@ impl NodePeers {
     }
 
     /// Seed initial peers with validators
-    pub async fn seed(&self, config: &Config, node_registry: &anr::NodeRegistry) -> Result<(), Error> {
+    pub async fn seed(&self, config: &Config, node_registry: &anr::NodeAnrs) -> Result<(), Error> {
         let height = consensus::chain_height();
         let validators = consensus::trainers_for_height(height + 1).unwrap_or_default();
         let validators: Vec<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();

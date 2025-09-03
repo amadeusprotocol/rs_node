@@ -1,6 +1,6 @@
 // use crate::consensus::entry::Entry; // TODO: Remove when Entry handling is implemented
 use crate::node::{
-    anr::{self, NodeRegistry},
+    anr::{self, NodeAnrs},
     peers,
 };
 use crate::utils::misc::get_unix_millis_now;
@@ -95,7 +95,7 @@ impl NodeState {
         msg: StateMessage,
         peer: &PeerInfo,
         node_peers: &peers::NodePeers,
-        node_registry: &NodeRegistry,
+        node_registry: &NodeAnrs,
     ) -> Result<Option<Vec<u8>>, Error> {
         match msg {
             StateMessage::NewPhoneWhoDis { anr, challenge } => {
@@ -135,7 +135,7 @@ impl NodeState {
         anr: anr::Anr,
         challenge: u64,
         peer: &PeerInfo,
-        node_registry: &NodeRegistry,
+        node_registry: &NodeAnrs,
     ) -> Result<Option<Vec<u8>>, Error> {
         // Verify ANR
         let verified_anr = anr::Anr::verify_and_unpack(anr)?;
@@ -170,7 +170,7 @@ impl NodeState {
         challenge: u64,
         signature: Vec<u8>,
         peer: &PeerInfo,
-        node_registry: &NodeRegistry,
+        node_registry: &NodeAnrs,
     ) -> Result<Option<Vec<u8>>, Error> {
         // Verify ANR
         let verified_anr = anr::Anr::verify_and_unpack(anr)?;
@@ -209,7 +209,7 @@ impl NodeState {
         ts_m: u128,
         peer: &PeerInfo,
         node_peers: &peers::NodePeers,
-        node_registry: &NodeRegistry,
+        node_registry: &NodeAnrs,
     ) -> Result<Option<Vec<u8>>, Error> {
         // TODO: Unpack and validate entries
         // For now, just check that entries are not empty
@@ -305,7 +305,7 @@ impl NodeState {
     async fn handle_peers_v2(
         &mut self,
         anrs: Vec<anr::Anr>,
-        node_registry: &NodeRegistry,
+        node_registry: &NodeAnrs,
     ) -> Result<Option<Vec<u8>>, Error> {
         // Verify and insert ANRs
         let mut valid_anrs = Vec::new();
@@ -328,7 +328,7 @@ impl NodeState {
         &mut self,
         sol: Vec<u8>,
         peer: &PeerInfo,
-        _node_registry: &NodeRegistry,
+        _node_registry: &NodeAnrs,
     ) -> Result<Option<Vec<u8>>, Error> {
         // TODO: Implement solution validation and processing
         tracing::debug!("Received solution from {}", peer.ip);

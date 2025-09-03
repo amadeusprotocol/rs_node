@@ -17,6 +17,7 @@ use crate::utils::misc::{TermExt, TermMap, get_unix_millis_now};
 use eetf::convert::TryAsRef;
 use eetf::{Atom, BigInteger, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, List, Map, Term};
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::io::Error as IoError;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -42,7 +43,7 @@ fn integer_to_binary(n: u64) -> Vec<u8> {
 /// Every object that has this trait must be convertible from an Erlang ETF
 /// Binary representation and must be able to handle itself as a message
 #[async_trait::async_trait]
-pub trait Protocol: Typename + Send + Sync {
+pub trait Protocol: Typename + Debug + Send + Sync {
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error>
     where
         Self: Sized;
@@ -155,7 +156,7 @@ pub fn parse_etf_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
         Solution::NAME => Box::new(Solution::from_etf_map_validated(map)?),
         TxPool::TYPENAME => Box::new(TxPool::from_etf_map_validated(map)?),
         Peers::NAME => Box::new(Peers::from_etf_map_validated(map)?),
-        NewPhoneWhoDis::NAME => Box::new(NewPhoneWhoDis::from_etf_map_validated(map)?),
+        NewPhoneWhoDis::TYPENAME => Box::new(NewPhoneWhoDis::from_etf_map_validated(map)?),
         What::NAME => Box::new(What::from_etf_map_validated(map)?),
         SpecialBusiness::NAME => Box::new(SpecialBusiness::from_etf_map_validated(map)?),
         SpecialBusinessReply::NAME => Box::new(SpecialBusinessReply::from_etf_map_validated(map)?),
@@ -570,7 +571,7 @@ impl Ping {}
 
 impl Typename for NewPhoneWhoDis {
     fn typename(&self) -> &'static str {
-        Self::NAME
+        Self::TYPENAME
     }
 }
 
@@ -1019,7 +1020,7 @@ mod tests {
 impl Protocol for NewPhoneWhoDis {
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
 
         // Decode ANR from binary back to term to get proper nested map structure
         let anr_term = Term::decode(&self.anr[..])?;
@@ -1107,6 +1108,8 @@ impl Protocol for NewPhoneWhoDis {
             next_check: (ts + 3) as u64,
         };
 
+        // println!("{sender_anr:?}");
+
         if !sender_anr.verify_signature() {
             warn!("received new_phone_who_dis with invalid anr signature from {src}");
             return Err(Error::BadEtf("anr_signature_invalid"));
@@ -1156,7 +1159,7 @@ impl Protocol for NewPhoneWhoDis {
 }
 
 impl NewPhoneWhoDis {
-    pub const NAME: &'static str = "new_phone_who_dis";
+    pub const TYPENAME: &'static str = "new_phone_who_dis";
 
     pub fn new(anr: anr::Anr, challenge: u64) -> Result<Self, Error> {
         let anr_binary = anr.to_etf_binary()?;

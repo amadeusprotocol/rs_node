@@ -1,5 +1,5 @@
 use crate::config::{ANR_CHECK_SECS, CLEANUP_SECS};
-use crate::node::anr::{Anr, NodeRegistry};
+use crate::node::anr::{Anr, NodeAnrs};
 use crate::node::peers::HandshakeStatus::SentNewPhoneWhoDis;
 use crate::node::protocol::*;
 use crate::node::protocol::{Instruction, NewPhoneWhoDis};
@@ -24,7 +24,7 @@ pub struct Context {
     pub(crate) metrics: Arc<metrics::Metrics>,
     pub(crate) reassembler: Arc<node::ReedSolomonReassembler>,
     pub(crate) node_peers: Arc<peers::NodePeers>,
-    pub(crate) node_registry: Arc<NodeRegistry>,
+    pub(crate) node_registry: Arc<NodeAnrs>,
     pub(crate) node_state: Arc<RwLock<NodeState>>,
     pub(crate) broadcaster: Option<Arc<dyn node::Broadcaster>>,
     pub(crate) socket: Arc<dyn UdpSocketExt>,
@@ -50,16 +50,16 @@ impl Context {
         use node::reassembler::ReedSolomonReassembler as Reassembler;
         use tokio::time::{Duration, interval};
 
-        assert_ne!(config.work_folder, "");
-        init_kvdb(&config.work_folder).await?;
-        init_storage(&config.work_folder).await?;
+        assert_ne!(config.get_root(), "");
+        init_kvdb(&config.get_root()).await?;
+        init_storage(&config.get_root()).await?;
 
         let metrics = Arc::new(Metrics::new());
         let node_peers = Arc::new(peers::NodePeers::default());
-        let node_registry = Arc::new(NodeRegistry::new());
+        let node_anrs = Arc::new(NodeAnrs::new());
 
-        node_registry.seed(&config).await?; // must be done before node_peers.seed()
-        node_peers.seed(&config, &node_registry).await?;
+        node_anrs.seed(&config).await?; // must be done before node_peers.seed()
+        node_peers.seed(&config, &node_anrs).await?;
 
         {
             // oneshot bootstrap task to send new_phone_who_dis to seed nodes
@@ -114,13 +114,13 @@ impl Context {
             // periodic cleanup task
             let reassembler = reassembler.clone();
             let node_peers = node_peers.clone();
-            let node_registry_cleanup = node_registry.clone();
+            let node_anrs = node_anrs.clone();
             spawn(async move {
                 let mut ticker = interval(Duration::from_secs(CLEANUP_SECS));
                 loop {
                     ticker.tick().await;
                     let cleared_shards = reassembler.clear_stale(CLEANUP_SECS).await;
-                    let cleared_peers = node_peers.clear_stale(&node_registry_cleanup).await;
+                    let cleared_peers = node_peers.clear_stale(&node_anrs).await;
                     debug!("cleanup: cleared {cleared_shards} stale shards, {cleared_peers} stale peers");
                 }
             });
@@ -132,13 +132,13 @@ impl Context {
             let socket = socket.clone();
             let metrics = metrics.clone();
             let node_peers = node_peers.clone();
-            let node_registry_clone = node_registry.clone();
+            let node_anrs = node_anrs.clone();
             spawn(async move {
                 let mut ticker = interval(Duration::from_secs(ANR_CHECK_SECS));
                 loop {
                     ticker.tick().await;
                     // get random unverified anrs and attempt to verify them
-                    match node_registry_clone.get_random_not_handshaked(3).await {
+                    match node_anrs.get_random_not_handshaked(3).await {
                         Ok(unverified_anrs) => {
                             debug!("anrcheck: found {} unverified anrs", unverified_anrs.len());
 
@@ -193,7 +193,7 @@ impl Context {
             metrics,
             reassembler,
             node_peers,
-            node_registry,
+            node_registry: node_anrs,
             node_state,
             broadcaster: None,
             socket,
@@ -860,7 +860,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_random_unverified_anrs() {
         // test the ANR selection logic - create a test registry
-        let registry = NodeRegistry::new();
+        let registry = NodeAnrs::new();
         let result = registry.get_random_not_handshaked(3).await;
 
         // should not panic and should return a result
