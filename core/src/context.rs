@@ -1,13 +1,13 @@
 use crate::config::{ANR_CHECK_SECS, CLEANUP_SECS};
 use crate::node::anr::{Anr, NodeAnrs};
-use crate::node::peers;
 use crate::node::peers::HandshakeStatus::SentNewPhoneWhoDis;
 use crate::node::protocol::*;
 use crate::node::protocol::{Instruction, NewPhoneWhoDis};
+use crate::node::{anr, peers};
 use crate::socket::UdpSocketExt;
 use crate::utils::misc::get_unix_millis_now;
 use crate::utils::misc::{Typename, get_unix_secs_now};
-use crate::{Error, config, metrics, node};
+use crate::{config, consensus, metrics, node, utils};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -15,6 +15,24 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::spawn;
 use tracing::{debug, info, warn};
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error(transparent)]
+    Fabric(#[from] consensus::fabric::Error),
+    #[error(transparent)]
+    Archiver(#[from] utils::archiver::Error),
+    #[error(transparent)]
+    Protocol(#[from] node::protocol::Error),
+    #[error(transparent)]
+    Config(#[from] config::Error),
+    #[error(transparent)]
+    Anr(#[from] anr::Error),
+    #[error(transparent)]
+    Peers(#[from] peers::Error),
+    #[error("{0}")]
+    String(String),
+}
 
 /// Runtime container for config, metrics, reassembler, and node state.
 pub struct Context {
@@ -453,7 +471,7 @@ impl Context {
                 let Context { config, socket, metrics, .. } = self;
                 what.send_to_with_metrics(config, socket.clone(), dst, metrics)
                     .await
-                    .map_err(|e| crate::Error::String(format!("Failed to send SendWhat to {}: {:?}", dst, e)))?;
+                    .map_err(|e| Error::String(format!("Failed to send SendWhat to {}: {:?}", dst, e)))?;
                 Ok(())
             }
 
@@ -463,7 +481,7 @@ impl Context {
                 let pong = Pong { ts: ts_m, seen_time: seen_time_ms };
                 pong.send_to_with_metrics(&self.config, self.socket.clone(), dst, &self.metrics)
                     .await
-                    .map_err(|e| crate::Error::String(format!("Failed to send pong: {:?}", e)))
+                    .map_err(|e| Error::String(format!("Failed to send pong: {:?}", e)))
             }
 
             Instruction::ValidTxs { txs } => {

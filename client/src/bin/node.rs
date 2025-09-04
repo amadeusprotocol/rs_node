@@ -1,8 +1,7 @@
-use ama_core::Context;
-use ama_core::config::Config;
 use ama_core::node::protocol::{Instruction, TxPool};
+use ama_core::{Config, Context};
 use client::{UdpSocketWrapper, get_http_port, init_tracing};
-use http::serve;
+use http::serve as http_serve;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -17,31 +16,30 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_fs(None, None).await?;
     info!("working inside {}", config.get_root());
     info!("public address {}", config.get_public_ipv4());
-    info!("public key {}", bs58::encode(config.get_pk()).into_string());
+    info!("public bs58key {}", bs58::encode(config.get_pk()).into_string());
 
     let udp_socket = Arc::new(UdpSocketWrapper::bind("0.0.0.0:36969").await?);
     let ctx = Arc::new(Context::with_config_and_socket(config, udp_socket).await?);
 
     // UDP amadeus node
-    let ctx_udp = ctx.clone();
+    let ctx_local = ctx.clone();
     let udp = spawn(async move {
-        if let Err(e) = recv_loop(ctx_udp).await {
-            eprintln!("udp loop error: {e}");
+        if let Err(e) = recv_loop(ctx_local).await {
+            eprintln!("udp node error: {e}");
         }
     });
 
-    // HTTP dashboard server
-    let ctx_http = ctx.clone();
-    let http = spawn(async move {
-        let port = get_http_port();
-        let socket = TcpListener::bind(&format!("0.0.0.0:{port}")).await.expect("bind http");
+    let port = get_http_port();
+    let socket = TcpListener::bind(&format!("0.0.0.0:{port}")).await.expect("bind http");
 
-        if let Err(e) = serve(socket, ctx_http).await {
+    // HTTP dashboard server
+    let ctx_local = ctx.clone();
+    let http = spawn(async move {
+        if let Err(e) = http_serve(socket, ctx_local).await {
             eprintln!("http server error: {e}");
         }
     });
 
-    // Wait for either task to finish (or join both if you prefer)
     tokio::try_join!(udp, http)?;
     Ok(())
 }
@@ -62,7 +60,7 @@ async fn recv_loop(ctx: Arc<Context>) -> anyhow::Result<()> {
 
                 if message.typename() == TxPool::TYPENAME {
                     // example how to steer the core library
-                    debug!("received ping from {src}");
+                    debug!("received txpool from {src}");
                 }
 
                 let instruction = match ctx.handle(message, src).await {
