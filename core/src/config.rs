@@ -149,7 +149,7 @@ pub struct SeedANR {
     pub port: u16,
     pub version: String,
     pub signature: Vec<u8>,
-    pub ts: u128,
+    pub ts: u32,
     pub pk: Vec<u8>,
 }
 

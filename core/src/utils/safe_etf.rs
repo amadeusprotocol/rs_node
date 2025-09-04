@@ -1,4 +1,5 @@
-use eetf::Term;
+use eetf::{Term, Atom, Map};
+use std::collections::HashMap;
 
 /// Encode an EETF term using small atoms (tag 119) instead of legacy atoms (tag 100)
 /// This ensures compatibility with Elixir's [:safe] option which rejects old atom encoding
@@ -7,6 +8,40 @@ pub fn encode_with_small_atoms(term: &Term) -> Vec<u8> {
     buf.push(131); // ETF version marker
     encode_term_with_small_atoms(term, &mut buf);
     buf
+}
+
+/// Encode a map with predictable key ordering based on provided key names
+/// Keys not present in the map are silently skipped
+/// This function ensures deterministic serialization regardless of HashMap's internal ordering
+pub fn encode_map_with_ordered_keys(map: &Map, key_order: &[&str]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.push(131); // ETF version marker
+    encode_map_with_key_order(&map.map, key_order, &mut buf);
+    buf
+}
+
+/// Encode just the map part with ordered keys (without ETF version marker)
+/// This is useful when encoding a map as part of a larger structure
+pub fn encode_map_with_key_order(map: &HashMap<Term, Term>, key_order: &[&str], buf: &mut Vec<u8>) {
+    // Collect present key-value pairs in the specified order
+    let mut present_pairs = Vec::new();
+    
+    for &key_name in key_order {
+        let key_atom = Term::Atom(Atom::from(key_name));
+        if let Some(value) = map.get(&key_atom) {
+            present_pairs.push((key_atom, value));
+        }
+    }
+
+    // Write map header with the actual count of present key-value pairs
+    buf.push(116); // map tag
+    buf.extend_from_slice(&(present_pairs.len() as u32).to_be_bytes());
+    
+    // Encode the key-value pairs in the specified order
+    for (key, value) in present_pairs {
+        encode_term_with_small_atoms(&key, buf);
+        encode_term_with_small_atoms(value, buf);
+    }
 }
 
 fn encode_term_with_small_atoms(term: &Term, buf: &mut Vec<u8>) {
@@ -170,7 +205,7 @@ fn encode_term_with_small_atoms(term: &Term, buf: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eetf::{Atom, Map};
+    use eetf::{Atom, Map, FixInteger};
     use std::collections::HashMap;
 
     #[test]
@@ -270,6 +305,163 @@ mod tests {
             assert_eq!(original_encoded[1], 100); // legacy atom
             assert_eq!(our_encoded[1], 119); // small atom
             assert_eq!(original_encoded[2..], our_encoded[2..]);
+        }
+    }
+
+    #[test]
+    fn test_ordered_map_serialization() {
+        // Create a map with multiple key-value pairs
+        let mut map_data = HashMap::new();
+        map_data.insert(Term::Atom(Atom::from("zebra")), Term::FixInteger(FixInteger { value: 3 }));
+        map_data.insert(Term::Atom(Atom::from("alpha")), Term::FixInteger(FixInteger { value: 1 }));
+        map_data.insert(Term::Atom(Atom::from("beta")), Term::FixInteger(FixInteger { value: 2 }));
+        
+        let map = Map { map: map_data };
+
+        // Define key order - different from natural HashMap order
+        let key_order = ["alpha", "beta", "zebra"];
+        
+        // Encode with ordered keys
+        let encoded = encode_map_with_ordered_keys(&map, &key_order);
+        
+        // Verify ETF structure
+        assert_eq!(encoded[0], 131); // ETF version
+        assert_eq!(encoded[1], 116); // map tag
+        
+        // Should have 3 pairs (encoded as 4 bytes: 0, 0, 0, 3)
+        assert_eq!(encoded[2], 0);
+        assert_eq!(encoded[3], 0);
+        assert_eq!(encoded[4], 0);
+        assert_eq!(encoded[5], 3);
+        
+        // Decode and verify the order is preserved
+        let decoded = Term::decode(&encoded[..]).unwrap();
+        if let Term::Map(decoded_map) = decoded {
+            // Convert back to ordered pairs to verify order
+            let key_order_terms: Vec<Term> = key_order.iter()
+                .map(|&k| Term::Atom(Atom::from(k)))
+                .collect();
+            
+            // Verify all expected keys are present
+            for expected_key in &key_order_terms {
+                assert!(decoded_map.map.contains_key(expected_key));
+            }
+        } else {
+            panic!("Decoded term is not a map");
+        }
+    }
+
+    #[test]
+    fn test_ordered_map_with_missing_keys() {
+        // Create a map with only some of the keys we'll request
+        let mut map_data = HashMap::new();
+        map_data.insert(Term::Atom(Atom::from("existing_key")), Term::FixInteger(FixInteger { value: 42 }));
+        map_data.insert(Term::Atom(Atom::from("another_key")), Term::FixInteger(FixInteger { value: 100 }));
+        
+        let map = Map { map: map_data };
+
+        // Define key order that includes keys not in the map
+        let key_order = ["missing_key1", "existing_key", "missing_key2", "another_key", "missing_key3"];
+        
+        // Encode with ordered keys
+        let encoded = encode_map_with_ordered_keys(&map, &key_order);
+        
+        // Verify ETF structure
+        assert_eq!(encoded[0], 131); // ETF version
+        assert_eq!(encoded[1], 116); // map tag
+        
+        // Should have only 2 pairs (encoded as 4 bytes: 0, 0, 0, 2) since missing keys are skipped
+        assert_eq!(encoded[2], 0);
+        assert_eq!(encoded[3], 0);
+        assert_eq!(encoded[4], 0);
+        assert_eq!(encoded[5], 2);
+        
+        // Decode and verify only existing keys are present
+        let decoded = Term::decode(&encoded[..]).unwrap();
+        if let Term::Map(decoded_map) = decoded {
+            assert_eq!(decoded_map.map.len(), 2);
+            assert!(decoded_map.map.contains_key(&Term::Atom(Atom::from("existing_key"))));
+            assert!(decoded_map.map.contains_key(&Term::Atom(Atom::from("another_key"))));
+            assert!(!decoded_map.map.contains_key(&Term::Atom(Atom::from("missing_key1"))));
+        } else {
+            panic!("Decoded term is not a map");
+        }
+    }
+
+    #[test]
+    fn test_empty_map_ordered_serialization() {
+        // Create an empty map
+        let map = Map { map: HashMap::new() };
+        let key_order = ["any_key", "another_key"];
+        
+        // Encode with ordered keys
+        let encoded = encode_map_with_ordered_keys(&map, &key_order);
+        
+        // Verify ETF structure for empty map
+        assert_eq!(encoded[0], 131); // ETF version
+        assert_eq!(encoded[1], 116); // map tag
+        
+        // Should have 0 pairs (encoded as 4 bytes: 0, 0, 0, 0)
+        assert_eq!(encoded[2], 0);
+        assert_eq!(encoded[3], 0);
+        assert_eq!(encoded[4], 0);
+        assert_eq!(encoded[5], 0);
+        
+        // Decode and verify it's an empty map
+        let decoded = Term::decode(&encoded[..]).unwrap();
+        if let Term::Map(decoded_map) = decoded {
+            assert_eq!(decoded_map.map.len(), 0);
+        } else {
+            panic!("Decoded term is not a map");
+        }
+    }
+
+    #[test]
+    fn test_deterministic_ordering() {
+        // Create the same map multiple times and ensure consistent serialization
+        let create_map = || {
+            let mut map_data = HashMap::new();
+            map_data.insert(Term::Atom(Atom::from("z")), Term::FixInteger(FixInteger { value: 1 }));
+            map_data.insert(Term::Atom(Atom::from("a")), Term::FixInteger(FixInteger { value: 2 }));
+            map_data.insert(Term::Atom(Atom::from("m")), Term::FixInteger(FixInteger { value: 3 }));
+            Map { map: map_data }
+        };
+
+        let key_order = ["z", "m", "a"]; // Specific order
+        
+        // Encode the same map structure multiple times
+        let encoded1 = encode_map_with_ordered_keys(&create_map(), &key_order);
+        let encoded2 = encode_map_with_ordered_keys(&create_map(), &key_order);
+        let encoded3 = encode_map_with_ordered_keys(&create_map(), &key_order);
+        
+        // All encodings should be identical (deterministic)
+        assert_eq!(encoded1, encoded2);
+        assert_eq!(encoded2, encoded3);
+        assert_eq!(encoded1, encoded3);
+    }
+
+    #[test]
+    fn test_map_with_key_order_function() {
+        // Test the lower-level function that doesn't add ETF version marker
+        let mut map_data = HashMap::new();
+        map_data.insert(Term::Atom(Atom::from("first")), Term::FixInteger(FixInteger { value: 1 }));
+        map_data.insert(Term::Atom(Atom::from("second")), Term::FixInteger(FixInteger { value: 2 }));
+
+        let key_order = ["second", "first"];
+        let mut buf = Vec::new();
+        
+        // Add ETF version manually
+        buf.push(131);
+        encode_map_with_key_order(&map_data, &key_order, &mut buf);
+        
+        // Should be decodable
+        let decoded = Term::decode(&buf[..]).unwrap();
+        if let Term::Map(decoded_map) = decoded {
+            assert_eq!(decoded_map.map.len(), 2);
+            assert!(decoded_map.map.contains_key(&Term::Atom(Atom::from("first"))));
+            assert!(decoded_map.map.contains_key(&Term::Atom(Atom::from("second"))));
+        } else {
+            panic!("Decoded term is not a map");
         }
     }
 }

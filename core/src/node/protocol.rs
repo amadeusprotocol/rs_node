@@ -12,9 +12,9 @@ use crate::node::peers::HandshakeStatus;
 use crate::node::{ReedSolomonReassembler, anr, msg_v2, reassembler};
 use crate::socket::UdpSocketExt;
 use crate::utils::bls12_381 as bls;
-use crate::utils::etf_small_atoms::encode_with_small_atoms;
 use crate::utils::misc::Typename;
 use crate::utils::misc::{TermExt, TermMap, get_unix_millis_now};
+use crate::utils::safe_etf::encode_with_small_atoms;
 use eetf::convert::TryAsRef;
 use eetf::{Atom, BigInteger, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, List, Map, Term};
 use std::collections::HashMap;
@@ -1066,10 +1066,10 @@ impl Protocol for NewPhoneWhoDis {
         let pop = anr_map.get_binary::<Vec<u8>>("pop").ok_or(Error::BadEtf("pop"))?;
         let port = anr_map.get_integer::<u16>("port").ok_or(Error::BadEtf("port"))?;
         let signature = anr_map.get_binary::<Vec<u8>>("signature").ok_or(Error::BadEtf("signature"))?;
-        // Handle u128 timestamp - try u128 first, fallback to u64 for compatibility
+        // Handle timestamp - try u32 first, fallback to u64 for compatibility
         let ts = anr_map
-            .get_integer::<u128>("ts")
-            .or_else(|| anr_map.get_integer::<u64>("ts").map(|v| v as u128))
+            .get_integer::<u32>("ts")
+            .or_else(|| anr_map.get_integer::<u64>("ts").map(|v| v as u32))
             .ok_or(Error::BadEtf("ts"))?;
         let version_bytes = anr_map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version"))?;
         let version = String::from_utf8_lossy(&version_bytes).to_string();
@@ -1156,7 +1156,7 @@ impl NewPhoneWhoDis {
     pub const TYPENAME: &'static str = "new_phone_who_dis";
 
     pub fn new(anr: anr::Anr, challenge: u64) -> Result<Self, Error> {
-        let anr_binary = anr.to_etf_binary()?;
+        let anr_binary = anr.to_etf_bin();
         Ok(Self { anr: anr_binary, challenge })
     }
 }
@@ -1222,10 +1222,10 @@ impl Protocol for What {
         let pop = anr_map.get_binary::<Vec<u8>>("pop").ok_or(Error::BadEtf("pop"))?;
         let port = anr_map.get_integer::<u16>("port").ok_or(Error::BadEtf("port"))?;
         let signature_anr = anr_map.get_binary::<Vec<u8>>("signature").ok_or(Error::BadEtf("signature"))?;
-        // Handle u128 timestamp - try u128 first, fallback to u64 for compatibility
+        // Handle timestamp - try u32 first, fallback to u64 for compatibility
         let ts = anr_map
-            .get_integer::<u128>("ts")
-            .or_else(|| anr_map.get_integer::<u64>("ts").map(|v| v as u128))
+            .get_integer::<u32>("ts")
+            .or_else(|| anr_map.get_integer::<u64>("ts").map(|v| v as u32))
             .ok_or(Error::BadEtf("ts"))?;
         let version_bytes = anr_map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version"))?;
         let version = String::from_utf8_lossy(&version_bytes).to_string();
@@ -1314,7 +1314,7 @@ impl What {
 
     pub fn new(anr: anr::Anr, challenge: u64, signature: Vec<u8>) -> Result<Self, Error> {
         // pack ANR to binary
-        let anr_binary = anr.to_etf_binary()?;
+        let anr_binary = anr.to_etf_bin();
         Ok(Self { anr: anr_binary, challenge, signature })
     }
 }
@@ -1433,10 +1433,10 @@ mod special_tests {
         let pop = anr_map.get_binary::<Vec<u8>>("pop").ok_or(Error::BadEtf("pop")).unwrap();
         let port = anr_map.get_integer::<u16>("port").ok_or(Error::BadEtf("port")).unwrap();
         let signature = anr_map.get_binary::<Vec<u8>>("signature").ok_or(Error::BadEtf("signature")).unwrap();
-        // Handle u128 timestamp - try u128 first, fallback to u64 for compatibility
+        // Handle timestamp - try u32 first, fallback to u64 for compatibility
         let ts = anr_map
-            .get_integer::<u128>("ts")
-            .or_else(|| anr_map.get_integer::<u128>("ts").map(|v| v))
+            .get_integer::<u32>("ts")
+            .or_else(|| anr_map.get_integer::<u64>("ts").map(|v| v as u32))
             .ok_or(Error::BadEtf("ts"))
             .unwrap();
         let version_bytes = anr_map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version")).unwrap();

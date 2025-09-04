@@ -1,8 +1,8 @@
 use crate::config::{Config, SeedANR};
 use crate::utils::bls12_381::{sign, verify};
-use crate::utils::etf_small_atoms::encode_with_small_atoms;
 use crate::utils::misc::{get_unix_millis_now, get_unix_secs_now};
-use eetf::{Atom, BigInteger, Binary, FixInteger, Map, Term};
+use crate::utils::safe_etf::{encode_map_with_ordered_keys, encode_with_small_atoms};
+use eetf::{Atom, Binary, FixInteger, Map, Term};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -47,7 +47,7 @@ pub struct Anr {
     pub pop: Vec<u8>,
     pub port: u16,
     pub signature: Vec<u8>,
-    pub ts: u128,
+    pub ts: u32,
     pub version: String,
     pub anr_name: Option<String>,
     pub anr_desc: Option<String>,
@@ -113,7 +113,7 @@ impl Anr {
         anr_name: Option<String>,
         anr_desc: Option<String>,
     ) -> Result<Self, Error> {
-        let ts = get_unix_secs_now() as u128;
+        let ts = get_unix_secs_now() as u32;
         let mut anr = Anr {
             ip4,
             pk: pk.to_vec(),
@@ -132,7 +132,7 @@ impl Anr {
         };
 
         // create signature over erlang term format like elixir
-        let to_sign = anr.to_erlang_term_for_signing();
+        let to_sign = anr.to_etf_bin_ordered();
         let dst = crate::consensus::DST_ANR;
         let sig_array = sign(sk, &to_sign, dst)?;
         anr.signature = sig_array.to_vec();
@@ -143,83 +143,117 @@ impl Anr {
     // convert to erlang term format for signing (excludes signature field)
     // matches elixir :erlang.term_to_binary([:deterministic])
     // Since the ETF library doesn't preserve order, manually create the exact bytes Elixir produces
-    fn to_erlang_term_for_signing(&self) -> Vec<u8> {
-        // Manually construct ETF bytes to match Elixir's deterministic encoding
-        // Elixir excludes nil fields and uses small atoms (119) in deterministic order: ip4, pk, pop, port, ts, version
-        let mut buf = Vec::new();
-
-        // ETF version marker
-        buf.push(131);
-
-        // Map header: type (116) + 4 bytes for count
-        buf.push(116);
-        buf.extend_from_slice(&6u32.to_be_bytes()); // 6 fields (excluding nil anr_name/anr_desc)
-
-        // Field 1: ip4 (small atom + binary)
-        buf.push(119); // small atom
-        buf.push(3); // length
-        buf.extend_from_slice(b"ip4");
-
-        // ip4 value as binary string
-        let ip4_str = self.ip4.to_string();
-        buf.push(109); // binary
-        buf.extend_from_slice(&(ip4_str.len() as u32).to_be_bytes());
-        buf.extend_from_slice(ip4_str.as_bytes());
-
-        // Field 2: pk (small atom + binary)
-        buf.push(119); // small atom
-        buf.push(2); // length
-        buf.extend_from_slice(b"pk");
-
-        // pk value as binary
-        buf.push(109); // binary
-        buf.extend_from_slice(&(self.pk.len() as u32).to_be_bytes());
-        buf.extend_from_slice(&self.pk);
-
-        // Field 3: pop (small atom + binary)
-        buf.push(119); // small atom
-        buf.push(3); // length
-        buf.extend_from_slice(b"pop");
-
-        // pop value as binary
-        buf.push(109); // binary
-        buf.extend_from_slice(&(self.pop.len() as u32).to_be_bytes());
-        buf.extend_from_slice(&self.pop);
-
-        // Field 4: port (small atom + integer)
-        buf.push(119); // small atom
-        buf.push(4); // length
-        buf.extend_from_slice(b"port");
-
-        // port value as integer
-        buf.push(98); // integer
-        buf.extend_from_slice(&(self.port as u32).to_be_bytes());
-
-        // Field 5: ts (small atom + big integer)
-        buf.push(119); // small atom
-        buf.push(2); // length
-        buf.extend_from_slice(b"ts");
-
-        // ts value as big integer
-        buf.push(98); // integer (fits in 32-bit)
-        buf.extend_from_slice(&(self.ts as u32).to_be_bytes());
-
-        // Field 6: version (small atom + binary)
-        buf.push(119); // small atom
-        buf.push(7); // length
-        buf.extend_from_slice(b"version");
-
-        // version value as binary
-        buf.push(109); // binary
-        buf.extend_from_slice(&(self.version.len() as u32).to_be_bytes());
-        buf.extend_from_slice(self.version.as_bytes());
-
-        buf
+    fn to_etf_bin_ordered(&self) -> Vec<u8> {
+        encode_map_with_ordered_keys(
+            &self.to_etf_term().try_into().unwrap(),
+            &[
+                "ip4", "pk", "pop", "port", "ts", "version", // Optional fields
+                "anr_name", "anr_desc",
+            ],
+        )
     }
+
+    // fn to_erlang_term_for_signing(&self) -> Vec<u8> {
+    //     // Manually construct ETF bytes to match Elixir's deterministic encoding
+    //     // Elixir excludes nil fields and uses small atoms (119) in deterministic order: ip4, pk, pop, port, ts, version
+    //     let mut buf = Vec::new();
+    //
+    //     // ETF version marker
+    //     buf.push(131);
+    //
+    //     let fields = 6 + self.anr_name.is_some() as u32 + self.anr_desc.is_some() as u32;
+    //
+    //     // Map header: type (116) + 4 bytes for count
+    //     buf.push(116);
+    //     buf.extend_from_slice(&fields.to_be_bytes());
+    //
+    //     // Field 1: ip4 (small atom + binary)
+    //     buf.push(119); // small atom
+    //     buf.push(3); // length
+    //     buf.extend_from_slice(b"ip4");
+    //
+    //     // ip4 value as binary string
+    //     let ip4_str = self.ip4.to_string();
+    //     buf.push(109); // binary
+    //     buf.extend_from_slice(&(ip4_str.len() as u32).to_be_bytes());
+    //     buf.extend_from_slice(ip4_str.as_bytes());
+    //
+    //     // Field 2: pk (small atom + binary)
+    //     buf.push(119); // small atom
+    //     buf.push(2); // length
+    //     buf.extend_from_slice(b"pk");
+    //
+    //     // pk value as binary
+    //     buf.push(109); // binary
+    //     buf.extend_from_slice(&(self.pk.len() as u32).to_be_bytes());
+    //     buf.extend_from_slice(&self.pk);
+    //
+    //     // Field 3: pop (small atom + binary)
+    //     buf.push(119); // small atom
+    //     buf.push(3); // length
+    //     buf.extend_from_slice(b"pop");
+    //
+    //     // pop value as binary
+    //     buf.push(109); // binary
+    //     buf.extend_from_slice(&(self.pop.len() as u32).to_be_bytes());
+    //     buf.extend_from_slice(&self.pop);
+    //
+    //     // Field 4: port (small atom + integer)
+    //     buf.push(119); // small atom
+    //     buf.push(4); // length
+    //     buf.extend_from_slice(b"port");
+    //
+    //     // port value as integer
+    //     buf.push(98); // integer
+    //     buf.extend_from_slice(&(self.port as u32).to_be_bytes());
+    //
+    //     // Field 5: ts (small atom + big integer)
+    //     buf.push(119); // small atom
+    //     buf.push(2); // length
+    //     buf.extend_from_slice(b"ts");
+    //
+    //     // ts value as big integer
+    //     buf.push(98); // integer (fits in 32-bit)
+    //     buf.extend_from_slice(&(self.ts as u32).to_be_bytes());
+    //
+    //     // Field 6: version (small atom + binary)
+    //     buf.push(119); // small atom
+    //     buf.push(7); // length
+    //     buf.extend_from_slice(b"version");
+    //
+    //     // version value as binary
+    //     buf.push(109); // binary
+    //     buf.extend_from_slice(&(self.version.len() as u32).to_be_bytes());
+    //     buf.extend_from_slice(self.version.as_bytes());
+    //
+    //     if let Some(anr_name) = self.anr_name.as_ref() {
+    //         // Field 7: anr_name (small atom + binary)
+    //         buf.push(119); // small atom
+    //         buf.push(8); // length
+    //         buf.extend_from_slice(b"anr_name");
+    //         // anr_name value as binary
+    //         buf.push(109); // binary
+    //         buf.extend_from_slice(&(anr_name.len() as u32).to_be_bytes());
+    //         buf.extend_from_slice(anr_name.as_bytes());
+    //     }
+    //
+    //     if let Some(anr_desc) = self.anr_desc.as_ref() {
+    //         // Field 8: anr_desc (small atom + binary)
+    //         buf.push(119); // small atom
+    //         buf.push(8); // length
+    //         buf.extend_from_slice(b"anr_desc");
+    //         // anr_desc value as binary
+    //         buf.push(109); // binary
+    //         buf.extend_from_slice(&(anr_desc.len() as u32).to_be_bytes());
+    //         buf.extend_from_slice(anr_desc.as_bytes());
+    //     }
+    //
+    //     buf
+    // }
 
     // verify anr signature and proof of possession
     pub fn verify_signature(&self) -> bool {
-        let to_sign = self.to_erlang_term_for_signing();
+        let to_sign = self.to_etf_bin_ordered();
 
         // verify main signature
         if verify(&self.pk, &self.signature, &to_sign, crate::consensus::DST_ANR).is_err() {
@@ -244,7 +278,7 @@ impl Anr {
 
         // check size limit (390 bytes in elixir) using erlang term format
         let packed_anr = anr.pack();
-        let serialized = packed_anr.to_erlang_term_binary()?;
+        let serialized = packed_anr.to_etf_bin();
         if serialized.len() > 390 {
             return Err(Error::TooLarge(serialized.len()));
         }
@@ -257,51 +291,41 @@ impl Anr {
         Ok(packed_anr)
     }
 
+    pub fn to_etf_bin(&self) -> Vec<u8> {
+        encode_with_small_atoms(&self.to_etf_term())
+    }
+
     // convert full anr to erlang term format for size validation
     // matches elixir :erlang.term_to_binary(anr, [:deterministic])
-    fn to_erlang_term_binary(&self) -> Result<Vec<u8>, Error> {
-        // create map with fields in deterministic order using IndexMap
-        use indexmap::IndexMap;
-        let mut index_map = IndexMap::new();
-        // alphabetical order: anr_desc, anr_name, ip4, pk, pop, port, signature, ts, version
-        // Use Elixir format: ip4 as string (not binary)
+    fn to_etf_term(&self) -> Term {
+        let mut map = HashMap::new();
 
-        // Include optional fields first (alphabetically), use nil atom if not present
-        // let anr_desc_term = match &self.anr_desc {
-        //     Some(desc) => Term::Binary(Binary::from(desc.as_bytes().to_vec())),
-        //     None => Term::Atom(Atom::from("nil")),
-        // };
-        // index_map.insert(Term::Atom(Atom::from("anr_desc")), anr_desc_term);
-        //
-        // let anr_name_term = match &self.anr_name {
-        //     Some(name) => Term::Binary(Binary::from(name.as_bytes().to_vec())),
-        //     None => Term::Atom(Atom::from("nil")),
-        // };
-        // index_map.insert(Term::Atom(Atom::from("anr_name")), anr_name_term);
-
-        index_map.insert(
-            Term::Atom(Atom::from("ip4")),
-            Term::Binary(Binary::from(self.ip4.to_string().as_bytes().to_vec())),
-        );
-        index_map.insert(Term::Atom(Atom::from("pk")), Term::Binary(Binary::from(self.pk.clone())));
-        index_map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
-        index_map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
-        index_map.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
-        // Handle u128 timestamp - use get_integer pattern for compatibility
-        let ts_term = if self.ts <= (i64::MAX as u128) {
-            Term::BigInteger(BigInteger::from(self.ts as i64))
-        } else {
-            // For very large u128 values, encode as string to avoid overflow
-            Term::Binary(Binary::from(self.ts.to_string().as_bytes().to_vec()))
+        match &self.anr_desc {
+            Some(desc) => {
+                let anr_desc = Term::Binary(Binary::from(desc.as_bytes().to_vec()));
+                map.insert(Term::Atom(Atom::from("anr_desc")), anr_desc);
+            }
+            None => {}
         };
-        index_map.insert(Term::Atom(Atom::from("ts")), ts_term);
-        index_map
-            .insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec())));
 
-        let map = Map { map: index_map.into_iter().collect() };
-        let term = Term::Map(map);
-        let buf = encode_with_small_atoms(&term);
-        Ok(buf)
+        match &self.anr_name {
+            Some(name) => {
+                let anr_name = Term::Binary(Binary::from(name.as_bytes().to_vec()));
+                map.insert(Term::Atom(Atom::from("anr_name")), anr_name);
+            }
+            None => {}
+        };
+
+        map.insert(Term::Atom(Atom::from("ip4")), Term::Binary(Binary::from(self.ip4.to_string().as_bytes().to_vec())));
+        map.insert(Term::Atom(Atom::from("pk")), Term::Binary(Binary::from(self.pk.clone())));
+        map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
+        map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
+        map.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
+        // Handle u32 timestamp - use FixInteger for compatibility with manual encoding
+        map.insert(Term::Atom(Atom::from("ts")), Term::FixInteger(FixInteger::from(self.ts as i32)));
+        map.insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec())));
+
+        Term::Map(Map { map })
     }
 
     // unpack anr with port validation like elixir
@@ -346,52 +370,6 @@ impl Anr {
             error_tries: 0,
             next_check: 0,
         }
-    }
-
-    // convert ANR to ETF binary format for protocol transmission
-    pub fn to_etf_binary(&self) -> Result<Vec<u8>, Error> {
-        self.to_erlang_term_binary()
-    }
-
-    // convert ANR to ETF Term (map) for direct embedding in messages (reduces size overhead)
-    pub fn to_etf_term(&self) -> Result<Term, Error> {
-        use indexmap::IndexMap;
-        let mut index_map = IndexMap::new();
-
-        // Include optional fields first (alphabetically), use nil atom if not present
-        let anr_desc_term = match &self.anr_desc {
-            Some(desc) => Term::Binary(Binary::from(desc.as_bytes().to_vec())),
-            None => Term::Atom(Atom::from("nil")),
-        };
-        index_map.insert(Term::Atom(Atom::from("anr_desc")), anr_desc_term);
-
-        let anr_name_term = match &self.anr_name {
-            Some(name) => Term::Binary(Binary::from(name.as_bytes().to_vec())),
-            None => Term::Atom(Atom::from("nil")),
-        };
-        index_map.insert(Term::Atom(Atom::from("anr_name")), anr_name_term);
-
-        index_map.insert(
-            Term::Atom(Atom::from("ip4")),
-            Term::Binary(Binary::from(self.ip4.to_string().as_bytes().to_vec())),
-        );
-        index_map.insert(Term::Atom(Atom::from("pk")), Term::Binary(Binary::from(self.pk.clone())));
-        index_map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
-        index_map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
-        index_map.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
-        // Handle u128 timestamp - use get_integer pattern for compatibility
-        let ts_term = if self.ts <= (i64::MAX as u128) {
-            Term::BigInteger(BigInteger::from(self.ts as i64))
-        } else {
-            // For very large u128 values, encode as string to avoid overflow
-            Term::Binary(Binary::from(self.ts.to_string().as_bytes().to_vec()))
-        };
-        index_map.insert(Term::Atom(Atom::from("ts")), ts_term);
-        index_map
-            .insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec())));
-
-        let map = Map { map: index_map.into_iter().collect() };
-        Ok(Term::Map(map))
     }
 }
 
@@ -841,7 +819,7 @@ mod tests {
                 pop: vec![i as u8; 96],
                 port: 36969,
                 signature: vec![i as u8; 96],
-                ts: 1000 + i as u128,
+                ts: 1000 + i as u32,
                 version: format!("1.0.{}", i),
                 anr_name: None,
                 anr_desc: None,
@@ -877,5 +855,66 @@ mod tests {
 
         // cleanup
         registry.clear_all().await.unwrap();
+    }
+
+    #[test]
+    fn test_to_etf_bin_ordered_validity() {
+        // Test ANR with optional fields to expose the issues
+        let anr_with_optionals = Anr {
+            ip4: Ipv4Addr::new(10, 0, 0, 1),
+            pk: vec![1, 2, 3],
+            pop: vec![4, 5, 6],
+            port: 36969,
+            signature: vec![7, 8, 9],
+            ts: 1234567890,
+            version: "1.0.0".to_string(),
+            anr_name: Some("test".to_string()),
+            anr_desc: Some("desc".to_string()),
+            handshaked: false,
+            hasChainPop: false,
+            error: None,
+            error_tries: 0,
+            next_check: 0,
+        };
+
+        let encoded = anr_with_optionals.to_etf_bin_ordered();
+
+        println!("Encoded bytes: {:?}", encoded);
+
+        // Try to decode the ETF - this should reveal the problems
+        match Term::decode(&encoded[..]) {
+            Ok(decoded) => {
+                println!("Successfully decoded: {:?}", decoded);
+                if let Term::Map(map) = decoded {
+                    println!("Map has {} entries", map.map.len());
+                    // Verify the map has the expected number of entries after the fix
+                    let actual_count = map.map.len();
+                    let expected_count = 8; // 6 base + 2 optional fields
+
+                    if actual_count == expected_count {
+                        println!("SUCCESS: Map correctly has {} entries", actual_count);
+
+                        // Verify all expected fields are present
+                        let expected_fields = ["ip4", "pk", "pop", "port", "ts", "version", "anr_name", "anr_desc"];
+                        for field_name in &expected_fields {
+                            let field_key = Term::Atom(Atom::from(*field_name));
+                            if map.map.contains_key(&field_key) {
+                                println!("✓ Field '{}' present", field_name);
+                            } else {
+                                println!("✗ Field '{}' missing", field_name);
+                            }
+                        }
+                    } else {
+                        println!("ERROR: Map has {} entries, expected {}", actual_count, expected_count);
+                    }
+                } else {
+                    println!("ERROR: Decoded term is not a map!");
+                }
+            }
+            Err(e) => {
+                println!("ERROR: Failed to decode ETF: {:?}", e);
+                println!("This indicates the original function produces invalid ETF!");
+            }
+        }
     }
 }
