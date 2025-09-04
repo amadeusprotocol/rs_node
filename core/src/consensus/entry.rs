@@ -8,7 +8,7 @@ use crate::node::protocol;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381;
 use crate::utils::misc::{TermExt, TermMap, bitvec_to_bools, bools_to_bitvec, get_unix_millis_now};
-use crate::utils::safe_etf::encode_with_small_atoms;
+use crate::utils::safe_etf::encode_safe;
 use crate::utils::{archiver, blake3};
 use crate::{bic, consensus};
 use eetf::{Atom, BigInteger, Binary, Map, Term};
@@ -161,7 +161,7 @@ impl EntryHeader {
         map.insert(Term::Atom(Atom::from("txs_hash")), Term::from(Binary { bytes: self.txs_hash.to_vec() }));
 
         let term = Term::Map(Map { map });
-        let out = encode_with_small_atoms(&term);
+        let out = encode_safe(&term);
         Ok(out)
     }
 }
@@ -220,7 +220,7 @@ impl Protocol for Entry {
         m.insert(Term::Atom(Atom::from("entry_packed")), Term::from(Binary { bytes: entry_bin }));
 
         let term = Term::from(Map { map: m });
-        let out = encode_with_small_atoms(&term);
+        let out = encode_safe(&term);
         Ok(out)
     }
 
@@ -256,7 +256,7 @@ impl Entry {
         m.insert(Term::Atom(Atom::from("entry_packed")), Term::from(Binary { bytes: entry_bin }));
 
         let term = Term::from(Map { map: m });
-        let out = encode_with_small_atoms(&term);
+        let out = encode_safe(&term);
         Ok(out)
     }
 

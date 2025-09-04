@@ -13,7 +13,7 @@ use crate::node::{ReedSolomonReassembler, anr, msg_v2, reassembler};
 use crate::socket::UdpSocketExt;
 use crate::utils::bls12_381 as bls;
 use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now, get_unix_secs_now};
-use crate::utils::safe_etf::encode_with_small_atoms;
+use crate::utils::safe_etf::encode_safe;
 use eetf::convert::TryAsRef;
 use eetf::{Atom, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, List, Map, Term};
 use std::collections::HashMap;
@@ -275,7 +275,7 @@ impl Protocol for Ping {
         m.insert(Term::Atom(Atom::from("rooted")), self.rooted.to_etf_term()?);
         m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: self.ts.into() }));
         let term = Term::from(Map { map: m });
-        let etf_data = encode_with_small_atoms(&term);
+        let etf_data = encode_safe(&term);
         Ok(etf_data)
     }
     async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
@@ -415,7 +415,7 @@ impl Protocol for Pong {
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
         m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: self.ts.into() }));
         let term = Term::from(Map { map: m });
-        let etf_data = encode_with_small_atoms(&term);
+        let etf_data = encode_safe(&term);
         Ok(etf_data)
     }
 
@@ -487,7 +487,7 @@ impl Protocol for TxPool {
         // txs_packed is directly a list of binary terms, not a binary containing an encoded list
         m.insert(Term::Atom(Atom::from("txs_packed")), Term::from(List { elements: tx_terms }));
         let term = Term::from(Map { map: m });
-        let etf_data = encode_with_small_atoms(&term);
+        let etf_data = encode_safe(&term);
         Ok(etf_data)
     }
 
@@ -547,7 +547,7 @@ impl Protocol for Peers {
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
         m.insert(Term::Atom(Atom::from("ips")), Term::from(List { elements: ip_terms }));
         let term = Term::from(Map { map: m });
-        let etf_data = encode_with_small_atoms(&term);
+        let etf_data = encode_safe(&term);
         Ok(etf_data)
     }
 
@@ -1014,7 +1014,7 @@ impl Protocol for NewPhoneWhoDis {
         let challenge_term = Term::FixInteger(eetf::FixInteger { value: self.challenge as i32 });
         m.insert(Term::Atom(Atom::from("challenge")), challenge_term);
         let term = Term::from(Map { map: m });
-        let etf_data = encode_with_small_atoms(&term);
+        let etf_data = encode_safe(&term);
         Ok(etf_data)
     }
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
@@ -1023,7 +1023,7 @@ impl Protocol for NewPhoneWhoDis {
         let anr_binary = if let Some(anr_map) = map.get_term_map("anr") {
             // ANR is a map (from Elixir nodes) - serialize it
             let anr_term = Term::from(eetf::Map { map: anr_map.0.clone() });
-            encode_with_small_atoms(&anr_term)
+            encode_safe(&anr_term)
         } else if let Some(anr_bin) = map.get_binary::<Vec<u8>>("anr") {
             // ANR is already a binary (from Rust nodes)
             anr_bin
@@ -1036,52 +1036,10 @@ impl Protocol for NewPhoneWhoDis {
     }
 
     async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
-        let anr_term = Term::decode(&self.anr[..])?;
-        let anr_map = anr_term.get_term_map().ok_or(Error::BadEtf("anr_map"))?;
+        let mut sender_anr = anr::Anr::from_etf_bin(&self.anr).map_err(|_e| Error::BadEtf("anr_parse_failed"))?;
 
-        // ip4 is stored as string in Elixir format: "127.0.0.1"
-        let ip4_str = anr_map.get_string("ip4").ok_or(Error::BadEtf("ip4"))?;
-        let ip4 = ip4_str.parse::<std::net::Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse"))?;
-
-        let pk = anr_map.get_binary::<Vec<u8>>("pk").ok_or(Error::BadEtf("pk"))?;
-        let pop = anr_map.get_binary::<Vec<u8>>("pop").ok_or(Error::BadEtf("pop"))?;
-        let port = anr_map.get_integer::<u16>("port").ok_or(Error::BadEtf("port"))?;
-        let signature = anr_map.get_binary::<Vec<u8>>("signature").ok_or(Error::BadEtf("signature"))?;
-        // Handle timestamp - try u32 first, fallback to u64 for compatibility
-        let ts = anr_map
-            .get_integer::<u32>("ts")
-            .or_else(|| anr_map.get_integer::<u64>("ts").map(|v| v as u32))
-            .ok_or(Error::BadEtf("ts"))?;
-        let version_bytes = anr_map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version"))?;
-        let version = String::from_utf8_lossy(&version_bytes).to_string();
-
-        // Parse optional anr_name and anr_desc fields (they may be nil or missing)
-        let anr_name = anr_map
-            .get_binary::<Vec<u8>>("anr_name")
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .filter(|s| !s.is_empty());
-
-        let anr_desc = anr_map
-            .get_binary::<Vec<u8>>("anr_desc")
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .filter(|s| !s.is_empty());
-
-        let sender_anr = anr::Anr {
-            ip4,
-            pk,
-            pop,
-            port,
-            signature,
-            ts,
-            version,
-            anr_name,
-            anr_desc,
-            handshaked: true,
-            hasChainPop: false,
-            error: None,
-            error_tries: 0,
-            next_check: ts + 3,
-        };
+        // set handshaked status for this specific context
+        sender_anr.handshaked = true;
 
         // println!("{sender_anr:?}");
 
@@ -1091,8 +1049,8 @@ impl Protocol for NewPhoneWhoDis {
         }
 
         // SECURITY: validate that sender ip matches anr ip4 field
-        if std::net::IpAddr::V4(ip4) != src.ip() {
-            warn!("received new_phone_who_dis with mismatched ip from {src}, anr ip4 {ip4}");
+        if std::net::IpAddr::V4(sender_anr.ip4) != src.ip() {
+            warn!("received new_phone_who_dis with mismatched ip from {src}, anr ip4 {}", sender_anr.ip4);
             return Err(Error::BadEtf("anr_ip_mismatch"));
         }
 
@@ -1164,7 +1122,7 @@ impl Protocol for What {
         m.insert(Term::Atom(Atom::from("challenge")), challenge_term);
         m.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
         let term = Term::from(Map { map: m });
-        let etf_data = encode_with_small_atoms(&term);
+        let etf_data = encode_safe(&term);
         Ok(etf_data)
     }
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
@@ -1173,7 +1131,7 @@ impl Protocol for What {
         let anr_binary = if let Some(anr_map) = map.get_term_map("anr") {
             // ANR is a map (from Elixir nodes) - serialize it
             let anr_term = Term::from(eetf::Map { map: anr_map.0.clone() });
-            encode_with_small_atoms(&anr_term)
+            encode_safe(&anr_term)
         } else if let Some(anr_bin) = map.get_binary::<Vec<u8>>("anr") {
             // ANR is already a binary (from Rust nodes)
             anr_bin
@@ -1188,42 +1146,7 @@ impl Protocol for What {
 
     async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
         // deserialize the responder's ANR from binary (this is THEIR ANR, not ours)
-        let anr_term = Term::decode(&self.anr[..])?;
-        let anr_map = anr_term.get_term_map().ok_or(Error::BadEtf("anr_map"))?;
-
-        // extract ANR fields (responder's ANR)
-        // IP4 is stored as string in Elixir format: "127.0.0.1"
-        let ip4_str = anr_map.get_string("ip4").ok_or(Error::BadEtf("ip4"))?;
-        let ip4 = ip4_str.parse::<std::net::Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse"))?;
-
-        let pk = anr_map.get_binary::<Vec<u8>>("pk").ok_or(Error::BadEtf("pk"))?;
-        let pop = anr_map.get_binary::<Vec<u8>>("pop").ok_or(Error::BadEtf("pop"))?;
-        let port = anr_map.get_integer::<u16>("port").ok_or(Error::BadEtf("port"))?;
-        let signature_anr = anr_map.get_binary::<Vec<u8>>("signature").ok_or(Error::BadEtf("signature"))?;
-        // Handle timestamp - try u32 first, fallback to u64 for compatibility
-        let ts = anr_map
-            .get_integer::<u32>("ts")
-            .or_else(|| anr_map.get_integer::<u64>("ts").map(|v| v as u32))
-            .ok_or(Error::BadEtf("ts"))?;
-        let version_bytes = anr_map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version"))?;
-        let version = String::from_utf8_lossy(&version_bytes).to_string();
-
-        let responder_anr = anr::Anr {
-            ip4,
-            pk: pk.clone(),
-            pop,
-            port,
-            signature: signature_anr,
-            ts,
-            version,
-            anr_name: None,
-            anr_desc: None,
-            handshaked: false,
-            hasChainPop: false,
-            error: None,
-            error_tries: 0,
-            next_check: ts + 3,
-        };
+        let responder_anr = anr::Anr::from_etf_bin(&self.anr).map_err(|_e| Error::BadEtf("anr_parse_failed"))?;
 
         // validate the responder's ANR signature
         if !responder_anr.verify_signature() {
@@ -1231,7 +1154,7 @@ impl Protocol for What {
         }
 
         // Validate that sender's IP matches ANR's IP4 field (security requirement)
-        if std::net::IpAddr::V4(ip4) != src.ip() {
+        if std::net::IpAddr::V4(responder_anr.ip4) != src.ip() {
             return Ok(Instruction::Noop { why: "ip mismatch".to_string() });
         }
 
@@ -1277,7 +1200,7 @@ impl Protocol for What {
 
         // Update peer's handshaked status in NodePeers to received_what (handshake completed)
         ctx.set_peer_handshaked(&responder_anr.pk).await.map_err(|_| Error::BadEtf("set_peer_handshaked_failed"))?;
-        ctx.set_peer_handshake_status_by_pk(&responder_anr.pk, crate::node::peers::HandshakeStatus::ReceivedWhat)
+        ctx.set_peer_handshake_status_by_pk(&responder_anr.pk, HandshakeStatus::ReceivedWhat)
             .await
             .map_err(|_| Error::BadEtf("set_handshake_status_failed"))?;
 
@@ -1310,7 +1233,7 @@ impl Protocol for SpecialBusiness {
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
         m.insert(Term::Atom(Atom::from("business")), Term::from(Binary { bytes: self.business.clone() }));
         let term = Term::from(Map { map: m });
-        let etf_data = encode_with_small_atoms(&term);
+        let etf_data = encode_safe(&term);
         Ok(etf_data)
     }
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
@@ -1346,7 +1269,7 @@ impl Protocol for SpecialBusinessReply {
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
         m.insert(Term::Atom(Atom::from("business")), Term::from(Binary { bytes: self.business.clone() }));
         let term = Term::from(Map { map: m });
-        let etf_data = encode_with_small_atoms(&term);
+        let etf_data = encode_safe(&term);
         Ok(etf_data)
     }
 
@@ -1363,7 +1286,7 @@ impl SpecialBusinessReply {
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
         m.insert(Term::Atom(Atom::from("business")), Term::from(Binary { bytes: self.business.clone() }));
         let term = Term::from(Map { map: m });
-        let etf_data = encode_with_small_atoms(&term);
+        let etf_data = encode_safe(&term);
         Ok(etf_data)
     }
 }
@@ -1400,53 +1323,8 @@ mod special_tests {
             challenge: 1756854329,
         };
 
-        let anr_term = Term::decode(&npwd.anr[..]).unwrap();
-        let anr_map = anr_term.get_term_map().ok_or(Error::BadEtf("anr_map")).unwrap();
-
-        // ip4 is stored as string in Elixir format: "127.0.0.1"
-        let ip4_str = anr_map.get_string("ip4").ok_or(Error::BadEtf("ip4")).unwrap();
-        let ip4 = ip4_str.parse::<std::net::Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse")).unwrap();
-
-        let pk = anr_map.get_binary::<Vec<u8>>("pk").ok_or(Error::BadEtf("pk")).unwrap();
-        let pop = anr_map.get_binary::<Vec<u8>>("pop").ok_or(Error::BadEtf("pop")).unwrap();
-        let port = anr_map.get_integer::<u16>("port").ok_or(Error::BadEtf("port")).unwrap();
-        let signature = anr_map.get_binary::<Vec<u8>>("signature").ok_or(Error::BadEtf("signature")).unwrap();
-        // Handle timestamp - try u32 first, fallback to u64 for compatibility
-        let ts = anr_map
-            .get_integer::<u32>("ts")
-            .or_else(|| anr_map.get_integer::<u64>("ts").map(|v| v as u32))
-            .ok_or(Error::BadEtf("ts"))
-            .unwrap();
-        let version_bytes = anr_map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version")).unwrap();
-        let version = String::from_utf8_lossy(&version_bytes).to_string();
-
-        // Parse optional anr_name and anr_desc fields (they may be nil or missing)
-        let anr_name = anr_map
-            .get_binary::<Vec<u8>>("anr_name")
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .filter(|s| !s.is_empty());
-
-        let anr_desc = anr_map
-            .get_binary::<Vec<u8>>("anr_desc")
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .filter(|s| !s.is_empty());
-
-        let sender_anr = anr::Anr {
-            ip4,
-            pk,
-            pop,
-            port,
-            signature,
-            ts,
-            version,
-            anr_name,
-            anr_desc,
-            handshaked: true,
-            hasChainPop: false,
-            error: None,
-            error_tries: 0,
-            next_check: ts + 3,
-        };
+        let mut sender_anr = anr::Anr::from_etf_bin(&npwd.anr).unwrap();
+        sender_anr.handshaked = true;
 
         println!("{sender_anr:?}");
 

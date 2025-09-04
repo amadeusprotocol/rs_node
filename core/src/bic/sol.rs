@@ -3,7 +3,7 @@ use crate::node::protocol;
 use crate::node::protocol::Protocol;
 use crate::utils::blake3;
 use crate::utils::misc::TermMap;
-use crate::utils::safe_etf::encode_with_small_atoms;
+use crate::utils::safe_etf::encode_safe;
 use eetf::{Atom, Term};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -116,7 +116,7 @@ impl Protocol for Solution {
         m.insert(Term::Atom(Atom::from("sol")), Term::from(eetf::Binary { bytes: sol_bin }));
 
         let term = Term::from(eetf::Map { map: m });
-        let out = encode_with_small_atoms(&term);
+        let out = encode_safe(&term);
         Ok(out)
     }
 
@@ -175,7 +175,7 @@ impl Solution {
         m.insert(Term::Atom(Atom::from("sol")), Term::from(eetf::Binary { bytes: sol_bin }));
 
         let term = Term::from(eetf::Map { map: m });
-        let out = encode_with_small_atoms(&term);
+        let out = encode_safe(&term);
         Ok(out)
     }
 

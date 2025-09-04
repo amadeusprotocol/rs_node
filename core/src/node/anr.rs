@@ -1,7 +1,6 @@
 use crate::config::{Config, SeedANR};
 use crate::utils::bls12_381::{sign, verify};
 use crate::utils::misc::get_unix_secs_now;
-use crate::utils::safe_etf::{encode_map_with_ordered_keys, encode_with_small_atoms};
 use eetf::{Atom, Binary, FixInteger, Map, Term};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -30,6 +29,10 @@ pub enum Error {
     BlsError(#[from] crate::utils::bls12_381::Error),
     #[error("EETF encoding error: {0}")]
     EetfError(#[from] eetf::EncodeError),
+    #[error("EETF decoding error: {0}")]
+    EetfDecodeError(#[from] eetf::DecodeError),
+    #[error("Invalid ETF field: {0}")]
+    BadEtf(&'static str),
 }
 
 impl crate::utils::misc::Typename for Error {
@@ -132,7 +135,7 @@ impl Anr {
         };
 
         // create signature over erlang term format like elixir
-        let to_sign = anr.to_etf_bin_ordered();
+        let to_sign = anr.to_etf_bin_for_signing();
         let dst = crate::consensus::DST_ANR;
         let sig_array = sign(sk, &to_sign, dst)?;
         anr.signature = sig_array.to_vec();
@@ -140,22 +143,64 @@ impl Anr {
         Ok(anr)
     }
 
-    // convert to erlang term format for signing (excludes signature field)
-    // matches elixir :erlang.term_to_binary([:deterministic])
-    // Since the ETF library doesn't preserve order, manually create the exact bytes Elixir produces
-    fn to_etf_bin_ordered(&self) -> Vec<u8> {
-        encode_map_with_ordered_keys(
-            &self.to_etf_term().try_into().unwrap(),
-            &[
-                "ip4", "pk", "pop", "port", "ts", "version", // Optional fields
-                "anr_name", "anr_desc",
-            ],
-        )
+    // parse anr from etf binary format
+    pub fn from_etf_bin(anr_bytes: &[u8]) -> Result<Self, Error> {
+        use crate::utils::misc::TermExt;
+
+        // decode etf binary to term
+        let anr_term = Term::decode(anr_bytes)?;
+        let anr_map = anr_term.get_term_map().ok_or(Error::BadEtf("anr_map"))?;
+
+        // ip4 is stored as string in elixir format: "127.0.0.1"
+        let ip4_str = anr_map.get_string("ip4").ok_or(Error::BadEtf("ip4"))?;
+        let ip4 = ip4_str.parse::<Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse"))?;
+
+        let pk = anr_map.get_binary::<Vec<u8>>("pk").ok_or(Error::BadEtf("pk"))?;
+        let pop = anr_map.get_binary::<Vec<u8>>("pop").ok_or(Error::BadEtf("pop"))?;
+        let port = anr_map.get_integer::<u16>("port").ok_or(Error::BadEtf("port"))?;
+        let signature = anr_map.get_binary::<Vec<u8>>("signature").ok_or(Error::BadEtf("signature"))?;
+
+        // handle timestamp - try u32 first, fallback to u64 for compatibility
+        let ts = anr_map
+            .get_integer::<u32>("ts")
+            .or_else(|| anr_map.get_integer::<u64>("ts").map(|v| v as u32))
+            .ok_or(Error::BadEtf("ts"))?;
+
+        let version_bytes = anr_map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version"))?;
+        let version = String::from_utf8_lossy(&version_bytes).to_string();
+
+        // parse optional anr_name and anr_desc fields (they may be nil or missing)
+        let anr_name = anr_map
+            .get_binary::<Vec<u8>>("anr_name")
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .filter(|s| !s.is_empty());
+
+        let anr_desc = anr_map
+            .get_binary::<Vec<u8>>("anr_desc")
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .filter(|s| !s.is_empty());
+
+        Ok(Self {
+            ip4,
+            pk,
+            pop,
+            port,
+            signature,
+            ts,
+            version,
+            anr_name,
+            anr_desc,
+            handshaked: false,
+            hasChainPop: false,
+            error: None,
+            error_tries: 0,
+            next_check: ts + 3,
+        })
     }
 
     // verify anr signature and proof of possession
     pub fn verify_signature(&self) -> bool {
-        let to_sign = self.to_etf_bin_ordered();
+        let to_sign = self.to_etf_bin_for_signing();
 
         // verify main signature
         if verify(&self.pk, &self.signature, &to_sign, crate::consensus::DST_ANR).is_err() {
@@ -189,13 +234,27 @@ impl Anr {
         Ok(packed_anr)
     }
 
-    pub fn to_etf_bin(&self) -> Vec<u8> {
-        encode_with_small_atoms(&self.to_etf_term())
+    pub fn to_etf_bin_for_signing(&self) -> Vec<u8> {
+        use crate::utils::safe_etf::encode_safe_deterministic;
+        encode_safe_deterministic(&self.to_etf_term_without_signature())
     }
 
-    // convert full anr to erlang term format for size validation
-    // matches elixir :erlang.term_to_binary(anr, [:deterministic])
+    pub fn to_etf_bin(&self) -> Vec<u8> {
+        use crate::utils::safe_etf::encode_safe;
+        encode_safe(&self.to_etf_term())
+    }
+
     fn to_etf_term(&self) -> Term {
+        match self.to_etf_term_without_signature() {
+            Term::Map(mut m) => {
+                m.map.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
+                Term::Map(m)
+            }
+            _ => panic!("Anr::to_etf_term_without_signature not returning Term::Map"),
+        }
+    }
+
+    fn to_etf_term_without_signature(&self) -> Term {
         let mut map = HashMap::new();
 
         match &self.anr_desc {
@@ -218,8 +277,6 @@ impl Anr {
         map.insert(Term::Atom(Atom::from("pk")), Term::Binary(Binary::from(self.pk.clone())));
         map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
         map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
-        map.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
-        // Handle u32 timestamp - use FixInteger for compatibility with manual encoding
         map.insert(Term::Atom(Atom::from("ts")), Term::FixInteger(FixInteger::from(self.ts as i32)));
         map.insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec())));
 
@@ -775,7 +832,7 @@ mod tests {
             next_check: 0,
         };
 
-        let encoded = anr_with_optionals.to_etf_bin_ordered();
+        let encoded = anr_with_optionals.to_etf_bin_for_signing();
 
         println!("Encoded bytes: {:?}", encoded);
 

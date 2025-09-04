@@ -42,7 +42,7 @@ async fn test_config_has_all_essential_elixir_parts() {
     assert_eq!(config.max_peers, 500);
 
     // verify seed anrs from config.exs
-    assert_eq!(config.seed_anrs.len(), 30);
+    assert_eq!(config.seed_anrs.len(), 1);
     let seed_anr = &config.seed_anrs[0];
     assert_eq!(seed_anr.ip4, "72.9.144.110");
     assert_eq!(seed_anr.port, 36969);

@@ -1,9 +1,9 @@
 use crate::config::{ANR_CHECK_SECS, CLEANUP_SECS};
 use crate::node::anr::{Anr, NodeAnrs};
+use crate::node::peers;
 use crate::node::peers::HandshakeStatus::SentNewPhoneWhoDis;
 use crate::node::protocol::*;
 use crate::node::protocol::{Instruction, NewPhoneWhoDis};
-use crate::node::{NodeState, peers};
 use crate::socket::UdpSocketExt;
 use crate::utils::misc::get_unix_millis_now;
 use crate::utils::misc::{Typename, get_unix_secs_now};
@@ -14,7 +14,6 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::spawn;
-use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 /// Runtime container for config, metrics, reassembler, and node state.
@@ -24,7 +23,6 @@ pub struct Context {
     pub(crate) reassembler: Arc<node::ReedSolomonReassembler>,
     pub(crate) node_peers: Arc<peers::NodePeers>,
     pub(crate) node_registry: Arc<NodeAnrs>,
-    pub(crate) node_state: Arc<RwLock<NodeState>>,
     pub(crate) broadcaster: Option<Arc<dyn node::Broadcaster>>,
     pub(crate) socket: Arc<dyn UdpSocketExt>,
     // optional handles for broadcast tasks
@@ -106,7 +104,6 @@ impl Context {
             });
         }
 
-        let node_state = Arc::new(RwLock::new(NodeState::init()));
         let reassembler = Arc::new(Reassembler::new());
 
         {
@@ -193,7 +190,6 @@ impl Context {
             reassembler,
             node_peers,
             node_registry: node_anrs,
-            node_state,
             broadcaster: None,
             socket,
             ping_handle: None,
@@ -250,10 +246,6 @@ impl Context {
             }
         }
         result
-    }
-
-    pub fn get_node_state(&self) -> Arc<RwLock<NodeState>> {
-        Arc::clone(&self.node_state)
     }
 
     pub fn get_config(&self) -> &config::Config {
