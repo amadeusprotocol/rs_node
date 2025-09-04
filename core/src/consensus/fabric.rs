@@ -48,7 +48,7 @@ pub fn close() {
 }
 
 /// Insert an entry into RocksDB: default CF by hash, seen time, and index by height/slot
-pub fn insert_entry(hash: &[u8; 32], height: u64, slot: u64, entry_bin: &[u8], seen_millis: u128) -> Result<(), Error> {
+pub fn insert_entry(hash: &[u8; 32], height: u64, slot: u64, entry_bin: &[u8], seen_millis: u64) -> Result<(), Error> {
     // idempotent: if already present under default CF, do nothing
     if rocksdb::get(CF_DEFAULT, hash)?.is_none() {
         rocksdb::put(CF_DEFAULT, hash, entry_bin)?;
@@ -357,7 +357,7 @@ mod tests {
         let height = 12345;
         let slot1 = 67890;
         let slot2 = 67891;
-        let seen_time = 1234567890_u128;
+        let seen_time = 1234567890;
 
         // insert two entries with same height but different slots
         insert_entry(&entry_hash1, height, slot1, &entry_bin1, seen_time).unwrap();

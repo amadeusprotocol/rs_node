@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use tracing::warn;
 
 /// Complete metrics snapshot
@@ -17,7 +17,7 @@ pub struct MetricsSnapshot {
     pub udp: UdpStats,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub udpps: Option<UdpStats>,
-    pub uptime: u64,
+    pub uptime: u32,
 }
 
 /// Packet statistics with rate calculations
@@ -126,7 +126,7 @@ pub struct Metrics {
     outgoing_protos: SccHashIndex<String, Arc<AtomicU64>>,
 
     // Start time for uptime calculation
-    start_time: u64,
+    start_time: u32,
 }
 
 impl Metrics {
@@ -223,12 +223,12 @@ impl Metrics {
         MetricsSnapshot { incoming_protos, outgoing_protos, uptime, errors, udp, udpps }
     }
 
-    fn get_udp_stats(&self, uptime_seconds: u64) -> (UdpStats, Option<UdpStats>) {
+    fn get_udp_stats(&self, uptime_seconds: u32) -> (UdpStats, Option<UdpStats>) {
         static LAST_INCOMING_BYTES: AtomicU64 = AtomicU64::new(0);
         static LAST_INCOMING_PACKETS: AtomicU64 = AtomicU64::new(0);
         static LAST_OUTGOING_BYTES: AtomicU64 = AtomicU64::new(0);
         static LAST_OUTGOING_PACKETS: AtomicU64 = AtomicU64::new(0);
-        static LAST_UPTIME_SECONDS: AtomicU64 = AtomicU64::new(0);
+        static LAST_UPTIME_SECONDS: AtomicU32 = AtomicU32::new(0);
 
         let incoming_packets = self.incoming_packets.load(Ordering::Relaxed);
         let incoming_bytes = self.incoming_bytes.load(Ordering::Relaxed);
@@ -245,7 +245,7 @@ impl Metrics {
         let mut udpps = None;
 
         if lus != 0 {
-            let seconds = if uptime_seconds != lus { uptime_seconds - lus } else { 1 };
+            let seconds = if uptime_seconds != lus { (uptime_seconds - lus) as u64 } else { 1 };
             udpps = Some(UdpStats {
                 incoming_packets: (incoming_packets - lip) / seconds,
                 incoming_bytes: (incoming_bytes - lib) / seconds,

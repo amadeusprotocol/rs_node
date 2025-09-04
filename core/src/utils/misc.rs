@@ -12,12 +12,13 @@ pub trait Typename {
     fn typename(&self) -> &'static str;
 }
 
-pub fn get_unix_secs_now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).as_ref().map(Duration::as_secs).unwrap_or(0)
+// FIXME: u32 is fine until early 2106, after that it will overflow
+pub fn get_unix_secs_now() -> u32 {
+    SystemTime::now().duration_since(UNIX_EPOCH).as_ref().map(Duration::as_secs).unwrap_or(0) as u32
 }
 
-pub fn get_unix_millis_now() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).as_ref().map(Duration::as_millis).unwrap_or(0)
+pub fn get_unix_millis_now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).as_ref().map(Duration::as_millis).unwrap_or(0) as u64
 }
 
 pub fn get_unix_nanos_now() -> u128 {

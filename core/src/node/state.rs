@@ -34,7 +34,7 @@ impl crate::utils::misc::Typename for Error {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeState {
-    pub challenges: HashMap<Vec<u8>, u64>, // pk -> challenge
+    pub challenges: HashMap<Vec<u8>, u32>, // pk -> challenge
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,8 +46,8 @@ pub struct PeerInfo {
 
 #[derive(Debug)]
 pub enum StateMessage {
-    NewPhoneWhoDis { anr: anr::Anr, challenge: u64 },
-    What { anr: anr::Anr, challenge: u64, signature: Vec<u8> },
+    NewPhoneWhoDis { anr: anr::Anr, challenge: u32 },
+    What { anr: anr::Anr, challenge: u32, signature: Vec<u8> },
     Ping { temporal: Vec<u8>, rooted: Vec<u8>, ts_m: u128 },
     Pong { ts_m: u128 },
     TxPool { txs_packed: Vec<Vec<u8>> },
@@ -133,7 +133,7 @@ impl NodeState {
     async fn handle_new_phone_who_dis(
         &mut self,
         anr: anr::Anr,
-        challenge: u64,
+        challenge: u32,
         peer: &PeerInfo,
         node_registry: &NodeAnrs,
     ) -> Result<Option<Vec<u8>>, Error> {
@@ -167,7 +167,7 @@ impl NodeState {
     async fn handle_what(
         &mut self,
         anr: anr::Anr,
-        challenge: u64,
+        challenge: u32,
         signature: Vec<u8>,
         peer: &PeerInfo,
         node_registry: &NodeAnrs,
@@ -181,7 +181,7 @@ impl NodeState {
         }
 
         // Check challenge timing (within 6 seconds)
-        let now = get_unix_millis_now() as u64 / 1000;
+        let now = (get_unix_millis_now() / 1000) as u32;
         let delta = if now > challenge { now - challenge } else { challenge - now };
         if delta > 6 {
             return Err(Error::InvalidChallenge);

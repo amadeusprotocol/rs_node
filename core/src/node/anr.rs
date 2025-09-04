@@ -1,6 +1,6 @@
 use crate::config::{Config, SeedANR};
 use crate::utils::bls12_381::{sign, verify};
-use crate::utils::misc::{get_unix_millis_now, get_unix_secs_now};
+use crate::utils::misc::get_unix_secs_now;
 use crate::utils::safe_etf::{encode_map_with_ordered_keys, encode_with_small_atoms};
 use eetf::{Atom, Binary, FixInteger, Map, Term};
 use serde::{Deserialize, Serialize};
@@ -62,7 +62,7 @@ pub struct Anr {
     #[serde(skip)]
     pub error_tries: u32,
     #[serde(skip)]
-    pub next_check: u64,
+    pub next_check: u32,
 }
 
 impl From<SeedANR> for Anr {
@@ -81,7 +81,7 @@ impl From<SeedANR> for Anr {
             hasChainPop: false,
             error: None,
             error_tries: 0,
-            next_check: seed.ts as u64 + 3,
+            next_check: seed.ts + 3,
         }
     }
 }
@@ -113,7 +113,7 @@ impl Anr {
         anr_name: Option<String>,
         anr_desc: Option<String>,
     ) -> Result<Self, Error> {
-        let ts = get_unix_secs_now() as u32;
+        let ts = get_unix_secs_now();
         let mut anr = Anr {
             ip4,
             pk: pk.to_vec(),
@@ -128,7 +128,7 @@ impl Anr {
             hasChainPop: false,
             error: None,
             error_tries: 0,
-            next_check: ts as u64 + 3,
+            next_check: ts + 3,
         };
 
         // create signature over erlang term format like elixir
@@ -153,104 +153,6 @@ impl Anr {
         )
     }
 
-    // fn to_erlang_term_for_signing(&self) -> Vec<u8> {
-    //     // Manually construct ETF bytes to match Elixir's deterministic encoding
-    //     // Elixir excludes nil fields and uses small atoms (119) in deterministic order: ip4, pk, pop, port, ts, version
-    //     let mut buf = Vec::new();
-    //
-    //     // ETF version marker
-    //     buf.push(131);
-    //
-    //     let fields = 6 + self.anr_name.is_some() as u32 + self.anr_desc.is_some() as u32;
-    //
-    //     // Map header: type (116) + 4 bytes for count
-    //     buf.push(116);
-    //     buf.extend_from_slice(&fields.to_be_bytes());
-    //
-    //     // Field 1: ip4 (small atom + binary)
-    //     buf.push(119); // small atom
-    //     buf.push(3); // length
-    //     buf.extend_from_slice(b"ip4");
-    //
-    //     // ip4 value as binary string
-    //     let ip4_str = self.ip4.to_string();
-    //     buf.push(109); // binary
-    //     buf.extend_from_slice(&(ip4_str.len() as u32).to_be_bytes());
-    //     buf.extend_from_slice(ip4_str.as_bytes());
-    //
-    //     // Field 2: pk (small atom + binary)
-    //     buf.push(119); // small atom
-    //     buf.push(2); // length
-    //     buf.extend_from_slice(b"pk");
-    //
-    //     // pk value as binary
-    //     buf.push(109); // binary
-    //     buf.extend_from_slice(&(self.pk.len() as u32).to_be_bytes());
-    //     buf.extend_from_slice(&self.pk);
-    //
-    //     // Field 3: pop (small atom + binary)
-    //     buf.push(119); // small atom
-    //     buf.push(3); // length
-    //     buf.extend_from_slice(b"pop");
-    //
-    //     // pop value as binary
-    //     buf.push(109); // binary
-    //     buf.extend_from_slice(&(self.pop.len() as u32).to_be_bytes());
-    //     buf.extend_from_slice(&self.pop);
-    //
-    //     // Field 4: port (small atom + integer)
-    //     buf.push(119); // small atom
-    //     buf.push(4); // length
-    //     buf.extend_from_slice(b"port");
-    //
-    //     // port value as integer
-    //     buf.push(98); // integer
-    //     buf.extend_from_slice(&(self.port as u32).to_be_bytes());
-    //
-    //     // Field 5: ts (small atom + big integer)
-    //     buf.push(119); // small atom
-    //     buf.push(2); // length
-    //     buf.extend_from_slice(b"ts");
-    //
-    //     // ts value as big integer
-    //     buf.push(98); // integer (fits in 32-bit)
-    //     buf.extend_from_slice(&(self.ts as u32).to_be_bytes());
-    //
-    //     // Field 6: version (small atom + binary)
-    //     buf.push(119); // small atom
-    //     buf.push(7); // length
-    //     buf.extend_from_slice(b"version");
-    //
-    //     // version value as binary
-    //     buf.push(109); // binary
-    //     buf.extend_from_slice(&(self.version.len() as u32).to_be_bytes());
-    //     buf.extend_from_slice(self.version.as_bytes());
-    //
-    //     if let Some(anr_name) = self.anr_name.as_ref() {
-    //         // Field 7: anr_name (small atom + binary)
-    //         buf.push(119); // small atom
-    //         buf.push(8); // length
-    //         buf.extend_from_slice(b"anr_name");
-    //         // anr_name value as binary
-    //         buf.push(109); // binary
-    //         buf.extend_from_slice(&(anr_name.len() as u32).to_be_bytes());
-    //         buf.extend_from_slice(anr_name.as_bytes());
-    //     }
-    //
-    //     if let Some(anr_desc) = self.anr_desc.as_ref() {
-    //         // Field 8: anr_desc (small atom + binary)
-    //         buf.push(119); // small atom
-    //         buf.push(8); // length
-    //         buf.extend_from_slice(b"anr_desc");
-    //         // anr_desc value as binary
-    //         buf.push(109); // binary
-    //         buf.extend_from_slice(&(anr_desc.len() as u32).to_be_bytes());
-    //         buf.extend_from_slice(anr_desc.as_bytes());
-    //     }
-    //
-    //     buf
-    // }
-
     // verify anr signature and proof of possession
     pub fn verify_signature(&self) -> bool {
         let to_sign = self.to_etf_bin_ordered();
@@ -267,12 +169,8 @@ impl Anr {
     // verify and unpack anr from untrusted source
     pub fn verify_and_unpack(anr: Anr) -> Result<Anr, Error> {
         // check not wound into future (10 min tolerance)
-        // elixir uses :os.system_time(1000) for milliseconds
-        let now_ms = get_unix_millis_now() as u64;
-
-        let delta_ms = (now_ms as i64) - (anr.ts as i64 * 1000); // convert ts from seconds to ms
-        let min10_ms = 60 * 10 * 1000;
-        if delta_ms < -(min10_ms as i64) {
+        let now_ts = get_unix_secs_now();
+        if now_ts - anr.ts < 60 * 10 {
             return Err(Error::InvalidTimestamp);
         }
 

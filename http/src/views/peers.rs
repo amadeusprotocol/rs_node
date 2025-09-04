@@ -1,4 +1,5 @@
 use ama_core::PeerInfo;
+use ama_core::utils::misc::get_unix_millis_now;
 use std::collections::HashMap;
 
 pub fn page(peers: &HashMap<String, PeerInfo>) -> String {
@@ -266,8 +267,7 @@ fn esc(s: &str) -> String {
 }
 
 fn get_time_ago(last_ts: u64) -> String {
-    use ama_core::utils::misc::get_unix_secs_now;
-    let now = get_unix_secs_now();
+    let now = get_unix_millis_now();
     let last_ts_secs = last_ts / 1000; // convert ms to seconds
     let diff = now.saturating_sub(last_ts_secs);
     if diff < 60 {

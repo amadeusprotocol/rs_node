@@ -154,7 +154,7 @@ impl NodePeers {
 
     /// Clear stale peers and add missing validators/handshaked nodes
     pub async fn clear_stale_inner(&self, node_registry: &anr::NodeAnrs) -> Result<usize, Error> {
-        let ts_m = get_unix_millis_now() as u64;
+        let ts_m = get_unix_millis_now();
 
         // Get validators for current height + 1
         let height = consensus::chain_height();
@@ -248,7 +248,7 @@ impl NodePeers {
     /// Insert a new peer if it doesn't already exist
     pub async fn insert_new_peer(&self, mut peer: Peer) -> Result<bool, Error> {
         if peer.last_msg == 0 {
-            peer.last_msg = get_unix_millis_now() as u64;
+            peer.last_msg = get_unix_millis_now();
         }
 
         Ok(self.peers.insert(peer.ip, peer).await.is_ok())
@@ -267,19 +267,20 @@ impl NodePeers {
             .filter(|ip| *ip != config.get_public_ipv4())
             .collect();
 
+        let ts_m = get_unix_millis_now();
         for ip in validator_ips {
             let _ = self.insert_new_peer(Peer {
                 ip,
                 pk: None,
                 version: None,
                 latency: None,
-                last_msg: get_unix_millis_now() as u64,
+                last_msg: ts_m,
                 last_ping: None,
                 last_pong: None,
                 shared_secret: None,
                 temporal: None,
                 rooted: None,
-                last_seen: get_unix_millis_now() as u64,
+                last_seen: ts_m,
                 last_msg_type: None,
                 handshake_status: HandshakeStatus::None,
             });
@@ -337,7 +338,7 @@ impl NodePeers {
 
     /// Check if a peer is online
     pub fn is_online(peer: &Peer, trainer_pk: Option<&[u8]>) -> bool {
-        let ts_m = get_unix_millis_now() as u64;
+        let ts_m = get_unix_millis_now();
 
         match (&peer.pk, peer.last_ping) {
             (None, _) => false,
@@ -654,7 +655,7 @@ impl NodePeers {
 
     /// Update peer activity and last message type
     pub async fn update_peer_activity(&self, ip: Ipv4Addr, last_msg_type: &str) -> Result<(), Error> {
-        let current_time = get_unix_millis_now() as u64;
+        let current_time = get_unix_millis_now();
 
         // Try to update existing peer first
         let updated = self
@@ -771,7 +772,7 @@ impl NodePeers {
 
     /// Update peer with version and public key information from ANR
     pub async fn update_peer_from_anr(&self, ip: Ipv4Addr, pk: &[u8], version: &str) -> Result<(), Error> {
-        let current_time = get_unix_millis_now() as u64;
+        let current_time = get_unix_millis_now();
         let updated = self
             .peers
             .update(&ip, |_key, peer| {
@@ -834,18 +835,19 @@ mod tests {
         let node_peers = NodePeers::new(100);
         let ip = Ipv4Addr::new(127, 0, 0, 1);
 
+        let ts_m = get_unix_millis_now();
         let peer = Peer {
             ip,
             pk: Some(vec![1, 2, 3]),
             version: Some("1.0.0".to_string()),
             latency: Some(100),
-            last_msg: get_unix_millis_now() as u64,
-            last_ping: Some(get_unix_millis_now() as u64),
+            last_msg: ts_m,
+            last_ping: Some(ts_m),
             last_pong: None,
             shared_secret: None,
             temporal: None,
             rooted: None,
-            last_seen: get_unix_millis_now() as u64,
+            last_seen: ts_m,
             last_msg_type: Some("ping".to_string()),
             handshake_status: HandshakeStatus::None,
         };

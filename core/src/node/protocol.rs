@@ -12,11 +12,10 @@ use crate::node::peers::HandshakeStatus;
 use crate::node::{ReedSolomonReassembler, anr, msg_v2, reassembler};
 use crate::socket::UdpSocketExt;
 use crate::utils::bls12_381 as bls;
-use crate::utils::misc::Typename;
-use crate::utils::misc::{TermExt, TermMap, get_unix_millis_now};
+use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now, get_unix_secs_now};
 use crate::utils::safe_etf::encode_with_small_atoms;
 use eetf::convert::TryAsRef;
-use eetf::{Atom, BigInteger, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, List, Map, Term};
+use eetf::{Atom, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, List, Map, Term};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io::Error as IoError;
@@ -26,7 +25,7 @@ use tracing::{debug, instrument, warn};
 
 /// Convert an integer to binary representation compatible with Elixir's :erlang.integer_to_binary/1
 /// This creates the minimal big-endian byte representation without leading zeros
-fn integer_to_binary(n: u64) -> Vec<u8> {
+fn integer_to_binary(n: u32) -> Vec<u8> {
     if n == 0 {
         vec![0]
     } else {
@@ -113,7 +112,7 @@ impl Typename for Error {
 #[derive(Debug, strum_macros::IntoStaticStr)]
 pub enum Instruction {
     Noop { why: String },
-    SendPong { ts_m: u128, dst: SocketAddr },
+    SendPong { ts_m: u64, dst: SocketAddr },
     ValidTxs { txs: Vec<Vec<u8>> },
     Peers { ips: Vec<String> },
     ReceivedSol { sol: Solution },
@@ -129,8 +128,8 @@ pub enum Instruction {
     SolicitEntry { hash: Vec<u8> },
     SolicitEntry2,
     SendWhat { what: What, dst: SocketAddr },
-    ReplyWhatChallenge { anr: anr::Anr, challenge: u64 },
-    ReceivedWhatResponse { responder_anr: anr::Anr, challenge: u64, their_signature: Vec<u8> },
+    ReplyWhatChallenge { anr: anr::Anr, challenge: u32 },
+    ReceivedWhatResponse { responder_anr: anr::Anr, challenge: u32, their_signature: Vec<u8> },
     HandshakeComplete { anr: anr::Anr },
 }
 
@@ -174,13 +173,13 @@ pub fn parse_etf_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
 pub struct Ping {
     pub temporal: EntrySummary,
     pub rooted: EntrySummary,
-    pub ts_m: u128,
+    pub ts: u64,
 }
 
 #[derive(Debug)]
 pub struct Pong {
-    pub ts_m: u128,
-    pub seen_time_ms: u128,
+    pub ts: u64,
+    pub seen_time: u64,
 }
 
 #[derive(Debug)]
@@ -242,13 +241,13 @@ pub struct SolicitEntry2;
 #[derive(Debug)]
 pub struct NewPhoneWhoDis {
     pub anr: Vec<u8>, // packed ANR binary
-    pub challenge: u64,
+    pub challenge: u32,
 }
 
 #[derive(Debug)]
 pub struct What {
     pub anr: Vec<u8>, // packed ANR binary
-    pub challenge: u64,
+    pub challenge: u32,
     pub signature: Vec<u8>,
 }
 
@@ -267,14 +266,14 @@ impl Protocol for Ping {
         let rooted = EntrySummary::from_etf_term(&rooted_term)?;
         // TODO: validate temporal/rooted signatures and update peer shared secret, broadcast peers
         let ts_m = map.get_integer("ts_m").ok_or(Error::BadEtf("ts_m"))?;
-        Ok(Self { temporal, rooted, ts_m })
+        Ok(Self { temporal, rooted, ts: ts_m })
     }
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("ping")));
         m.insert(Term::Atom(Atom::from("temporal")), self.temporal.to_etf_term()?);
         m.insert(Term::Atom(Atom::from("rooted")), self.rooted.to_etf_term()?);
-        m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: self.ts_m.into() }));
+        m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: self.ts.into() }));
         let term = Term::from(Map { map: m });
         let etf_data = encode_with_small_atoms(&term);
         Ok(etf_data)
@@ -312,7 +311,7 @@ impl Protocol for Ping {
 
         // update peer info following Elixir implementation
         if let std::net::IpAddr::V4(peer_ip) = src.ip() {
-            let current_time_ms = crate::utils::misc::get_unix_millis_now() as u64;
+            let current_time_ms = get_unix_millis_now() as u64;
 
             // get signer from temporal entry header
             let signer = self.temporal.header.signer.to_vec();
@@ -367,7 +366,7 @@ impl Protocol for Ping {
             }
         }
 
-        Ok(Instruction::SendPong { ts_m: self.ts_m, dst: src })
+        Ok(Instruction::SendPong { ts_m: self.ts, dst: src })
     }
 }
 
@@ -375,9 +374,7 @@ impl Ping {
     pub const TYPENAME: &'static str = "ping";
     /// Create a new Ping with current timestamp
     pub fn new(temporal: EntrySummary, rooted: EntrySummary) -> Self {
-        let ts_m = get_unix_millis_now();
-
-        Self { temporal, rooted, ts_m }
+        Self { temporal, rooted, ts: get_unix_millis_now() }
     }
 
     /// Assemble Ping from current temporal and rooted tips stored in RocksDB
@@ -411,12 +408,12 @@ impl Protocol for Pong {
         let ts_m = map.get_integer("ts_m").ok_or(Error::BadEtf("ts_m"))?;
         let seen_time_ms = get_unix_millis_now();
         // check what else must be validated
-        Ok(Self { ts_m, seen_time_ms })
+        Ok(Self { ts: ts_m, seen_time: seen_time_ms })
     }
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
-        m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: self.ts_m.into() }));
+        m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: self.ts.into() }));
         let term = Term::from(Map { map: m });
         let etf_data = encode_with_small_atoms(&term);
         Ok(etf_data)
@@ -425,8 +422,8 @@ impl Protocol for Pong {
     async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
         // calculate latency and update peer information following Elixir implementation
         if let std::net::IpAddr::V4(peer_ip) = src.ip() {
-            let current_time_ms = crate::utils::misc::get_unix_millis_now() as u64;
-            let latency = current_time_ms.saturating_sub(self.ts_m as u64);
+            let current_time = get_unix_millis_now();
+            let latency = current_time.saturating_sub(self.ts);
 
             debug!("observed pong from {} with latency {}ms", peer_ip, latency);
 
@@ -444,13 +441,13 @@ impl Protocol for Pong {
                     pk: None, // will be set from handshake later
                     version: None,
                     latency: Some(latency),
-                    last_msg: current_time_ms,
+                    last_msg: current_time,
                     last_ping: None,
-                    last_pong: Some(current_time_ms),
+                    last_pong: Some(current_time),
                     shared_secret: None,
                     temporal: None,
                     rooted: None,
-                    last_seen: current_time_ms,
+                    last_seen: current_time,
                     last_msg_type: Some("pong".to_string()),
                     handshake_status: crate::node::peers::HandshakeStatus::None,
                 };
@@ -576,6 +573,7 @@ impl Typename for NewPhoneWhoDis {
 mod tests {
     use super::*;
     use crate::consensus::entry::{EntryHeader, EntrySummary};
+    use crate::utils::misc::get_unix_secs_now;
 
     #[tokio::test]
     async fn test_ping_etf_roundtrip() {
@@ -596,7 +594,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pong_etf_roundtrip() {
-        let pong = Pong { ts_m: 1234567890, seen_time_ms: 9876543210 };
+        let pong = Pong { ts: 1234567890, seen_time: 9876543210 };
 
         let bin = pong.to_etf_bin().expect("should serialize");
         let result = parse_etf_bin(&bin).expect("should deserialize");
@@ -713,7 +711,7 @@ mod tests {
         let responder_anr = anr::Anr::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
 
         // challenge far in the past (>6s)
-        let challenge = crate::utils::misc::get_unix_secs_now().saturating_sub(10);
+        let challenge = get_unix_secs_now().saturating_sub(10);
         let sig = vec![1u8; 96];
         let _msg = What::new(responder_anr, challenge, sig).expect("what new");
 
@@ -745,7 +743,7 @@ mod tests {
         assert_eq!(integer_to_binary(1000), vec![3, 232]); // 0x03E8
 
         // Test typical Unix timestamp (around current time)
-        let timestamp = 1693958400u64; // Example timestamp
+        let timestamp = 1693958400u32; // Example timestamp
         let bytes = integer_to_binary(timestamp);
         assert!(bytes.len() <= 8); // Should be compact representation
         assert!(bytes.len() >= 1); // Should have at least one byte
@@ -768,16 +766,14 @@ mod tests {
 
         // Test edge case challenge values to ensure ETF encoding works correctly
         let test_challenges = vec![
-            0u64,                  // Zero
-            1u64,                  // Minimum positive
-            255u64,                // Max FixInteger (u8)
-            256u64,                // First BigInteger case
-            65535u64,              // Max u16
-            65536u64,              // First u16 overflow
-            (i32::MAX as u64),     // Max i32 (FixInteger boundary)
-            (i32::MAX as u64) + 1, // First BigInteger case
-            1693958400u64,         // Typical Unix timestamp
-            (i64::MAX as u64) - 1, // Near maximum i64 value
+            0u32,              // Zero
+            1u32,              // Minimum positive
+            255u32,            // Max u8
+            256u32,            // First multi-byte case
+            65535u32,          // Max u16
+            65536u32,          // First u16 overflow
+            (i32::MAX as u32), // Max i32 (FixInteger boundary)
+            1693958400u32,     // Typical Unix timestamp
         ];
 
         for challenge in test_challenges {
@@ -816,18 +812,7 @@ mod tests {
         let signature = vec![1u8; 96]; // Mock signature
 
         // Test same edge case challenge values for What messages
-        let test_challenges = vec![
-            0u64,
-            1u64,
-            255u64,
-            256u64,
-            65535u64,
-            65536u64,
-            (i32::MAX as u64),
-            (i32::MAX as u64) + 1,
-            1693958400u64,
-            (i64::MAX as u64) - 1, // Near maximum i64 value
-        ];
+        let test_challenges = vec![0u32, 1u32, 255u32, 256u32, 65535u32, 65536u32, (i32::MAX as u32), 1693958400u32];
 
         for challenge in test_challenges {
             // Create What message with this challenge
@@ -875,11 +860,10 @@ mod tests {
 
         // Test with various challenge values including boundary cases
         let test_challenges = vec![
-            42u64,                 // Small value (FixInteger)
-            1000u64,               // Medium value (FixInteger)
-            (i32::MAX as u64),     // Boundary (FixInteger)
-            (i32::MAX as u64) + 1, // First BigInteger
-            1693958400u64,         // Typical timestamp (BigInteger)
+            42u32,             // Small value (FixInteger)
+            1000u32,           // Medium value (FixInteger)
+            (i32::MAX as u32), // Boundary (FixInteger)
+            1693958400u32,     // Typical timestamp (FixInteger)
         ];
 
         for challenge in test_challenges {
@@ -970,7 +954,7 @@ mod tests {
         match crate::Context::with_config_and_socket(config, dummy_socket).await {
             Ok(ctx) => {
                 // Create a Pong message to test with
-                let pong = Pong { ts_m: 12345, seen_time_ms: 67890 };
+                let pong = Pong { ts: 12345, seen_time: 67890 };
 
                 // Check metrics before sending
                 let metrics_json_before = ctx.metrics.get_json();
@@ -1023,14 +1007,11 @@ impl Protocol for NewPhoneWhoDis {
         let anr_term = Term::decode(&self.anr[..])?;
         m.insert(Term::Atom(Atom::from("anr")), anr_term);
 
-        // Use native integer encoding compatible with Elixir - prefer FixInteger for small values
-        let challenge_term = if self.challenge <= (i32::MAX as u64) {
-            Term::FixInteger(eetf::FixInteger { value: self.challenge as i32 })
-        } else {
-            // For larger values, clamp to i64 range to avoid overflow
-            let clamped_value = std::cmp::min(self.challenge, i64::MAX as u64) as i64;
-            Term::BigInteger(BigInteger::from(clamped_value))
-        };
+        // Use FixInteger encoding compatible with Elixir's [:safe] mode - all challenges must fit in i32
+        if self.challenge > (i32::MAX as u32) {
+            return Err(Error::BadEtf("challenge too large for safe ETF encoding"));
+        }
+        let challenge_term = Term::FixInteger(eetf::FixInteger { value: self.challenge as i32 });
         m.insert(Term::Atom(Atom::from("challenge")), challenge_term);
         let term = Term::from(Map { map: m });
         let etf_data = encode_with_small_atoms(&term);
@@ -1099,7 +1080,7 @@ impl Protocol for NewPhoneWhoDis {
             hasChainPop: false,
             error: None,
             error_tries: 0,
-            next_check: (ts + 3) as u64,
+            next_check: ts + 3,
         };
 
         // println!("{sender_anr:?}");
@@ -1135,9 +1116,9 @@ impl Protocol for NewPhoneWhoDis {
 
         let my_anr = anr::Anr::from_config(&ctx.get_config())?;
 
-        // Sign the challenge: signature = BLS(sender_pk || challenge) with OUR private key
+        // Sign the challenge: signature = BLS(our_pk || challenge) with OUR private key
         // Use Elixir-compatible integer_to_binary format instead of fixed 8-byte encoding
-        let mut challenge_msg = sender_anr.pk.clone();
+        let mut challenge_msg = ctx.get_config().trainer_pk.to_vec();
         let challenge_bytes = integer_to_binary(self.challenge);
         challenge_msg.extend_from_slice(&challenge_bytes);
 
@@ -1155,7 +1136,7 @@ impl Protocol for NewPhoneWhoDis {
 impl NewPhoneWhoDis {
     pub const TYPENAME: &'static str = "new_phone_who_dis";
 
-    pub fn new(anr: anr::Anr, challenge: u64) -> Result<Self, Error> {
+    pub fn new(anr: anr::Anr, challenge: u32) -> Result<Self, Error> {
         let anr_binary = anr.to_etf_bin();
         Ok(Self { anr: anr_binary, challenge })
     }
@@ -1175,14 +1156,11 @@ impl Protocol for What {
         // Decode ANR from binary back to term to get proper nested map structure
         let anr_term = Term::decode(&self.anr[..])?;
         m.insert(Term::Atom(Atom::from("anr")), anr_term);
-        // Use native integer encoding compatible with Elixir - prefer FixInteger for small values
-        let challenge_term = if self.challenge <= (i32::MAX as u64) {
-            Term::FixInteger(eetf::FixInteger { value: self.challenge as i32 })
-        } else {
-            // For larger values, clamp to i64 range to avoid overflow
-            let clamped_value = std::cmp::min(self.challenge, i64::MAX as u64) as i64;
-            Term::BigInteger(BigInteger::from(clamped_value))
-        };
+        // Use FixInteger encoding compatible with Elixir's [:safe] mode - all challenges must fit in i32
+        if self.challenge > (i32::MAX as u32) {
+            return Err(Error::BadEtf("challenge too large for safe ETF encoding"));
+        }
+        let challenge_term = Term::FixInteger(eetf::FixInteger { value: self.challenge as i32 });
         m.insert(Term::Atom(Atom::from("challenge")), challenge_term);
         m.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
         let term = Term::from(Map { map: m });
@@ -1244,7 +1222,7 @@ impl Protocol for What {
             hasChainPop: false,
             error: None,
             error_tries: 0,
-            next_check: (ts + 3) as u64,
+            next_check: ts + 3,
         };
 
         // validate the responder's ANR signature
@@ -1258,8 +1236,8 @@ impl Protocol for What {
         }
 
         // Validate timestamp within 6-second window (replay attack prevention)
-        let current_time = crate::utils::misc::get_unix_secs_now();
-        let challenge_time = self.challenge as u64;
+        let current_time = get_unix_secs_now();
+        let challenge_time = self.challenge;
         let delta =
             if current_time > challenge_time { current_time - challenge_time } else { challenge_time - current_time };
         if delta > 6 {
@@ -1269,9 +1247,9 @@ impl Protocol for What {
         // Handle the state updates directly here
         println!("received what response from {:?}, verifying signature", src);
 
-        // Verify the signature: they signed (our_pk || challenge) with their private key
+        // Verify the signature: they signed (their_pk || challenge) with their private key
         // Use Elixir-compatible integer_to_binary format instead of fixed 8-byte encoding
-        let mut challenge_msg = ctx.get_config().trainer_pk.to_vec();
+        let mut challenge_msg = responder_anr.pk.clone();
         let challenge_bytes = integer_to_binary(self.challenge);
         challenge_msg.extend_from_slice(&challenge_bytes);
 
@@ -1312,7 +1290,7 @@ impl Protocol for What {
 impl What {
     pub const NAME: &'static str = "what?";
 
-    pub fn new(anr: anr::Anr, challenge: u64, signature: Vec<u8>) -> Result<Self, Error> {
+    pub fn new(anr: anr::Anr, challenge: u32, signature: Vec<u8>) -> Result<Self, Error> {
         // pack ANR to binary
         let anr_binary = anr.to_etf_bin();
         Ok(Self { anr: anr_binary, challenge, signature })
@@ -1467,7 +1445,7 @@ mod special_tests {
             hasChainPop: false,
             error: None,
             error_tries: 0,
-            next_check: (ts + 3) as u64,
+            next_check: ts + 3,
         };
 
         println!("{sender_anr:?}");

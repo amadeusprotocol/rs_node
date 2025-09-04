@@ -468,7 +468,7 @@ impl Context {
             Instruction::SendPong { ts_m, dst } => {
                 // Reply with pong message
                 let seen_time_ms = get_unix_millis_now();
-                let pong = Pong { ts_m, seen_time_ms };
+                let pong = Pong { ts: ts_m, seen_time: seen_time_ms };
                 pong.send_to_with_metrics(&self.config, self.socket.clone(), dst, &self.metrics)
                     .await
                     .map_err(|e| crate::Error::String(format!("Failed to send pong: {:?}", e)))
