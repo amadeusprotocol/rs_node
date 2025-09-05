@@ -2,6 +2,7 @@ use eetf::convert::TryAsRef;
 use eetf::{Atom, Binary, List, Term};
 use num_traits::ToPrimitive;
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -196,6 +197,19 @@ impl TermExt for Term {
 #[derive(Default, Clone, Debug)]
 pub struct TermMap(pub HashMap<Term, Term>);
 
+impl Deref for TermMap {
+    type Target = HashMap<Term, Term>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for TermMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 impl TermMap {
     pub fn get_term_map(&self, key: &str) -> Option<Self> {
         self.0.get(&Term::Atom(Atom::from(key))).and_then(TermExt::get_term_map)
@@ -225,6 +239,10 @@ impl TermMap {
 
     pub fn get_string(&self, key: &str) -> Option<String> {
         self.0.get(&Term::Atom(Atom::from(key))).and_then(TermExt::get_string)
+    }
+
+    pub fn into_term(self) -> Term {
+        Term::Map(eetf::Map { map: self.0 })
     }
 }
 

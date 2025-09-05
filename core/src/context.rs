@@ -1,5 +1,6 @@
 use crate::config::{ANR_CHECK_SECS, CLEANUP_SECS};
 use crate::node::anr::{Anr, NodeAnrs};
+use crate::node::peers::HandshakeStatus;
 use crate::node::peers::HandshakeStatus::SentNewPhoneWhoDis;
 use crate::node::protocol::*;
 use crate::node::protocol::{Instruction, NewPhoneWhoDis};
@@ -84,14 +85,8 @@ impl Context {
             let node_peers = node_peers.clone();
             let anr = Anr::from_config(&config)?;
             spawn(async move {
-                let challenge = get_unix_secs_now();
-                let new_phone_who_dis = match NewPhoneWhoDis::new(anr.clone(), challenge) {
-                    Ok(msg) => msg,
-                    Err(e) => {
-                        warn!("bootstrap: failed to create NewPhoneWhoDis: {e}");
-                        return;
-                    }
-                };
+                let challenge = get_unix_secs_now() as i32; // FIXME: unix secs will overflow i32 in 2038
+                let new_phone_who_dis = NewPhoneWhoDis { anr, challenge };
 
                 let mut sent_count = 0;
                 for ip in &config.seed_nodes {
@@ -164,14 +159,8 @@ impl Context {
                                 }
                             };
 
-                            let challenge = get_unix_secs_now();
-                            let new_phone_who_dis = match NewPhoneWhoDis::new(anr, challenge) {
-                                Ok(msg) => msg,
-                                Err(e) => {
-                                    warn!("anrcheck: failed to create NewPhoneWhoDis: {e}");
-                                    return;
-                                }
-                            };
+                            let challenge = get_unix_secs_now() as i32; // FIXME: unix secs will overflow i32 in 2038
+                            let new_phone_who_dis = NewPhoneWhoDis { anr, challenge };
 
                             for (_, ip) in unverified_anrs.iter().cloned() {
                                 // debug!("anrcheck: sending new_phone_who_dis to {}:36969", ip);
@@ -340,13 +329,8 @@ impl Context {
     }
 
     /// Update peer information from ANR data
-    pub async fn update_peer_from_anr(
-        &self,
-        ip: std::net::Ipv4Addr,
-        pk: &[u8],
-        version: &str,
-    ) -> Result<(), peers::Error> {
-        self.node_peers.update_peer_from_anr(ip, pk, version).await
+    pub async fn update_peer_from_anr(&self, ip: Ipv4Addr, pk: &[u8], version: &str, status: HandshakeStatus) {
+        self.node_peers.update_peer_from_anr(ip, pk, version, status).await
     }
 
     /// register a UDP broadcaster implementation and start periodic ping/anr tasks
@@ -694,11 +678,9 @@ impl Context {
             self.config.get_ver(),
         )?;
 
-        let challenge = get_unix_secs_now();
-
         // create NewPhoneWhoDis message
-        let new_phone_who_dis = NewPhoneWhoDis::new(my_anr, challenge)
-            .map_err(|e| Error::String(format!("Failed to create NewPhoneWhoDis: {:?}", e)))?;
+        let challenge = get_unix_secs_now() as i32; // FIXME: unix secs will overflow i32 in 2038
+        let new_phone_who_dis = NewPhoneWhoDis { anr: my_anr, challenge };
 
         // serialize to compressed ETF binary
         let payload = new_phone_who_dis

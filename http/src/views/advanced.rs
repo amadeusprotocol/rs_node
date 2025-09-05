@@ -1353,7 +1353,7 @@ pub fn page(
                 `;
                 
                 // Map HandshakeStatus enum to display status
-                if (handshakeStatus === 'SentWhat' || handshakeStatus === 'ReceivedWhat') {{
+                if (handshakeStatus === 'sent_what' || handshakeStatus === 'received_what') {{
                     // Connected - white badge
                     status = 'CONNECTED';
                     statusClass = '';
@@ -1362,7 +1362,7 @@ pub fn page(
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                         </svg>
                     `;
-                }} else if (handshakeStatus === 'SentNewPhoneWhoDis') {{
+                }} else if (handshakeStatus === 'sent_new_phone_who_dis') {{
                     // Connecting - transparent badge with spinning arrows
                     status = 'CONNECTING';
                     statusClass = 'status-syncing';
@@ -1371,7 +1371,7 @@ pub fn page(
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
                         </svg>
                     `;
-                }} else if (handshakeStatus === 'Failed') {{
+                }} else if (handshakeStatus === 'failed') {{
                     // Impersonated - transparent red badge
                     status = 'IMPERSONATED';
                     statusClass = 'status-impersonated';

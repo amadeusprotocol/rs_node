@@ -1,7 +1,7 @@
 use crate::config::{Config, SeedANR};
 use crate::utils::bls12_381::{sign, verify};
-use crate::utils::misc::get_unix_secs_now;
-use eetf::{Atom, Binary, FixInteger, Map, Term};
+use crate::utils::misc::{TermExt, TermMap, get_unix_secs_now};
+use eetf::{Atom, Binary, FixInteger, Term};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -145,37 +145,37 @@ impl Anr {
 
     // parse anr from etf binary format
     pub fn from_etf_bin(anr_bytes: &[u8]) -> Result<Self, Error> {
-        use crate::utils::misc::TermExt;
-
-        // decode etf binary to term
         let anr_term = Term::decode(anr_bytes)?;
         let anr_map = anr_term.get_term_map().ok_or(Error::BadEtf("anr_map"))?;
+        Self::from_etf_term_map(anr_map)
+    }
 
+    pub fn from_etf_term_map(map: TermMap) -> Result<Self, Error> {
         // ip4 is stored as string in elixir format: "127.0.0.1"
-        let ip4_str = anr_map.get_string("ip4").ok_or(Error::BadEtf("ip4"))?;
+        let ip4_str = map.get_string("ip4").ok_or(Error::BadEtf("ip4"))?;
         let ip4 = ip4_str.parse::<Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse"))?;
 
-        let pk = anr_map.get_binary::<Vec<u8>>("pk").ok_or(Error::BadEtf("pk"))?;
-        let pop = anr_map.get_binary::<Vec<u8>>("pop").ok_or(Error::BadEtf("pop"))?;
-        let port = anr_map.get_integer::<u16>("port").ok_or(Error::BadEtf("port"))?;
-        let signature = anr_map.get_binary::<Vec<u8>>("signature").ok_or(Error::BadEtf("signature"))?;
+        let pk = map.get_binary::<Vec<u8>>("pk").ok_or(Error::BadEtf("pk"))?;
+        let pop = map.get_binary::<Vec<u8>>("pop").ok_or(Error::BadEtf("pop"))?;
+        let port = map.get_integer::<u16>("port").ok_or(Error::BadEtf("port"))?;
+        let signature = map.get_binary::<Vec<u8>>("signature").ok_or(Error::BadEtf("signature"))?;
 
         // handle timestamp - try u32 first, fallback to u64 for compatibility
-        let ts = anr_map
+        let ts = map
             .get_integer::<u32>("ts")
-            .or_else(|| anr_map.get_integer::<u64>("ts").map(|v| v as u32))
+            .or_else(|| map.get_integer::<u64>("ts").map(|v| v as u32))
             .ok_or(Error::BadEtf("ts"))?;
 
-        let version_bytes = anr_map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version"))?;
+        let version_bytes = map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version"))?;
         let version = String::from_utf8_lossy(&version_bytes).to_string();
 
         // parse optional anr_name and anr_desc fields (they may be nil or missing)
-        let anr_name = anr_map
+        let anr_name = map
             .get_binary::<Vec<u8>>("anr_name")
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .filter(|s| !s.is_empty());
 
-        let anr_desc = anr_map
+        let anr_desc = map
             .get_binary::<Vec<u8>>("anr_desc")
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .filter(|s| !s.is_empty());
@@ -244,7 +244,7 @@ impl Anr {
         encode_safe(&self.to_etf_term())
     }
 
-    fn to_etf_term(&self) -> Term {
+    pub fn to_etf_term(&self) -> Term {
         match self.to_etf_term_without_signature() {
             Term::Map(mut m) => {
                 m.map.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
@@ -255,7 +255,7 @@ impl Anr {
     }
 
     fn to_etf_term_without_signature(&self) -> Term {
-        let mut map = HashMap::new();
+        let mut map = TermMap::default();
 
         match &self.anr_desc {
             Some(desc) => {
@@ -280,7 +280,7 @@ impl Anr {
         map.insert(Term::Atom(Atom::from("ts")), Term::FixInteger(FixInteger::from(self.ts as i32)));
         map.insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec())));
 
-        Term::Map(Map { map })
+        map.into_term()
     }
 
     // unpack anr with port validation like elixir
@@ -347,7 +347,7 @@ impl NodeAnrs {
     }
 
     /// Insert or update anr record
-    pub async fn insert(&self, mut anr: Anr) -> Result<(), Error> {
+    pub async fn insert(&self, mut anr: Anr) {
         // check if we have chain pop for this pk (would need consensus module)
         // let hasChainPop = consensus::chain_pop(&anr.pk).is_some();
         anr.hasChainPop = false; // placeholder
@@ -383,8 +383,6 @@ impl NodeAnrs {
                 anr.next_check = get_unix_secs_now() + 3;
                 anr
             });
-
-        Ok(())
     }
 
     /// Get anr by public key
@@ -400,13 +398,12 @@ impl NodeAnrs {
         Ok(anrs)
     }
 
-    /// Set handshaked status
-    pub async fn set_handshaked(&self, pk: &[u8]) -> Result<(), Error> {
+    /// Set handshaked status (will silently return if pk not found)
+    pub async fn set_handshaked(&self, pk: &[u8]) {
         let mut map = self.store.write().await;
         if let Some(anr) = map.get_mut(pk) {
             anr.handshaked = true;
         }
-        Ok(())
     }
 
     /// Get all handshaked node public keys
@@ -534,12 +531,12 @@ impl NodeAnrs {
     /// Seed initial anrs (called on startup)
     pub async fn seed(&self, config: &Config) -> Result<(), Error> {
         for anr in config.seed_anrs.iter().cloned().map(Into::<Anr>::into) {
-            self.insert(anr).await?;
+            self.insert(anr).await;
         }
 
         if let Ok(my_anr) = Anr::from_config(config) {
-            self.insert(my_anr).await?;
-            self.set_handshaked(&config.get_pk()).await?;
+            self.insert(my_anr).await;
+            self.set_handshaked(&config.get_pk()).await;
         }
 
         let all = self.get_all().await?;
@@ -607,7 +604,7 @@ mod tests {
         };
 
         // test insert
-        registry.insert(anr.clone()).await.unwrap();
+        registry.insert(anr.clone()).await;
 
         // test get
         let retrieved = registry.get(&pk).await.unwrap().unwrap();
@@ -615,7 +612,7 @@ mod tests {
         assert!(!retrieved.handshaked, "Expected handshaked to be false after insert, got true");
 
         // test set_handshaked
-        registry.set_handshaked(&pk).await.unwrap();
+        registry.set_handshaked(&pk).await;
         let retrieved = registry.get(&pk).await.unwrap().unwrap();
         assert!(retrieved.handshaked, "Expected handshaked to be true after set_handshaked");
 
@@ -674,8 +671,8 @@ mod tests {
             error_tries: 0,
             next_check: 1003,
         };
-        registry.insert(anr1).await.unwrap();
-        registry.set_handshaked(&pk).await.unwrap();
+        registry.insert(anr1).await;
+        registry.set_handshaked(&pk).await;
 
         // try to insert older anr (should not update)
         let anr2 = Anr {
@@ -694,7 +691,7 @@ mod tests {
             error_tries: 0,
             next_check: 1002,
         };
-        registry.insert(anr2).await.unwrap();
+        registry.insert(anr2).await;
 
         // verify old anr was not updated
         let retrieved = registry.get(&pk).await.unwrap().unwrap();
@@ -719,7 +716,7 @@ mod tests {
             error_tries: 0,
             next_check: 2003,
         };
-        registry.insert(anr3).await.unwrap();
+        registry.insert(anr3).await;
 
         let retrieved = registry.get(&pk).await.unwrap().unwrap();
         assert_eq!(retrieved.ts, 2000);
@@ -743,7 +740,7 @@ mod tests {
             error_tries: 5,
             next_check: 3003,
         };
-        registry.insert(anr4).await.unwrap();
+        registry.insert(anr4).await;
 
         let retrieved = registry.get(&pk).await.unwrap().unwrap();
         assert_eq!(retrieved.ts, 3000);
@@ -785,7 +782,7 @@ mod tests {
                 next_check: 2000,
             };
 
-            registry.insert(anr).await.unwrap();
+            registry.insert(anr).await;
         }
 
         // Test multiple calls to ensure randomness and correct count

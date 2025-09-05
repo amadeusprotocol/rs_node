@@ -169,13 +169,13 @@ function renderPeers() {{
 function getHandshakeStatusDisplay(status) {{
     switch (status) {{
         case 'none':
-            return '<span class="pill" style="background: #66666620; color: #666666;">⭕ none</span>';
+            return '<span class="pill" style="background: #66666620; color: #666666;">⭕ disconnected</span>';
         case 'sent_new_phone_who_dis':
-            return '<span class="pill" style="background: #ffaa0020; color: #ffaa00;">⏳ sent_new_phone_who_dis</span>';
+            return '<span class="pill" style="background: #ffaa0020; color: #ffaa00;">⏳ connecting</span>';
         case 'sent_what':
-            return '<span class="pill" style="background: #00ff0020; color: #00ff00;">✅ sent_what</span>';
+            return '<span class="pill" style="background: #00ff0020; color: #00ff00;">✅ connected</span>';
         case 'received_what':
-            return '<span class="pill" style="background: #00ff0020; color: #00ff00;">✅ received_what</span>';
+            return '<span class="pill" style="background: #00ff0020; color: #00ff00;">✅ connected</span>';
         case 'failed':
             return '<span class="pill" style="background: #ff000020; color: #ff0000;">❌ failed</span>';
         default:
@@ -217,18 +217,15 @@ setInterval(loadPeers, 1000);
 fn get_handshake_status_html(status: &ama_core::node::peers::HandshakeStatus) -> &'static str {
     use ama_core::node::peers::HandshakeStatus;
     match status {
-        HandshakeStatus::None => "<span class=\"pill\" style=\"background: #66666620; color: #666666;\">⭕ none</span>",
+        HandshakeStatus::None => "<span class=\"pill\" style=\"background: #66666620; color: #666666;\">⭕ disconnected</span>",
         HandshakeStatus::SentNewPhoneWhoDis => {
-            "<span class=\"pill\" style=\"background: #ffaa0020; color: #ffaa00;\">⏳ sent_new_phone_who_dis</span>"
+            "<span class=\"pill\" style=\"background: #ffaa0020; color: #ffaa00;\">⏳ connecting</span>"
         }
         HandshakeStatus::SentWhat => {
-            "<span class=\"pill\" style=\"background: #00ff0020; color: #00ff00;\">✅ sent_what</span>"
+            "<span class=\"pill\" style=\"background: #00ff0020; color: #00ff00;\">✅ connected</span>"
         }
         HandshakeStatus::ReceivedWhat => {
-            "<span class=\"pill\" style=\"background: #00ff0020; color: #00ff00;\">✅ received_what</span>"
-        }
-        HandshakeStatus::Failed => {
-            "<span class=\"pill\" style=\"background: #ff000020; color: #ff0000;\">❌ failed</span>"
+            "<span class=\"pill\" style=\"background: #00ff0020; color: #00ff00;\">✅ connected</span>"
         }
     }
 }

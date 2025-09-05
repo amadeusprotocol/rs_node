@@ -23,8 +23,6 @@ pub enum HandshakeStatus {
     SentWhat,
     /// Received what message response (handshake completed successfully)
     ReceivedWhat,
-    /// Handshake failed (signature verification, timeout, etc.)
-    Failed,
 }
 
 // minimal concurrent map wrapper to mimic scc::HashMap APIs used in this module
@@ -771,7 +769,7 @@ impl NodePeers {
     }
 
     /// Update peer with version and public key information from ANR
-    pub async fn update_peer_from_anr(&self, ip: Ipv4Addr, pk: &[u8], version: &str) -> Result<(), Error> {
+    pub async fn update_peer_from_anr(&self, ip: Ipv4Addr, pk: &[u8], version: &str, status: HandshakeStatus) {
         let current_time = get_unix_millis_now();
         let updated = self
             .peers
@@ -779,6 +777,7 @@ impl NodePeers {
                 peer.pk = Some(pk.to_vec());
                 peer.version = Some(version.to_string());
                 peer.last_seen = current_time;
+                peer.handshake_status = status.clone();
             })
             .await
             .is_some();
@@ -802,8 +801,6 @@ impl NodePeers {
             };
             let _ = self.peers.insert(ip, peer).await;
         }
-
-        Ok(())
     }
 }
 
