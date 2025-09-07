@@ -26,20 +26,14 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{debug, info, instrument, warn};
 
-/// Creates big-endian byte representation without leading zeros, compatible with Erlang
-fn u32_to_erlang_binary(n: u32) -> Vec<u8> {
-    if n == 0 {
-        vec![0]
-    } else {
-        let mut bytes = Vec::new();
-        let mut num = n;
-        while num > 0 {
-            bytes.push((num & 0xFF) as u8);
-            num >>= 8;
-        }
-        bytes.reverse(); // Convert to big-endian
-        bytes
-    }
+/// Creates string representation as bytes, compatible with Erlang's :erlang.integer_to_binary/1
+fn pk_challenge_into_bin(pk: &[u8], challenge: i32) -> Vec<u8> {
+    // challenge_binary = :erlang.integer_to_binary(challenge)
+    // signature_data = <<pk::binary, challenge_binary::binary>>
+    let challenge_binary = challenge.to_string().as_bytes().to_vec();
+    let mut signature_data = pk.to_vec();
+    signature_data.extend_from_slice(&challenge_binary);
+    signature_data
 }
 
 /// Every object that has this trait must be convertible from an Erlang ETF
@@ -612,9 +606,7 @@ impl Protocol for NewPhoneWhoDis {
         };
 
         let anr = Anr::from_config(&ctx.get_config())?;
-        // signature = BLS(our_pk || challenge) with OUR private key
-        let mut data = ctx.get_config().trainer_pk.to_vec();
-        data.extend_from_slice(&u32_to_erlang_binary(self.challenge as u32));
+        let data = pk_challenge_into_bin(&ctx.get_config().trainer_pk, self.challenge);
         let signature = bls_sign(&ctx.get_config().trainer_sk, &data, crate::consensus::DST_ANR_CHALLENGE)?.to_vec();
 
         ctx.node_registry.insert(self.anr.clone()).await;
@@ -689,9 +681,9 @@ impl Protocol for What {
             return Ok(Instruction::Noop { why: format!("challenge is {} seconds old", now - ts) });
         }
 
-        // signature = BLS(their_pk || challenge) with their secret key
-        let mut data = self.anr.pk.clone();
-        data.extend_from_slice(&u32_to_erlang_binary(self.challenge as u32));
+        // FIXME: add check for ts being too far in the future?
+
+        let data = pk_challenge_into_bin(&self.anr.pk, self.challenge);
         bls_verify(&self.anr.pk, &self.signature, &data, crate::consensus::DST_ANR_CHALLENGE)?;
 
         ctx.node_registry.insert(self.anr.clone()).await;
@@ -894,10 +886,10 @@ mod tests {
         let responder_anr = anr::Anr::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
 
         // fresh challenge within 6s window
-        let challenge = get_unix_secs_now();
-        // produce some signature bytes (protocol layer doesn't verify it)
-        let sig = bls_sign(&sk, &pk, b"AMA_ANR_CHALLENGE").expect("sig").to_vec();
-        let msg = What { anr: responder_anr.clone(), challenge: challenge as i32, signature: sig };
+        let challenge = get_unix_secs_now() as i32;
+        let data = pk_challenge_into_bin(&pk, challenge);
+        let sig = bls_sign(&sk, &data, crate::consensus::DST_ANR_CHALLENGE).expect("sig").to_vec();
+        let msg = What { anr: responder_anr.clone(), challenge, signature: sig };
 
         let bin = msg.to_etf_bin().expect("serialize");
         let parsed = parse_etf_bin(&bin).expect("deserialize");
@@ -942,24 +934,6 @@ mod tests {
         };
 
         EntrySummary { header, signature: [5u8; 96], mask: None }
-    }
-
-    #[test]
-    fn test_integer_to_binary_compatibility() {
-        // Test various challenge values that would be typical Unix timestamps
-        assert_eq!(u32_to_erlang_binary(0), vec![0]);
-        assert_eq!(u32_to_erlang_binary(255), vec![255]);
-        assert_eq!(u32_to_erlang_binary(256), vec![1, 0]);
-        assert_eq!(u32_to_erlang_binary(1000), vec![3, 232]); // 0x03E8
-
-        // Test typical Unix timestamp (around current time)
-        let timestamp = 1693958400u32; // Example timestamp
-        let bytes = u32_to_erlang_binary(timestamp);
-        assert!(bytes.len() <= 8); // Should be compact representation
-        assert!(bytes.len() >= 1); // Should have at least one byte
-
-        // Test that it's the minimal representation (no leading zeros)
-        assert_ne!(bytes[0], 0);
     }
 
     #[tokio::test]
@@ -1024,10 +998,10 @@ mod tests {
         let signature = vec![1u8; 96]; // Mock signature
 
         // Test same edge case challenge values for What messages
-        let test_challenges = vec![1u32, 255u32, 256u32, 65535u32, 65536u32, i32::MAX as u32, 1693958400u32];
+        let test_challenges = vec![1i32, 255i32, 256i32, 65535i32, 65536i32, i32::MAX, 1693958400i32];
 
         for challenge in test_challenges {
-            let msg = What { anr: responder_anr.clone(), challenge: 0, signature: signature.clone() };
+            let msg = What { anr: responder_anr.clone(), challenge: challenge, signature: signature.clone() };
 
             // Serialize to ETF
             let bin = msg.to_etf_bin().expect(&format!("serialize what challenge {}", challenge));
@@ -1042,77 +1016,6 @@ mod tests {
             {
                 assert_eq!(parsed_msg.challenge, challenge as i32, "What challenge mismatch for value {}", challenge);
             }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_challenge_signature_compatibility() {
-        use crate::node::anr;
-        use crate::utils::bls12_381 as bls;
-        use std::net::Ipv4Addr;
-
-        // Create two different ANRs for sender and responder
-        let sender_sk = bls::generate_sk();
-        let sender_pk = bls::get_public_key(&sender_sk).expect("sender pk");
-        let sender_pop = bls_sign(&sender_sk, &sender_pk, crate::consensus::DST_POP).expect("sender pop");
-
-        let responder_sk = bls::generate_sk();
-        let responder_pk = bls::get_public_key(&responder_sk).expect("responder pk");
-        let responder_pop = bls_sign(&responder_sk, &responder_pk, crate::consensus::DST_POP).expect("responder pop");
-
-        let ip = Ipv4Addr::new(127, 0, 0, 1);
-        let _sender_anr =
-            anr::Anr::build(&sender_sk, &sender_pk, &sender_pop, ip, "sender".to_string()).expect("sender anr");
-        let responder_anr = anr::Anr::build(&responder_sk, &responder_pk, &responder_pop, ip, "responder".to_string())
-            .expect("responder anr");
-
-        // Test with various challenge values including boundary cases
-        let test_challenges = vec![
-            42u32,           // Small value (FixInteger)
-            1000u32,         // Medium value (FixInteger)
-            i32::MAX as u32, // Boundary (FixInteger)
-            1693958400u32,   // Typical timestamp (FixInteger)
-        ];
-
-        for challenge in test_challenges {
-            // Test the signature generation/verification cycle with different integer encodings
-
-            // Simulate what happens in NewPhoneWhoDis::handle - responder signs (sender_pk || challenge)
-            let mut challenge_msg_sign = sender_pk.to_vec();
-            let challenge_bytes = u32_to_erlang_binary(challenge);
-            challenge_msg_sign.extend_from_slice(&challenge_bytes);
-
-            let signature = bls_sign(&responder_sk, &challenge_msg_sign, crate::consensus::DST_ANR_CHALLENGE)
-                .expect(&format!("sign challenge {}", challenge));
-
-            let what_msg =
-                What { anr: responder_anr.clone(), challenge: challenge as i32, signature: signature.to_vec() };
-
-            // Serialize/deserialize the What message to test ETF encoding
-            let bin = what_msg.to_etf_bin().expect(&format!("what serialize challenge {}", challenge));
-            let parsed_what =
-                What::from_etf_map_validated(Term::decode(&bin[..]).expect("decode").get_term_map().expect("map"))
-                    .expect(&format!("what deserialize challenge {}", challenge));
-
-            // Verify the signature using the same format as What::handle - should verify (sender_pk || challenge)
-            let mut challenge_msg_verify = sender_pk.to_vec();
-            let challenge_bytes_verify = u32_to_erlang_binary(parsed_what.challenge as u32);
-            challenge_msg_verify.extend_from_slice(&challenge_bytes_verify);
-
-            // This should succeed, proving signature compatibility
-            bls_verify(
-                &responder_pk,
-                &parsed_what.signature,
-                &challenge_msg_verify,
-                crate::consensus::DST_ANR_CHALLENGE,
-            )
-            .expect(&format!("verify challenge {} signature", challenge));
-
-            // Double-check: the challenge round-tripped correctly
-            assert_eq!(parsed_what.challenge, challenge as i32, "Challenge roundtrip failed for {}", challenge);
-
-            // Double-check: the signature bytes are preserved
-            assert_eq!(parsed_what.signature, signature.to_vec(), "Signature mismatch for challenge {}", challenge);
         }
     }
 
@@ -1201,5 +1104,109 @@ mod tests {
                 // context creation failed - this is acceptable for this test
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod special_tests {
+    use super::*;
+
+    #[test]
+    fn special_test() {
+        let pk = vec![
+            169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244, 13,
+            106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138, 2, 252,
+            27, 222,
+        ];
+
+        assert_eq!(
+            pk_challenge_into_bin(&pk, 0),
+            vec![
+                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
+                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
+                2, 252, 27, 222, 48,
+            ]
+        );
+
+        assert_eq!(
+            pk_challenge_into_bin(&pk, 1),
+            vec![
+                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
+                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
+                2, 252, 27, 222, 49,
+            ]
+        );
+
+        assert_eq!(
+            pk_challenge_into_bin(&pk, 255),
+            vec![
+                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
+                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
+                2, 252, 27, 222, 50, 53, 53,
+            ]
+        );
+
+        assert_eq!(
+            pk_challenge_into_bin(&pk, 256),
+            vec![
+                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
+                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
+                2, 252, 27, 222, 50, 53, 54,
+            ]
+        );
+
+        assert_eq!(
+            pk_challenge_into_bin(&pk, 65535),
+            vec![
+                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
+                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
+                2, 252, 27, 222, 54, 53, 53, 51, 53,
+            ]
+        );
+
+        assert_eq!(
+            pk_challenge_into_bin(&pk, 65536),
+            vec![
+                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
+                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
+                2, 252, 27, 222, 54, 53, 53, 51, 54,
+            ]
+        );
+
+        assert_eq!(
+            pk_challenge_into_bin(&pk, 1640995200),
+            vec![
+                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
+                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
+                2, 252, 27, 222, 49, 54, 52, 48, 57, 57, 53, 50, 48, 48,
+            ]
+        );
+
+        assert_eq!(
+            pk_challenge_into_bin(&pk, 1693958400),
+            vec![
+                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
+                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
+                2, 252, 27, 222, 49, 54, 57, 51, 57, 53, 56, 52, 48, 48,
+            ]
+        );
+
+        assert_eq!(
+            pk_challenge_into_bin(&pk, 1735689600),
+            vec![
+                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
+                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
+                2, 252, 27, 222, 49, 55, 51, 53, 54, 56, 57, 54, 48, 48,
+            ]
+        );
+
+        assert_eq!(
+            pk_challenge_into_bin(&pk, 2147483647),
+            vec![
+                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
+                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
+                2, 252, 27, 222, 50, 49, 52, 55, 52, 56, 51, 54, 52, 55,
+            ]
+        );
     }
 }
