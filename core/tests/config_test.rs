@@ -34,9 +34,9 @@ async fn test_config_has_all_essential_elixir_parts() {
     assert_eq!(config.udp_port, 36969);
 
     // verify node discovery - check that seed nodes list includes the essential nodes
-    assert!(config.seed_nodes.contains(&"104.218.45.23".to_string()));
-    assert!(config.seed_nodes.contains(&"72.9.144.110".to_string()));
-    assert_eq!(config.seed_nodes.len(), 2, "Expected exactly 2 seed nodes, got {}", config.seed_nodes.len());
+    assert!(config.seed_ips.contains(&"104.218.45.23".parse().unwrap()));
+    assert!(config.seed_ips.contains(&"72.9.144.110".parse().unwrap()));
+    assert_eq!(config.seed_ips.len(), 2, "Expected exactly 2 seed nodes, got {}", config.seed_ips.len());
     assert_eq!(config.other_nodes, vec!["192.168.1.1", "192.168.1.2"]);
     assert_eq!(config.trust_factor, 0.9);
     assert_eq!(config.max_peers, 500);
@@ -88,9 +88,9 @@ async fn test_config_from_sk() {
     assert_eq!(config.get_ver(), "1.1.6");
     assert_eq!(config.udp_port, 36969);
     // verify that seed nodes list includes the essential nodes
-    assert!(config.seed_nodes.contains(&"104.218.45.23".to_string()));
-    assert!(config.seed_nodes.contains(&"72.9.144.110".to_string()));
-    assert_eq!(config.seed_nodes.len(), 2, "Expected exactly 2 seed nodes, got {}", config.seed_nodes.len());
+    assert!(config.seed_ips.contains(&"104.218.45.23".parse().unwrap()));
+    assert!(config.seed_ips.contains(&"72.9.144.110".parse().unwrap()));
+    assert_eq!(config.seed_ips.len(), 2, "Expected exactly 2 seed nodes, got {}", config.seed_ips.len());
 }
 
 #[tokio::test]

@@ -419,13 +419,13 @@ impl NodeAnrs {
     }
 
     /// Get all not handshaked (pk, ip4) pairs
-    pub async fn not_handshaked_pk_ip4(&self) -> Vec<(Vec<u8>, Ipv4Addr)> {
+    pub async fn get_all_not_handshaked_ip4(&self) -> Vec<Ipv4Addr> {
         let map = self.store.read().await;
         let mut results = Vec::new();
 
-        for (k, v) in map.iter() {
+        for (_, v) in map.iter() {
             if !v.handshaked {
-                results.push((k.clone(), v.ip4));
+                results.push(v.ip4);
             }
         }
 
@@ -463,16 +463,36 @@ impl NodeAnrs {
     }
 
     /// Get random unverified nodes
-    pub async fn get_random_not_handshaked(&self, count: usize) -> Vec<(Vec<u8>, Ipv4Addr)> {
+    pub async fn get_random_not_handshaked(&self, count: usize) -> Vec<Ipv4Addr> {
         use rand::seq::SliceRandom;
         use std::collections::HashSet;
 
         // deduplicate by ip4
         let mut seen_ips = HashSet::new();
         let mut unique_pairs = Vec::new();
-        for (pk, ip4) in self.not_handshaked_pk_ip4().await {
+        for ip4 in self.get_all_not_handshaked_ip4().await {
             if seen_ips.insert(ip4) {
-                unique_pairs.push((pk, ip4));
+                unique_pairs.push(ip4);
+            }
+        }
+
+        let mut rng = rand::thread_rng();
+        let selected: Vec<_> = unique_pairs.choose_multiple(&mut rng, count).cloned().collect();
+
+        selected
+    }
+
+    /// Get random verified nodes
+    pub async fn get_random_handshaked(&self, count: usize) -> Vec<Ipv4Addr> {
+        use rand::seq::SliceRandom;
+        use std::collections::HashSet;
+
+        // deduplicate by ip4
+        let mut seen_ips = HashSet::new();
+        let mut unique_pairs = Vec::new();
+        for ip4 in self.get_all_handshaked_ip4().await {
+            if seen_ips.insert(ip4) {
+                unique_pairs.push(ip4);
             }
         }
 
@@ -499,12 +519,12 @@ impl NodeAnrs {
     }
 
     /// Get all handshaked (pk, ip4) pairs
-    pub async fn handshaked_pk_ip4(&self) -> Vec<(Vec<u8>, Ipv4Addr)> {
+    pub async fn get_all_handshaked_ip4(&self) -> Vec<Ipv4Addr> {
         let map = self.store.read().await;
         let mut results = Vec::new();
-        for (k, v) in map.iter() {
+        for (_, v) in map.iter() {
             if v.handshaked {
-                results.push((k.clone(), v.ip4));
+                results.push(v.ip4);
             }
         }
         results
@@ -790,9 +810,9 @@ mod tests {
 
             // All should have different IPs (uniqueness check)
             let mut ips = std::collections::HashSet::new();
-            for (pk, ip) in &result {
+            for ip in &result {
                 assert!(ips.insert(*ip), "Run {}: duplicate IP found: {}", run, ip);
-                println!("  - IP: {}, PK: {}", ip, bs58::encode(pk).into_string());
+                println!("  - IP: {}", ip);
             }
         }
 

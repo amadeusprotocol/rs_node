@@ -217,14 +217,13 @@ setInterval(loadPeers, 1000);
 fn get_handshake_status_html(status: &ama_core::node::peers::HandshakeStatus) -> &'static str {
     use ama_core::node::peers::HandshakeStatus;
     match status {
-        HandshakeStatus::None => "<span class=\"pill\" style=\"background: #66666620; color: #666666;\">⭕ disconnected</span>",
-        HandshakeStatus::SentNewPhoneWhoDis => {
+        HandshakeStatus::None => {
+            "<span class=\"pill\" style=\"background: #66666620; color: #666666;\">⭕ disconnected</span>"
+        }
+        HandshakeStatus::Initiated => {
             "<span class=\"pill\" style=\"background: #ffaa0020; color: #ffaa00;\">⏳ connecting</span>"
         }
-        HandshakeStatus::SentWhat => {
-            "<span class=\"pill\" style=\"background: #00ff0020; color: #00ff00;\">✅ connected</span>"
-        }
-        HandshakeStatus::ReceivedWhat => {
+        HandshakeStatus::Completed => {
             "<span class=\"pill\" style=\"background: #00ff0020; color: #00ff00;\">✅ connected</span>"
         }
     }

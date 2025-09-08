@@ -21,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
 
     let addr = format!("0.0.0.0:{}", config.get_udp_port());
     let udp_socket = Arc::new(UdpSocketWrapper::bind(&addr).await?);
-    let ctx = Arc::new(Context::with_config_and_socket(config, udp_socket).await?);
+    let ctx = Context::with_config_and_socket(config, udp_socket).await?;
 
     // UDP amadeus node
     let ctx_local = ctx.clone();

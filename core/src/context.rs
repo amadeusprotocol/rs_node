@@ -1,23 +1,21 @@
-use crate::config::{ANR_CHECK_SECS, CLEANUP_SECS};
 use crate::node::anr::{Anr, NodeAnrs};
 use crate::node::peers::HandshakeStatus;
-use crate::node::peers::HandshakeStatus::SentNewPhoneWhoDis;
+use crate::node::peers::HandshakeStatus::Initiated;
 use crate::node::protocol::*;
 use crate::node::protocol::{Instruction, NewPhoneWhoDis};
 use crate::node::{anr, peers};
 use crate::socket::UdpSocketExt;
-use crate::utils::misc::get_unix_millis_now;
 use crate::utils::misc::{Typename, get_unix_secs_now};
-use crate::{config, consensus, metrics, node, utils};
+use crate::utils::misc::{format_duration, get_unix_millis_now};
+use crate::{SystemStats, config, consensus, get_system_stats, metrics, node, utils};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use tokio::spawn;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, instrument, warn};
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
 pub enum Error {
     #[error(transparent)]
     Fabric(#[from] consensus::fabric::Error),
@@ -35,19 +33,20 @@ pub enum Error {
     String(String),
 }
 
+impl Typename for Error {
+    fn typename(&self) -> &'static str {
+        self.into()
+    }
+}
+
 /// Runtime container for config, metrics, reassembler, and node state.
 pub struct Context {
     pub(crate) config: config::Config,
-    pub(crate) metrics: Arc<metrics::Metrics>,
-    pub(crate) reassembler: Arc<node::ReedSolomonReassembler>,
-    pub(crate) node_peers: Arc<peers::NodePeers>,
-    pub(crate) node_registry: Arc<NodeAnrs>,
-    pub(crate) broadcaster: Option<Arc<dyn node::Broadcaster>>,
+    pub(crate) metrics: metrics::Metrics,
+    pub(crate) reassembler: node::ReedSolomonReassembler,
+    pub(crate) node_peers: peers::NodePeers,
+    pub(crate) node_anrs: NodeAnrs,
     pub(crate) socket: Arc<dyn UdpSocketExt>,
-    // optional handles for broadcast tasks
-    pub(crate) ping_handle: Option<tokio::task::JoinHandle<()>>,
-    pub(crate) anr_handle: Option<tokio::task::JoinHandle<()>>,
-    pub(crate) start_time: std::time::Instant,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -59,7 +58,11 @@ pub struct PeerInfo {
 }
 
 impl Context {
-    pub async fn with_config_and_socket(config: config::Config, socket: Arc<dyn UdpSocketExt>) -> Result<Self, Error> {
+    pub async fn with_config_and_socket(
+        config: config::Config,
+        socket: Arc<dyn UdpSocketExt>,
+    ) -> Result<Arc<Self>, Error> {
+        use crate::config::{BROADCAST_PERIOD_SECS, CLEANUP_PERIOD_SECS, HANDSHAKE_PERIOD_SECS};
         use crate::consensus::fabric::init_kvdb;
         use crate::utils::archiver::init_storage;
         use metrics::Metrics;
@@ -70,132 +73,117 @@ impl Context {
         init_kvdb(&config.get_root()).await?;
         init_storage(&config.get_root()).await?;
 
-        let metrics = Arc::new(Metrics::new());
-        let node_peers = Arc::new(peers::NodePeers::default());
-        let node_anrs = Arc::new(NodeAnrs::new());
+        let metrics = Metrics::new();
+        let node_peers = peers::NodePeers::default();
+        let node_anrs = NodeAnrs::new();
+        let reassembler = Reassembler::new();
 
         node_anrs.seed(&config).await; // must be done before node_peers.seed()
         node_peers.seed(&config, &node_anrs).await?;
 
-        {
-            // oneshot bootstrap task to send new_phone_who_dis to seed nodes
-            let config = config.clone();
-            let socket = socket.clone();
-            let metrics = metrics.clone();
-            let node_peers = node_peers.clone();
-            let anr = Anr::from_config(&config)?;
-            spawn(async move {
-                let challenge = get_unix_secs_now() as i32; // FIXME: unix secs will overflow i32 in 2038
-                let new_phone_who_dis = NewPhoneWhoDis { anr, challenge };
+        let ctx = Arc::new(Self { config, metrics, reassembler, node_peers, node_anrs, socket });
 
-                let mut sent_count = 0;
-                for ip in &config.seed_nodes {
-                    let addr = match ip.parse::<Ipv4Addr>() {
-                        Ok(ip) => ip,
-                        Err(e) => {
-                            warn!("bootstrap: invalid seed node ip {}: {}", ip, e);
-                            continue;
-                        }
-                    };
-
-                    if let Err(e) = new_phone_who_dis
-                        .send_to_with_metrics(&config, socket.clone(), addr, &metrics)
-                        .await
-                    {
-                        warn!("bootstrap: failed to send new_phone_who_dis to {addr}: {e}");
-                        continue;
-                    }
-
-                    if let Err(e) = node_peers.set_handshake_status(addr, SentNewPhoneWhoDis).await {
-                        warn!("bootstrap: failed to set handshake status for {addr}: {e}");
-                    }
-
-                    sent_count += 1;
+        tokio::spawn({
+            let ctx = ctx.clone();
+            async move {
+                if let Err(e) = ctx.bootstrap_task().await {
+                    warn!("bootstrap task error: {e}");
+                    ctx.metrics.add_error(&e);
                 }
+            }
+        });
 
-                info!("bootstrap: sent new_phone_who_dis to {sent_count} nodes");
-            });
-        }
-
-        let reassembler = Arc::new(Reassembler::new());
-
-        {
-            // periodic cleanup task
-            let reassembler = reassembler.clone();
-            let node_peers = node_peers.clone();
-            let node_anrs = node_anrs.clone();
-            spawn(async move {
-                let mut ticker = interval(Duration::from_secs(CLEANUP_SECS));
+        tokio::spawn({
+            let ctx = ctx.clone();
+            async move {
+                let mut ticker = interval(Duration::from_secs(CLEANUP_PERIOD_SECS));
                 loop {
                     ticker.tick().await;
-                    let cleared_shards = reassembler.clear_stale(CLEANUP_SECS).await;
-                    let cleared_peers = node_peers.clear_stale(&node_anrs).await;
-                    if cleared_shards > 0 || cleared_peers > 0 {
-                        debug!("cleanup: cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
-                    }
+                    ctx.cleanup_task(CLEANUP_PERIOD_SECS).await;
                 }
-            });
-        }
+            }
+        });
 
-        {
-            // periodic anr check task
-            let config = config.clone();
-            let socket = socket.clone();
-            let metrics = metrics.clone();
-            let node_peers = node_peers.clone();
-            let node_anrs = node_anrs.clone();
-            spawn(async move {
-                let mut ticker = interval(Duration::from_secs(ANR_CHECK_SECS));
+        tokio::spawn({
+            let ctx = ctx.clone();
+            async move {
+                let mut ticker = interval(Duration::from_secs(HANDSHAKE_PERIOD_SECS));
+                ticker.tick().await;
                 loop {
                     ticker.tick().await;
-                    // get random unverified anrs and attempt to verify them
-                    let unverified_anrs = node_anrs.get_random_not_handshaked(3).await;
-                    if !unverified_anrs.is_empty() {
-                            debug!("anrcheck: found {} unverified anrs", unverified_anrs.len());
-
-                            let challenge = get_unix_secs_now() as i32; // FIXME: unix secs will overflow i32 in 2038
-                            let anr = match Anr::from_config(&config) {
-                                Ok(a) => a,
-                                Err(e) => {
-                                    warn!("anrcheck: failed to create anr from config: {e}");
-                                    continue;
-                                }
-                            };
-
-                            let new_phone_who_dis = NewPhoneWhoDis { anr, challenge };
-
-                            for (_, ip) in unverified_anrs.iter().cloned() {
-                                if let Err(e) = new_phone_who_dis
-                                    .send_to_with_metrics(
-                                        &config,
-                                        socket.clone(),
-                                        ip,
-                                        &metrics,
-                                    )
-                                    .await
-                                {
-                                    warn!("anrcheck: failed to send new_phone_who_dis to {ip}: {e}");
-                                } else if let Err(e) = node_peers.set_handshake_status(ip, SentNewPhoneWhoDis).await {
-                                    warn!("anrcheck: failed to set handshake status for {ip}: {e}");
-                                }
-                            }
+                    if let Err(e) = ctx.handshake_task().await {
+                        warn!("handshake task error: {e}");
+                        ctx.metrics.add_error(&e);
                     }
                 }
-            });
+            }
+        });
+
+        tokio::spawn({
+            let ctx = ctx.clone();
+            async move {
+                let mut ticker = interval(Duration::from_secs(BROADCAST_PERIOD_SECS));
+                loop {
+                    ticker.tick().await;
+                    if let Err(e) = ctx.broadcast_task().await {
+                        warn!("broadcast task error: {e}");
+                        ctx.metrics.add_error(&e);
+                    }
+                }
+            }
+        });
+
+        Ok(ctx)
+    }
+
+    #[instrument(skip(self), name = "bootstrap_task")]
+    async fn bootstrap_task(&self) -> Result<(), Error> {
+        let anr = Anr::from_config(&self.config)?;
+        let challenge = get_unix_secs_now() as i32; // FIXME: unix secs will overflow i32 in 2038
+        let new_phone_who_dis = NewPhoneWhoDis { anr, challenge };
+
+        for ip in &self.config.seed_ips {
+            new_phone_who_dis.send_to_with_metrics(&self.config, self.socket.clone(), *ip, &self.metrics).await?;
+            self.node_peers.set_handshake_status(*ip, Initiated).await?;
         }
 
-        Ok(Self {
-            config,
-            metrics,
-            reassembler,
-            node_peers,
-            node_registry: node_anrs,
-            broadcaster: None,
-            socket,
-            ping_handle: None,
-            anr_handle: None,
-            start_time: std::time::Instant::now(),
-        })
+        info!("sent new_phone_who_dis to {} seed nodes", self.config.seed_ips.len());
+        Ok(())
+    }
+
+    #[instrument(skip(self), name = "cleanup_task")]
+    async fn cleanup_task(&self, cleanup_secs: u64) {
+        let cleared_shards = self.reassembler.clear_stale(cleanup_secs).await;
+        let cleared_peers = self.node_peers.clear_stale(&self.node_anrs).await;
+        if cleared_shards > 0 || cleared_peers > 0 {
+            debug!("cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
+        }
+    }
+
+    #[instrument(skip(self), name = "handshake_task")]
+    async fn handshake_task(&self) -> Result<(), Error> {
+        let unverified_anrs = self.node_anrs.get_random_not_handshaked(3).await;
+        if !unverified_anrs.is_empty() {
+            let challenge = get_unix_secs_now() as i32; // FIXME: unix secs will overflow i32 in 2038
+            let anr = Anr::from_config(&self.config)?;
+            let new_phone_who_dis = NewPhoneWhoDis { anr, challenge };
+
+            let nodes_count = unverified_anrs.len();
+            for ip in &unverified_anrs {
+                new_phone_who_dis.send_to_with_metrics(&self.config, self.socket.clone(), *ip, &self.metrics).await?;
+                self.node_peers.set_handshake_status(*ip, Initiated).await?;
+            }
+
+            info!("sent new_phone_who_dis to {nodes_count} nodes");
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), name = "broadcast_task")]
+    async fn broadcast_task(&self) -> Result<(), Error> {
+        // placeholder for Ping broadcast functionality
+        Ok(())
     }
 
     pub fn get_prometheus_metrics(&self) -> String {
@@ -219,7 +207,7 @@ impl Context {
     pub async fn is_peer_handshaked(&self, ip: Ipv4Addr) -> bool {
         if let Some(peer) = self.node_peers.by_ip(ip).await {
             if let Some(ref pk) = peer.pk {
-                if self.node_registry.is_handshaked(pk).await {
+                if self.node_anrs.is_handshaked(pk).await {
                     return true;
                 }
             }
@@ -228,20 +216,25 @@ impl Context {
     }
 
     pub async fn get_peers(&self) -> HashMap<String, PeerInfo> {
-        // Run peer scan in a blocking task to avoid starving the async runtime
-        let node_peers = self.node_peers.clone();
+        let my_ip = self.config.get_public_ipv4();
         let mut result = HashMap::new();
-        if let Ok(all_peers) = node_peers.all().await {
+        if let Ok(all_peers) = self.node_peers.all().await {
             for peer in all_peers {
+                if peer.ip == my_ip {
+                    continue; // skip self
+                }
+
                 let peer_info = PeerInfo {
                     last_ts: peer.last_seen,
                     last_msg: peer.last_msg_type.unwrap_or_else(|| "unknown".to_string()),
                     handshake_status: peer.handshake_status.clone(),
                     version: peer.version.clone(),
                 };
+
                 result.insert(peer.ip.to_string(), peer_info);
             }
         }
+
         result
     }
 
@@ -261,9 +254,12 @@ impl Context {
         self.metrics.get_snapshot()
     }
 
+    pub fn get_system_stats(&self) -> SystemStats {
+        get_system_stats()
+    }
+
     pub fn get_uptime(&self) -> String {
-        let duration = self.start_time.elapsed();
-        format_duration(duration)
+        format_duration(self.metrics.get_uptime())
     }
 
     pub fn get_block_height(&self) -> u64 {
@@ -323,80 +319,11 @@ impl Context {
         self.node_peers.update_peer_from_anr(ip, pk, version, status).await
     }
 
-    /// register a UDP broadcaster implementation and start periodic ping/anr tasks
-    pub fn set_broadcaster(&mut self, broadcaster: Arc<dyn node::Broadcaster>) {
-        use tokio::spawn;
-        use tokio::time::{Duration, interval};
-        use tracing::debug;
-
-        self.broadcaster = Some(broadcaster.clone());
-
-        // ping loop every 500ms
-        let b1 = broadcaster.clone();
-        let node_peers1 = self.node_peers.clone();
-        self.ping_handle = Some(spawn(async move {
-            let mut ticker = interval(Duration::from_millis(500));
-            loop {
-                ticker.tick().await;
-                // placeholder ping payload
-                let payload = Vec::new();
-                if let Ok(ips) = node_peers1.get_all_ips().await {
-                    debug!("broadcast ping to {} peers", ips.len());
-                    b1.send_to(ips, payload);
-                }
-            }
-        }));
-
-        // ANR verification loop every 1s
-        let b2 = broadcaster.clone();
-        let my_pk_copy = self.config.trainer_pk.to_vec();
-        let node_registry_clone = self.node_registry.clone();
-        self.anr_handle = Some(spawn(async move {
-            let mut ticker = interval(Duration::from_secs(1));
-            loop {
-                ticker.tick().await;
-                let list = node_registry_clone.get_random_not_handshaked(3).await;
-                if !list.is_empty() {
-                    for (pk, ip) in list {
-                        if pk != my_pk_copy {
-                            let payload = Vec::new(); // placeholder new_phone_who_dis
-                            b2.send_to(vec![ip.to_string()], payload);
-                        }
-                    }
-                }
-            }
-        }));
-    }
-
-    /// manual trigger for ping broadcast (optional helper)
-    pub async fn broadcast_ping(&self) {
-        if let Some(b) = &self.broadcaster {
-            if let Ok(ips) = self.node_peers.get_all_ips().await {
-                b.send_to(ips, Vec::new());
-            }
-        }
-    }
-
-    /// manual trigger for ANR check broadcast (optional helper)
-    pub async fn broadcast_check_anr(&self) {
-        if let Some(b) = &self.broadcaster {
-            let my_pk = self.config.trainer_pk.to_vec();
-            let list = self.node_registry.get_random_not_handshaked(3).await;
-            if !list.is_empty() {
-                for (pk, ip) in list {
-                    if pk != my_pk {
-                        b.send_to(vec![ip.to_string()], Vec::new());
-                    }
-                }
-            }
-        }
-    }
-
     /// manual trigger for cleanup (optional helper)
     pub async fn cleanup_stale(&self) {
         const CLEANUP_SECS: u64 = 8;
         let cleared_shards = self.reassembler.clear_stale(CLEANUP_SECS).await;
-        let cleared_peers = self.node_peers.clear_stale(&self.node_registry).await;
+        let cleared_peers = self.node_peers.clear_stale(&self.node_anrs).await;
         info!("cleanup: cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
     }
 
@@ -648,120 +575,6 @@ impl Context {
             }
         }
     }
-
-    /// manual trigger for bootstrap handshake to seed nodes (optional helper)
-    pub async fn bootstrap_handshake(&self) -> Result<(), Error> {
-        // create our own ANR for the handshake
-        let my_ip = self
-            .config
-            .public_ipv4
-            .as_ref()
-            .and_then(|s| s.parse::<Ipv4Addr>().ok())
-            .unwrap_or_else(|| Ipv4Addr::new(127, 0, 0, 1));
-
-        let my_anr = Anr::build(
-            &self.config.trainer_sk,
-            &self.config.trainer_pk,
-            &self.config.trainer_pop,
-            my_ip,
-            self.config.get_ver(),
-        )?;
-
-        // create NewPhoneWhoDis message
-        let challenge = get_unix_secs_now() as i32; // FIXME: unix secs will overflow i32 in 2038
-        let new_phone_who_dis = NewPhoneWhoDis { anr: my_anr, challenge };
-
-        // serialize to compressed ETF binary
-        let payload = new_phone_who_dis
-            .to_etf_bin()
-            .map_err(|e| Error::String(format!("Failed to serialize NewPhoneWhoDis: {:?}", e)))?;
-
-        // Print message bytes in Elixir iex format for verification
-        let byte_list: Vec<String> = payload.iter().map(|b| b.to_string()).collect();
-        println!("🔍 Manual Bootstrap - Elixir verification command (paste in iex):");
-        println!("bytes = [{}]", byte_list.join(", "));
-        println!(":erlang.binary_to_term(:erlang.list_to_binary(bytes))");
-        println!("# Should show nested map with ANR fields: ip4, pk, pop, port, signature, ts, version");
-        println!("# Challenge value: {}", challenge);
-        println!();
-
-        // build shards for transmission
-        let shards = node::ReedSolomonReassembler::build_shards(&self.config, &payload)
-            .map_err(|e| Error::String(format!("Failed to create shards: {:?}", e)))?;
-
-        let sock = self.get_socket();
-
-        for ip in &self.config.seed_nodes {
-            let addr = format!("{}:{}", ip, 36969);
-            if let Ok(target) = addr.parse::<SocketAddr>() {
-                info!(%addr, count = shards.len(), challenge, "sending bootstrap new_phone_who_dis");
-                for shard in &shards {
-                    sock.send_to_with_metrics(shard, target, &self.metrics)
-                        .await
-                        .map_err(|e| Error::String(format!("Failed to send shard: {:?}", e)))?;
-                }
-
-                // Track sent packet metric
-                self.metrics.add_outgoing_proto("new_phone_who_dis");
-
-                // Set handshake status to SentNewPhoneWhoDis for this peer
-                if let Ok(seed_ip) = ip.parse::<Ipv4Addr>() {
-                    let _ = self.set_peer_handshake_status(seed_ip, SentNewPhoneWhoDis).await;
-                }
-            }
-        }
-
-        info!("sent bootstrap new_phone_who_dis");
-        Ok(())
-    }
-}
-
-/// Format a duration into human-readable form following the requirements:
-/// - seconds if less than a minute
-/// - minutes plus seconds if less than hour  
-/// - hours and minutes if less than day
-/// - days and hours if less than month
-/// - months and days if less than year
-/// - years, months and days if bigger than year
-fn format_duration(duration: std::time::Duration) -> String {
-    let total_seconds = duration.as_secs();
-
-    if total_seconds < 60 {
-        return format!("{}s", total_seconds);
-    }
-
-    let minutes = total_seconds / 60;
-    let seconds = total_seconds % 60;
-
-    if minutes < 60 {
-        return format!("{}m {}s", minutes, seconds);
-    }
-
-    let hours = minutes / 60;
-    let minutes = minutes % 60;
-
-    if hours < 24 {
-        return format!("{}h {}m", hours, minutes);
-    }
-
-    let days = hours / 24;
-    let hours = hours % 24;
-
-    if days < 30 {
-        return format!("{}d {}h", days, hours);
-    }
-
-    let months = days / 30; // Approximate months as 30 days
-    let days = days % 30;
-
-    if months < 12 {
-        return format!("{}mo {}d", months, days);
-    }
-
-    let years = months / 12;
-    let months = months % 12;
-
-    format!("{}y {}mo {}d", years, months, days)
 }
 
 #[cfg(test)]
@@ -810,7 +623,7 @@ mod tests {
             udp_ipv4: Ipv4Addr::new(127, 0, 0, 1),
             udp_port: 36969,
             public_ipv4: Some("127.0.0.1".to_string()),
-            seed_nodes: Vec::new(),
+            seed_ips: Vec::new(),
             seed_anrs: Vec::new(),
             other_nodes: Vec::new(),
             trust_factor: 0.8,
@@ -869,7 +682,7 @@ mod tests {
             udp_ipv4: Ipv4Addr::new(127, 0, 0, 1),
             udp_port: 36969,
             public_ipv4: Some("127.0.0.1".to_string()),
-            seed_nodes: vec!["127.0.0.1".to_string()],
+            seed_ips: vec!["127.0.0.1".parse().unwrap()],
             seed_anrs: Vec::new(),
             other_nodes: Vec::new(),
             trust_factor: 0.8,
@@ -916,7 +729,7 @@ mod tests {
             udp_ipv4: Ipv4Addr::new(127, 0, 0, 1),
             udp_port: 36969,
             public_ipv4: Some("127.0.0.1".to_string()),
-            seed_nodes: vec!["127.0.0.1".to_string()], // test seed node
+            seed_ips: vec!["127.0.0.1".parse().unwrap()], // test seed node
             seed_anrs: Vec::new(),
             other_nodes: Vec::new(),
             trust_factor: 0.8,
@@ -939,7 +752,7 @@ mod tests {
         let ctx = Context::with_config_and_socket(config, socket).await.expect("context creation");
 
         // test bootstrap_handshake manual trigger - should handle errors gracefully
-        match ctx.bootstrap_handshake().await {
+        match ctx.bootstrap_task().await {
             Ok(()) => {
                 // success case - message was sent
             }
@@ -971,7 +784,7 @@ mod tests {
             udp_ipv4: Ipv4Addr::new(127, 0, 0, 1),
             udp_port: 36969,
             public_ipv4: Some("127.0.0.1".to_string()),
-            seed_nodes: Vec::new(),
+            seed_ips: Vec::new(),
             seed_anrs: Vec::new(),
             other_nodes: Vec::new(),
             trust_factor: 0.8,

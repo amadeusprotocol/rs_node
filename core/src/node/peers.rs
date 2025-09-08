@@ -19,11 +19,9 @@ pub enum HandshakeStatus {
     /// No handshake initiated
     None,
     /// Sent new_phone_who_dis message, waiting for what response
-    SentNewPhoneWhoDis,
-    /// Sent what message response (handshake success from our side)
-    SentWhat,
-    /// Received what message response (handshake completed successfully)
-    ReceivedWhat,
+    Initiated,
+    /// Sent/received what message response (handshake done for us)
+    Completed,
 }
 
 #[derive(Debug)]
@@ -108,7 +106,7 @@ pub struct Peer {
 impl Peer {
     /// Check if the handshake is completed (either we sent what or received what)
     pub fn is_handshaked(&self) -> bool {
-        matches!(self.handshake_status, HandshakeStatus::SentWhat | HandshakeStatus::ReceivedWhat)
+        self.handshake_status == HandshakeStatus::Completed
     }
 }
 
@@ -170,7 +168,7 @@ impl NodePeers {
         let validator_anr_ips = node_registry.by_pks_ip(&validators).await;
         let validators_map: std::collections::HashSet<Vec<u8>> = validators.into_iter().collect();
 
-        let handshaked_ips = node_registry.handshaked_pk_ip4().await;
+        let handshaked_ips = node_registry.get_all_handshaked_ip4().await;
 
         let mut cur_ips = Vec::new();
         let mut cur_val_ips = Vec::new();
@@ -206,7 +204,7 @@ impl NodePeers {
         // Find missing validators and handshaked peers
         let missing_vals: Vec<_> = validator_anr_ips.iter().filter(|ip| !cur_val_ips.contains(ip)).cloned().collect();
 
-        let missing_ips: Vec<_> = handshaked_ips.iter().map(|(_, ip)| *ip).filter(|ip| !cur_ips.contains(ip)).collect();
+        let missing_ips: Vec<_> = handshaked_ips.into_iter().filter(|ip| !cur_ips.contains(ip)).collect();
 
         // Get max_peers config
         let add_size = self
@@ -227,8 +225,19 @@ impl NodePeers {
         .await
         .unwrap_or_default();
 
-        // Add missing validators and peers
+        // Add missing validators and peers with proper handshake status from ANR
         for ip in missing_vals.iter().chain(missing_ips.iter()) {
+            // Find the ANR for this IP to get handshake status
+            let mut handshake_status = HandshakeStatus::None;
+            let anrs = node_registry.get_all().await;
+
+            for anr in anrs {
+                if anr.ip4 == *ip {
+                    handshake_status = if anr.handshaked { HandshakeStatus::Completed } else { HandshakeStatus::None };
+                    break;
+                }
+            }
+
             let _ = self
                 .insert_new_peer(Peer {
                     ip: *ip,
@@ -243,7 +252,7 @@ impl NodePeers {
                     rooted: None,
                     last_seen: ts_m,
                     last_msg_type: None,
-                    handshake_status: HandshakeStatus::None,
+                    handshake_status,
                 })
                 .await;
         }
@@ -261,17 +270,13 @@ impl NodePeers {
     }
 
     /// Seed initial peers with validators
-    pub async fn seed(&self, config: &Config, node_registry: &anr::NodeAnrs) -> Result<(), Error> {
+    pub async fn seed(&self, config: &Config, node_anrs: &anr::NodeAnrs) -> Result<(), Error> {
         let height = consensus::chain_height();
         let validators = consensus::trainers_for_height(height + 1).unwrap_or_default();
         let validators: Vec<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();
 
-        let validator_ips: Vec<_> = node_registry
-            .by_pks_ip(&validators)
-            .await
-            .into_iter()
-            .filter(|ip| *ip != config.get_public_ipv4())
-            .collect();
+        let validator_ips: Vec<_> =
+            node_anrs.by_pks_ip(&validators).await.into_iter().filter(|ip| *ip != config.get_public_ipv4()).collect();
 
         let ts_m = get_unix_millis_now();
         for ip in validator_ips {
@@ -833,7 +838,7 @@ impl NodePeers {
             for ip in ips_to_update {
                 self.peers
                     .update(&ip, |_key, peer| {
-                        peer.handshake_status = HandshakeStatus::ReceivedWhat;
+                        peer.handshake_status = HandshakeStatus::Completed;
                     })
                     .await;
             }

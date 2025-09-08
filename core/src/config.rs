@@ -16,8 +16,9 @@ pub const TX_SIZE: usize = 393216; // 384 KiB
 pub const ATTESTATION_SIZE: usize = 512;
 pub const QUORUM: usize = 3; // quorum size for AMA
 pub const QUORUM_SINGLE: usize = 1; // quorum size for single shard
-pub const CLEANUP_SECS: u64 = 8; // how often node does the cleanup
-pub const ANR_CHECK_SECS: u64 = 1; // how often node checks ANR status
+pub const CLEANUP_PERIOD_SECS: u64 = 8; // how often node does the cleanup
+pub const HANDSHAKE_PERIOD_SECS: u64 = 1; // how often node checks ANR status
+pub const BROADCAST_PERIOD_SECS: u64 = 5; // how often node broadcasts pings
 
 pub const VERSION: [u8; 3] = parse_version();
 
@@ -61,6 +62,8 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
+    Parse(#[from] std::net::AddrParseError),
+    #[error(transparent)]
     B58(#[from] bs58::decode::Error),
     #[error(transparent)]
     Bls(#[from] bls12_381::Error),
@@ -91,7 +94,7 @@ pub struct Config {
     pub public_ipv4: Option<String>,
 
     // node discovery
-    pub seed_nodes: Vec<String>,
+    pub seed_ips: Vec<Ipv4Addr>,
     pub seed_anrs: Vec<SeedANR>,
     pub other_nodes: Vec<String>,
     pub trust_factor: f64,
@@ -183,7 +186,7 @@ impl Config {
         let udp_port = 36969;
 
         // node discovery
-        let seed_nodes = SEED_NODES.iter().map(|s| s.to_string()).collect();
+        let seed_ips = SEED_NODES.iter().map(|s| s.parse()).collect::<Result<Vec<Ipv4Addr>, _>>()?;
         let other_nodes =
             std::env::var("OTHERNODES").map(|s| s.split(',').map(String::from).collect()).unwrap_or_else(|_| vec![]);
         let trust_factor = std::env::var("TRUSTFACTOR").ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.8);
@@ -277,7 +280,7 @@ impl Config {
             udp_ipv4,
             udp_port,
             public_ipv4,
-            seed_nodes,
+            seed_ips,
             seed_anrs,
             other_nodes,
             trust_factor,
@@ -309,6 +312,7 @@ impl Config {
         let pop = bls12_381::sign(&sk, &pk, crate::consensus::DST_POP)
             .map(|sig| sig.to_vec())
             .unwrap_or_else(|_| vec![0u8; 96]);
+        let seed_ips = SEED_NODES.iter().map(|s| s.parse()).collect::<Result<Vec<Ipv4Addr>, _>>().unwrap_or_default();
 
         Self {
             work_folder: ".config/rs_amadeusd".to_string(),
@@ -319,7 +323,7 @@ impl Config {
             udp_ipv4: Ipv4Addr::new(0, 0, 0, 0),
             udp_port: 36969,
             public_ipv4: None,
-            seed_nodes: SEED_NODES.iter().map(|s| s.to_string()).collect(),
+            seed_ips,
             seed_anrs: vec![],
             other_nodes: vec![],
             trust_factor: 0.8,

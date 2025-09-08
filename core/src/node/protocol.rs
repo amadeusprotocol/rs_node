@@ -497,10 +497,11 @@ impl Protocol for NewPhoneWhoDis {
         Ok(encode_safe(&map.into_term()))
     }
 
+    #[instrument(skip(self, ctx), fields(src = %src), name = "NewPhoneWhoDis::handle")]
     async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Instruction, Error> {
         // SECURITY: ip address spoofing protection
         if src != self.anr.ip4 {
-            warn!("new_phone_who_dis ip mismatched {src} <-> {}", self.anr.ip4);
+            warn!("new_phone_who_dis ip mismatched with anr {}", self.anr.ip4);
             return Err(Error::BadEtf("anr_ip_mismatch"));
         }
 
@@ -508,8 +509,10 @@ impl Protocol for NewPhoneWhoDis {
         let data = pk_challenge_into_bin(&ctx.get_config().trainer_pk, self.challenge);
         let signature = bls_sign(&ctx.get_config().trainer_sk, &data, crate::consensus::DST_ANR_CHALLENGE)?.to_vec();
 
-        ctx.node_registry.insert(self.anr.clone()).await;
-        ctx.update_peer_from_anr(src, &self.anr.pk, &self.anr.version, HandshakeStatus::SentWhat).await;
+        ctx.node_anrs.insert(self.anr.clone()).await;
+        ctx.update_peer_from_anr(src, &self.anr.pk, &self.anr.version, HandshakeStatus::Completed).await;
+
+        info!("completed handshake, pk {}", bs58::encode(&self.anr.pk).into_string());
 
         Ok(Instruction::SendWhat { what: What { anr, challenge: self.challenge, signature }, dst: src })
     }
@@ -563,10 +566,11 @@ impl Protocol for What {
         Ok(encode_safe(&map.into_term()))
     }
 
+    #[instrument(skip(self, ctx), fields(src = %src), name = "What::handle")]
     async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Instruction, Error> {
         // SECURITY: ip address spoofing protection
         if src != self.anr.ip4 {
-            warn!("what ip mismatched {src} <-> {}", self.anr.ip4);
+            warn!("what ip mismatched with anr {}", self.anr.ip4);
             return Err(Error::BadEtf("anr_ip_mismatch"));
         }
 
@@ -582,11 +586,11 @@ impl Protocol for What {
         let data = pk_challenge_into_bin(&self.anr.pk, self.challenge);
         bls_verify(&self.anr.pk, &self.signature, &data, crate::consensus::DST_ANR_CHALLENGE)?;
 
-        ctx.node_registry.insert(self.anr.clone()).await;
-        ctx.node_registry.set_handshaked(&self.anr.pk).await;
-        ctx.update_peer_from_anr(src, &self.anr.pk, &self.anr.version, HandshakeStatus::ReceivedWhat).await;
+        ctx.node_anrs.insert(self.anr.clone()).await;
+        ctx.node_anrs.set_handshaked(&self.anr.pk).await;
+        ctx.update_peer_from_anr(src, &self.anr.pk, &self.anr.version, HandshakeStatus::Completed).await;
 
-        info!("{src} completed handshake, pk {}", bs58::encode(&self.anr.pk).into_string());
+        info!("completed handshake, pk {}", bs58::encode(&self.anr.pk).into_string());
         //
         // let peer = ctx.node_peers.by_ip(src).await.unwrap();
         // println!("{peer:?}");
@@ -613,6 +617,7 @@ impl Protocol for SpecialBusiness {
         let business = map.get_binary::<Vec<u8>>("business").ok_or(Error::BadEtf("business"))?;
         Ok(Self { business })
     }
+
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
@@ -645,6 +650,7 @@ impl Protocol for SpecialBusinessReply {
         let business = map.get_binary::<Vec<u8>>("business").ok_or(Error::BadEtf("business"))?;
         Ok(Self { business })
     }
+
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
@@ -941,7 +947,7 @@ mod tests {
             udp_ipv4: Ipv4Addr::new(127, 0, 0, 1),
             udp_port: 36969,
             public_ipv4: Some("127.0.0.1".to_string()),
-            seed_nodes: Vec::new(),
+            seed_ips: Vec::new(),
             seed_anrs: Vec::new(),
             other_nodes: Vec::new(),
             trust_factor: 0.8,

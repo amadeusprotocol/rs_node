@@ -278,6 +278,52 @@ pub fn bitvec_to_bools(bytes: Vec<u8>) -> Vec<bool> {
 //     out
 // }
 
+/// Format a duration into human-readable form following the requirements:
+/// - seconds if less than a minute
+/// - minutes plus seconds if less than hour
+/// - hours and minutes if less than day
+/// - days and hours if less than month
+/// - months and days if less than year
+/// - years, months and days if bigger than year
+pub fn format_duration(total_seconds: u32) -> String {
+    if total_seconds < 60 {
+        return format!("{}s", total_seconds);
+    }
+
+    let minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+
+    if minutes < 60 {
+        return format!("{}m {}s", minutes, seconds);
+    }
+
+    let hours = minutes / 60;
+    let minutes = minutes % 60;
+
+    if hours < 24 {
+        return format!("{}h {}m", hours, minutes);
+    }
+
+    let days = hours / 24;
+    let hours = hours % 24;
+
+    if days < 30 {
+        return format!("{}d {}h", days, hours);
+    }
+
+    let months = days / 30; // Approximate months as 30 days
+    let days = days % 30;
+
+    if months < 12 {
+        return format!("{}mo {}d", months, days);
+    }
+
+    let years = months / 12;
+    let months = months % 12;
+
+    format!("{}y {}mo {}d", years, months, days)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

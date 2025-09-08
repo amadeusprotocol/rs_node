@@ -38,7 +38,7 @@ pub fn page(
 
     for peer_info in peers.values() {
         match peer_info.handshake_status {
-            HandshakeStatus::SentWhat | HandshakeStatus::ReceivedWhat => {
+            HandshakeStatus::Completed => {
                 handshaked_count += 1;
             }
             _ => {
@@ -1387,7 +1387,7 @@ pub fn page(
             let pendingCount = 0;
             
             Object.values(peers).forEach(peer => {{
-                if (peer.handshake_status === 'sent_what' || peer.handshake_status === 'received_what') {{
+                if (peer.handshake_status === 'completed') {{
                     handshakedCount++;
                 }} else {{
                     pendingCount++;
@@ -1507,7 +1507,7 @@ pub fn page(
                 `;
                 
                 // Map HandshakeStatus enum to display status
-                if (handshakeStatus === 'sent_what' || handshakeStatus === 'received_what') {{
+                if (handshakeStatus === 'completed') {{
                     // Connected - white badge
                     status = 'CONNECTED';
                     statusClass = '';
@@ -1516,7 +1516,7 @@ pub fn page(
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                         </svg>
                     `;
-                }} else if (handshakeStatus === 'sent_new_phone_who_dis') {{
+                }} else if (handshakeStatus === 'Initiated') {{
                     // Connecting - transparent badge with spinning arrows
                     status = 'CONNECTING';
                     statusClass = 'status-syncing';

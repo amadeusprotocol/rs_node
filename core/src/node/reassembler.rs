@@ -153,6 +153,7 @@ impl ReedSolomonReassembler {
     }
 
     pub async fn clear_stale(&self, seconds: u64) -> usize {
+        // TODO: is the nanos precision really needed here?
         let threshold = get_unix_nanos_now().saturating_sub(seconds as u128 * 1_000_000_000);
         let mut map = self.reorg.write().await;
         let size_before = map.len();
