@@ -788,6 +788,28 @@ pub fn page(
             letter-spacing: 1px;
             color: hsl(var(--foreground));
             font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+            cursor: pointer;
+            user-select: none;
+            position: relative;
+        }}
+        
+        .message-table th .sort-arrow {{
+            width: 16px;
+            height: 16px;
+            color: hsl(var(--foreground));
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            display: none !important;
+            stroke: currentColor;
+            fill: none;
+            opacity: 1;
+            z-index: 10;
+        }}
+        
+        .message-table th .sort-arrow[style*="display: block"] {{
+            display: block !important;
         }}
         
         .message-table td {{
@@ -1271,11 +1293,51 @@ pub fn page(
                         <table class="message-table">
                             <thead>
                                 <tr>
-                                    <th>ADDRESS</th>
-                                    <th>STATUS</th>
-                                    <th>LATENCY</th>
-                                    <th>BLOCK HEIGHT</th>
-                                    <th>VERSION</th>
+                                    <th class="sortable" onclick="sortPeersTable('address')">
+                                        <span>ADDRESS</span>
+                                        <svg class="sort-arrow sort-asc" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="display: none;">
+                                            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 14l5-5 5 5"/>
+                                        </svg>
+                                        <svg class="sort-arrow sort-desc" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="display: none;">
+                                            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 10l5 5 5-5"/>
+                                        </svg>
+                                    </th>
+                                    <th class="sortable" onclick="sortPeersTable('status')">
+                                        <span>STATUS</span>
+                                        <svg class="sort-arrow sort-asc" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="display: none;">
+                                            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 14l5-5 5 5"/>
+                                        </svg>
+                                        <svg class="sort-arrow sort-desc" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="display: none;">
+                                            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 10l5 5 5-5"/>
+                                        </svg>
+                                    </th>
+                                    <th class="sortable" onclick="sortPeersTable('latency')">
+                                        <span>LATENCY</span>
+                                        <svg class="sort-arrow sort-asc" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="display: none;">
+                                            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 14l5-5 5 5"/>
+                                        </svg>
+                                        <svg class="sort-arrow sort-desc" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="display: none;">
+                                            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 10l5 5 5-5"/>
+                                        </svg>
+                                    </th>
+                                    <th class="sortable" onclick="sortPeersTable('height')">
+                                        <span>BLOCK HEIGHT</span>
+                                        <svg class="sort-arrow sort-asc" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="display: none;">
+                                            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 14l5-5 5 5"/>
+                                        </svg>
+                                        <svg class="sort-arrow sort-desc" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="display: none;">
+                                            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 10l5 5 5-5"/>
+                                        </svg>
+                                    </th>
+                                    <th class="sortable" onclick="sortPeersTable('version')">
+                                        <span>VERSION</span>
+                                        <svg class="sort-arrow sort-asc" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="display: none;">
+                                            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 14l5-5 5 5"/>
+                                        </svg>
+                                        <svg class="sort-arrow sort-desc" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="display: none;">
+                                            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 10l5 5 5-5"/>
+                                        </svg>
+                                    </th>
                                 </tr>
                             </thead>
                             <tbody id="peers-table-body">
@@ -1297,6 +1359,188 @@ pub fn page(
     </div>
 
     <script>
+        // Peers table sorting state
+        let peersData = [];
+        window.currentSortColumn = '';
+        window.currentSortDirection = '';
+        
+        function sortPeersTable(column, userClick = true) {{
+            // Only toggle sort direction if user clicked (not on data refresh)
+            if (userClick) {{
+                if (window.currentSortColumn === column) {{
+                    window.currentSortDirection = window.currentSortDirection === 'asc' ? 'desc' : 'asc';
+                }} else {{
+                    window.currentSortColumn = column;
+                    window.currentSortDirection = 'asc';
+                }}
+            }}
+            
+            // Update arrow visibility - force all arrows to be hidden first
+            const allArrows = document.querySelectorAll('.sort-arrow');
+            allArrows.forEach(arrow => {{
+                arrow.style.display = 'none';
+            }});
+            
+            // Find the header that matches the clicked column
+            const tableHeaders = document.querySelectorAll('th.sortable');
+            let currentHeader = null;
+            
+            // Find the header by checking onclick attribute content
+            for (const header of tableHeaders) {{
+                const onclickAttr = header.getAttribute('onclick');
+                if (onclickAttr && onclickAttr.includes(`sortPeersTable('${{column}}')`)) {{
+                    currentHeader = header;
+                    break;
+                }}
+            }}
+            
+            if (currentHeader) {{
+                // Select the appropriate arrow based on sort direction
+                const arrowClass = window.currentSortDirection === 'asc' ? '.sort-asc' : '.sort-desc';
+                const targetArrow = currentHeader.querySelector(arrowClass);
+                if (targetArrow) {{
+                    targetArrow.style.display = 'block';
+                }} else {{
+                    console.log('Arrow not found:', arrowClass, 'in header:', currentHeader);
+                }}
+            }} else {{
+                console.log('Header not found for column:', column, 'Available headers:', tableHeaders.length);
+                // Debug: log all available headers
+                tableHeaders.forEach((header, index) => {{
+                    console.log(`Header ${{index}}:`, header.getAttribute('onclick'));
+                }});
+            }}
+            
+            // Sort the data
+            peersData.sort((a, b) => {{
+                let aVal, bVal;
+                
+                switch(column) {{
+                    case 'address':
+                        aVal = a.address;
+                        bVal = b.address;
+                        break;
+                    case 'status':
+                        // Sort by handshake status priority: completed > initiated > failed > none
+                        const statusPriority = {{
+                            'completed': 4,
+                            'initiated': 3,
+                            'failed': 2,
+                            'none': 1
+                        }};
+                        aVal = statusPriority[a.peerInfo.handshake_status] || 0;
+                        bVal = statusPriority[b.peerInfo.handshake_status] || 0;
+                        break;
+                    case 'latency':
+                        aVal = typeof a.peerInfo.latency === 'number' ? a.peerInfo.latency : -1;
+                        bVal = typeof b.peerInfo.latency === 'number' ? b.peerInfo.latency : -1;
+                        break;
+                    case 'height':
+                        aVal = typeof a.peerInfo.height === 'number' ? a.peerInfo.height : -1;
+                        bVal = typeof b.peerInfo.height === 'number' ? b.peerInfo.height : -1;
+                        break;
+                    case 'version':
+                        aVal = a.peerInfo.version || '';
+                        bVal = b.peerInfo.version || '';
+                        break;
+                    default:
+                        return 0;
+                }}
+                
+                if (typeof aVal === 'string' && typeof bVal === 'string') {{
+                    const comparison = aVal.localeCompare(bVal);
+                    return window.currentSortDirection === 'asc' ? comparison : -comparison;
+                }} else {{
+                    const comparison = aVal - bVal;
+                    return window.currentSortDirection === 'asc' ? comparison : -comparison;
+                }}
+            }});
+            
+            // Re-render the table with sorted data
+            renderPeersTable();
+        }}
+        
+        function renderPeersTable() {{
+            const tbody = document.getElementById('peers-table-body');
+            if (!tbody) return;
+            
+            if (peersData.length === 0) {{
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: #9ca3af; font-style: italic;">No peers connected</td></tr>';
+                return;
+            }}
+            
+            const rows = peersData.map(item => {{
+                const address = item.address;
+                const peerInfo = item.peerInfo;
+                
+                // Determine status based on HandshakeStatus enum
+                const handshakeStatus = peerInfo.handshake_status;
+                let status = 'DISCONNECTED';
+                let statusClass = 'status-disconnected';
+                let statusIcon = `
+                    <svg class="status-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                `;
+                
+                // Map HandshakeStatus enum to display status
+                if (handshakeStatus === 'completed') {{
+                    // Connected - white badge
+                    status = 'CONNECTED';
+                    statusClass = '';
+                    statusIcon = `
+                        <svg class="status-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                        </svg>
+                    `;
+                }} else if (handshakeStatus === 'initiated') {{
+                    // Connecting - transparent badge with spinning arrows
+                    status = 'CONNECTING';
+                    statusClass = 'status-syncing';
+                    statusIcon = `
+                        <svg class="status-icon animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                        </svg>
+                    `;
+                }} else if (handshakeStatus === 'failed') {{
+                    // Impersonated - transparent red badge
+                    status = 'IMPERSONATED';
+                    statusClass = 'status-impersonated';
+                    statusIcon = `
+                        <svg class="status-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                    `;
+                }} else {{
+                    // None or other - disconnected (transparent badge)
+                    status = 'DISCONNECTED';
+                    statusClass = 'status-disconnected';
+                }}
+                
+                // Extract peer info fields with defaults
+                const latency = peerInfo.latency || '-';
+                const blockHeight = peerInfo.height || '-';
+                const version = peerInfo.version || '-';
+                
+                return `
+                    <tr>
+                        <td class="font-mono">${{address}}</td>
+                        <td>
+                            <div class="flex items-center space-x-2">
+                                ${{statusIcon}}
+                                <div class="status-badge ${{statusClass}}">${{status}}</div>
+                            </div>
+                        </td>
+                        <td class="font-mono">${{typeof latency === 'number' ? latency + 'ms' : latency}}</td>
+                        <td class="font-mono">${{typeof blockHeight === 'number' ? blockHeight.toLocaleString() : blockHeight}}</td>
+                        <td class="font-mono">${{version}}</td>
+                    </tr>
+                `;
+            }}).join('');
+            
+            tbody.innerHTML = rows;
+        }}
+
         function showTab(tabName) {{
             // Remove active class from all tabs
             document.querySelectorAll('.tab').forEach(tab => {{
@@ -1486,82 +1730,19 @@ pub fn page(
         }}
         
         function updatePeersTable(peers) {{
-            const tbody = document.getElementById('peers-table-body');
-            if (!tbody) return;
-            
             const peerEntries = Object.entries(peers);
-            if (peerEntries.length === 0) {{
-                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: #9ca3af; font-style: italic;">No peers connected</td></tr>';
-                return;
+            
+            // Update global peers data for sorting
+            peersData = peerEntries.map(([address, peerInfo]) => ({{ address, peerInfo }}));
+            
+            // Apply current sort if any
+            if (window.currentSortColumn && window.currentSortDirection) {{
+                // Re-sort with current settings (userClick = false to prevent toggling)
+                sortPeersTable(window.currentSortColumn, false);
+            }} else {{
+                // Just render without sorting
+                renderPeersTable();
             }}
-            
-            const rows = peerEntries.map(([address, peerInfo]) => {{
-                // Determine status based on HandshakeStatus enum
-                const handshakeStatus = peerInfo.handshake_status;
-                let status = 'DISCONNECTED';
-                let statusClass = 'status-disconnected';
-                let statusIcon = `
-                    <svg class="status-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                    </svg>
-                `;
-                
-                // Map HandshakeStatus enum to display status
-                if (handshakeStatus === 'completed') {{
-                    // Connected - white badge
-                    status = 'CONNECTED';
-                    statusClass = '';
-                    statusIcon = `
-                        <svg class="status-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-                        </svg>
-                    `;
-                }} else if (handshakeStatus === 'initiated') {{
-                    // Connecting - transparent badge with spinning arrows
-                    status = 'CONNECTING';
-                    statusClass = 'status-syncing';
-                    statusIcon = `
-                        <svg class="status-icon animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-                        </svg>
-                    `;
-                }} else if (handshakeStatus === 'failed') {{
-                    // Impersonated - transparent red badge
-                    status = 'IMPERSONATED';
-                    statusClass = 'status-impersonated';
-                    statusIcon = `
-                        <svg class="status-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 16px; height: 16px;">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
-                        </svg>
-                    `;
-                }} else {{
-                    // None or other - disconnected (transparent badge)
-                    status = 'DISCONNECTED';
-                    statusClass = 'status-disconnected';
-                }}
-                
-                // Extract peer info fields with defaults
-                const latency = peerInfo.latency || '-';
-                const blockHeight = peerInfo.height || '-';
-                const version = peerInfo.version || '-';
-                
-                return `
-                    <tr>
-                        <td class="font-mono">${{address}}</td>
-                        <td>
-                            <div class="flex items-center space-x-2">
-                                ${{statusIcon}}
-                                <div class="status-badge ${{statusClass}}">${{status}}</div>
-                            </div>
-                        </td>
-                        <td class="font-mono">${{typeof latency === 'number' ? latency + 'ms' : latency}}</td>
-                        <td class="font-mono">${{typeof blockHeight === 'number' ? blockHeight.toLocaleString() : blockHeight}}</td>
-                        <td class="font-mono">${{version}}</td>
-                    </tr>
-                `;
-            }}).join('');
-            
-            tbody.innerHTML = rows;
         }}
         
         // Auto-switch to transactions tab when user starts typing in search
