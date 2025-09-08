@@ -1542,7 +1542,7 @@ pub fn page(
                 
                 // Extract peer info fields with defaults
                 const latency = peerInfo.latency || '-';
-                const blockHeight = peerInfo.block_height || '-';
+                const blockHeight = peerInfo.height || '-';
                 const version = peerInfo.version || '-';
                 
                 return `

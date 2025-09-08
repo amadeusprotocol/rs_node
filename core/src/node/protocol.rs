@@ -308,7 +308,7 @@ impl Protocol for Ping {
 
             Ok(instructions)
         } else {
-            warn!("{src} is not handshaked, not a trainer");
+            //warn!("{src} is not handshaked, not a trainer");
             Ok(vec![Instruction::Noop { why: "ping from non-trainer without slip".to_string() }])
         }
     }

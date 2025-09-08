@@ -60,6 +60,8 @@ pub struct PeerInfo {
     pub last_msg: String,
     pub handshake_status: HandshakeStatus,
     pub version: Option<String>,
+    pub height: u64,
+    pub latency: u64,
 }
 
 impl Context {
@@ -250,6 +252,8 @@ impl Context {
                     last_msg: peer.last_msg_type.unwrap_or_else(|| "unknown".to_string()),
                     handshake_status: peer.handshake_status.clone(),
                     version: peer.version.clone(),
+                    height: peer.temporal.map(|t| t.header_unpacked.height).unwrap_or(0),
+                    latency: peer.latency.unwrap_or(0),
                 };
 
                 result.insert(peer.ip.to_string(), peer_info);
