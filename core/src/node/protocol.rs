@@ -553,8 +553,6 @@ impl Protocol for NewPhoneWhoDis {
         ctx.node_anrs.insert(self.anr.clone()).await;
         ctx.update_peer_from_anr(src, &self.anr.pk, &self.anr.version, None).await;
 
-        info!("completed handshake, pk {}", bs58::encode(&self.anr.pk).into_string());
-
         Ok(vec![Instruction::SendWhat { challenge: self.challenge, dst: src }])
     }
 }
