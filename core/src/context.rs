@@ -54,7 +54,7 @@ pub struct Context {
 pub struct PeerInfo {
     pub last_ts: u64,
     pub last_msg: String,
-    pub handshake_status: crate::node::peers::HandshakeStatus,
+    pub handshake_status: HandshakeStatus,
     pub version: Option<String>,
 }
 
@@ -74,7 +74,7 @@ impl Context {
         let node_peers = Arc::new(peers::NodePeers::default());
         let node_anrs = Arc::new(NodeAnrs::new());
 
-        node_anrs.seed(&config).await?; // must be done before node_peers.seed()
+        node_anrs.seed(&config).await; // must be done before node_peers.seed()
         node_peers.seed(&config, &node_anrs).await?;
 
         {
@@ -99,7 +99,7 @@ impl Context {
                     };
 
                     if let Err(e) = new_phone_who_dis
-                        .send_to_with_metrics(&config, socket.clone(), SocketAddr::new(addr.into(), 36969), &metrics)
+                        .send_to_with_metrics(&config, socket.clone(), addr, &metrics)
                         .await
                     {
                         warn!("bootstrap: failed to send new_phone_who_dis to {addr}: {e}");
@@ -130,7 +130,9 @@ impl Context {
                     ticker.tick().await;
                     let cleared_shards = reassembler.clear_stale(CLEANUP_SECS).await;
                     let cleared_peers = node_peers.clear_stale(&node_anrs).await;
-                    debug!("cleanup: cleared {cleared_shards} stale shards, {cleared_peers} stale peers");
+                    if cleared_shards > 0 || cleared_peers > 0 {
+                        debug!("cleanup: cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
+                    }
                 }
             });
         }
@@ -147,10 +149,11 @@ impl Context {
                 loop {
                     ticker.tick().await;
                     // get random unverified anrs and attempt to verify them
-                    match node_anrs.get_random_not_handshaked(3).await {
-                        Ok(unverified_anrs) => {
+                    let unverified_anrs = node_anrs.get_random_not_handshaked(3).await;
+                    if !unverified_anrs.is_empty() {
                             debug!("anrcheck: found {} unverified anrs", unverified_anrs.len());
 
+                            let challenge = get_unix_secs_now() as i32; // FIXME: unix secs will overflow i32 in 2038
                             let anr = match Anr::from_config(&config) {
                                 Ok(a) => a,
                                 Err(e) => {
@@ -159,33 +162,23 @@ impl Context {
                                 }
                             };
 
-                            let challenge = get_unix_secs_now() as i32; // FIXME: unix secs will overflow i32 in 2038
                             let new_phone_who_dis = NewPhoneWhoDis { anr, challenge };
 
                             for (_, ip) in unverified_anrs.iter().cloned() {
-                                // debug!("anrcheck: sending new_phone_who_dis to {}:36969", ip);
-
                                 if let Err(e) = new_phone_who_dis
                                     .send_to_with_metrics(
                                         &config,
                                         socket.clone(),
-                                        SocketAddr::new(ip.into(), 36969),
+                                        ip,
                                         &metrics,
                                     )
                                     .await
                                 {
                                     warn!("anrcheck: failed to send new_phone_who_dis to {ip}: {e}");
-                                    continue;
-                                }
-
-                                if let Err(e) = node_peers.set_handshake_status(ip, SentNewPhoneWhoDis).await {
+                                } else if let Err(e) = node_peers.set_handshake_status(ip, SentNewPhoneWhoDis).await {
                                     warn!("anrcheck: failed to set handshake status for {ip}: {e}");
                                 }
                             }
-                        }
-                        Err(e) => {
-                            warn!("anrcheck: can't get random unverified anrs {e}");
-                        }
                     }
                 }
             });
@@ -214,7 +207,7 @@ impl Context {
     }
 
     /// Convenience function to send UDP data with metrics tracking
-    pub async fn send_to(&self, buf: &[u8], target: std::net::SocketAddr) -> std::io::Result<usize> {
+    pub async fn send_to(&self, buf: &[u8], target: SocketAddr) -> std::io::Result<usize> {
         self.socket.send_to_with_metrics(buf, target, &self.metrics).await
     }
 
@@ -223,18 +216,15 @@ impl Context {
         self.socket.recv_from_with_metrics(buf, &self.metrics).await
     }
 
-    pub async fn update_peer_with_metrics(&self, src: SocketAddr, name: &str) -> Result<(), Error> {
-        use std::net::IpAddr::V4;
-        if let V4(ip) = src.ip() {
-            self.node_peers.update_peer_activity(ip, name).await.map_err(|e| {
-                warn!("can't update peer activity for {src}: {e}");
-                self.metrics.add_error(&e);
-                e.into()
-            })
-        } else {
-            warn!("can't update peer activity for ipv6 {}", src);
-            Err(Error::String("can't update ipv6 peer".into()))
+    pub async fn is_peer_handshaked(&self, ip: Ipv4Addr) -> bool {
+        if let Some(peer) = self.node_peers.by_ip(ip).await {
+            if let Some(ref pk) = peer.pk {
+                if self.node_registry.is_handshaked(pk).await {
+                    return true;
+                }
+            }
         }
+        false
     }
 
     pub async fn get_peers(&self) -> HashMap<String, PeerInfo> {
@@ -276,11 +266,15 @@ impl Context {
         format_duration(duration)
     }
 
+    pub fn get_block_height(&self) -> u64 {
+        consensus::consensus::get_chain_height().unwrap_or(0)
+    }
+
     pub async fn get_entries(&self) -> Vec<(u64, u64, u64)> {
         // Try to get real archived entries, fallback to sample data if it fails
         tokio::task::spawn_blocking(|| {
             tokio::runtime::Handle::current().block_on(async {
-                crate::consensus::entry::get_archived_entries().await.unwrap_or_else(|_| {
+                consensus::entry::get_archived_entries().await.unwrap_or_else(|_| {
                     // Fallback to sample data if archiver fails
                     vec![
                         (201, 20100123, 1024), // (epoch, height, size_bytes)
@@ -311,11 +305,7 @@ impl Context {
     }
 
     /// Set handshake status for a peer by IP address
-    pub async fn set_peer_handshake_status(
-        &self,
-        ip: std::net::Ipv4Addr,
-        status: peers::HandshakeStatus,
-    ) -> Result<(), peers::Error> {
+    pub async fn set_peer_handshake_status(&self, ip: Ipv4Addr, status: HandshakeStatus) -> Result<(), peers::Error> {
         self.node_peers.set_handshake_status(ip, status).await
     }
 
@@ -323,7 +313,7 @@ impl Context {
     pub async fn set_peer_handshake_status_by_pk(
         &self,
         pk: &[u8],
-        status: peers::HandshakeStatus,
+        status: HandshakeStatus,
     ) -> Result<(), peers::Error> {
         self.node_peers.set_handshake_status_by_pk(pk, status).await
     }
@@ -365,7 +355,8 @@ impl Context {
             let mut ticker = interval(Duration::from_secs(1));
             loop {
                 ticker.tick().await;
-                if let Ok(list) = node_registry_clone.get_random_not_handshaked(3).await {
+                let list = node_registry_clone.get_random_not_handshaked(3).await;
+                if !list.is_empty() {
                     for (pk, ip) in list {
                         if pk != my_pk_copy {
                             let payload = Vec::new(); // placeholder new_phone_who_dis
@@ -390,7 +381,8 @@ impl Context {
     pub async fn broadcast_check_anr(&self) {
         if let Some(b) = &self.broadcaster {
             let my_pk = self.config.trainer_pk.to_vec();
-            if let Ok(list) = self.node_registry.get_random_not_handshaked(3).await {
+            let list = self.node_registry.get_random_not_handshaked(3).await;
+            if !list.is_empty() {
                 for (pk, ip) in list {
                     if pk != my_pk {
                         b.send_to(vec![ip.to_string()], Vec::new());
@@ -405,17 +397,17 @@ impl Context {
         const CLEANUP_SECS: u64 = 8;
         let cleared_shards = self.reassembler.clear_stale(CLEANUP_SECS).await;
         let cleared_peers = self.node_peers.clear_stale(&self.node_registry).await;
-        tracing::info!("cleanup: cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
+        info!("cleanup: cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
     }
 
     /// Reads UDP datagram and silently does parsing, validation and reassembly
     /// If the protocol message is complete, returns Some(Protocol)
-    pub async fn parse_udp(&self, buf: &[u8], src: SocketAddr) -> Option<Box<dyn Protocol>> {
+    pub async fn parse_udp(&self, buf: &[u8], src: Ipv4Addr) -> Option<Box<dyn Protocol>> {
         self.metrics.add_incoming_udp_packet(buf.len());
         match self.reassembler.add_shard(buf).await {
             Ok(Some(packet)) => match parse_etf_bin(&packet) {
                 Ok(proto) => {
-                    self.update_peer_with_metrics(src, proto.typename()).await.ok()?;
+                    self.node_peers.update_peer_from_proto(src, proto.typename()).await;
                     self.metrics.add_incoming_proto(proto.typename());
                     return Some(proto);
                 }
@@ -428,7 +420,7 @@ impl Context {
         None
     }
 
-    pub async fn handle(&self, message: Box<dyn Protocol>, src: SocketAddr) -> Result<Instruction, Error> {
+    pub async fn handle(&self, message: Box<dyn Protocol>, src: Ipv4Addr) -> Result<Instruction, Error> {
         self.metrics.add_incoming_proto(message.typename());
         message.handle(self, src).await.map_err(|e| {
             warn!("can't handle {}: {e}", message.typename());
@@ -479,7 +471,7 @@ impl Context {
                 // Handle received peer IPs
                 info!("received {} peer IPs", ips.len());
                 for ip_str in ips {
-                    if let Ok(ip) = ip_str.parse::<std::net::Ipv4Addr>() {
+                    if let Ok(ip) = ip_str.parse::<Ipv4Addr>() {
                         // TODO: add peer to NodePeers or update peer list
                         debug!("adding peer IP: {}", ip);
                     }
@@ -659,16 +651,13 @@ impl Context {
 
     /// manual trigger for bootstrap handshake to seed nodes (optional helper)
     pub async fn bootstrap_handshake(&self) -> Result<(), Error> {
-        use crate::node::protocol::NewPhoneWhoDis;
-        use tracing::info;
-
         // create our own ANR for the handshake
         let my_ip = self
             .config
             .public_ipv4
             .as_ref()
-            .and_then(|s| s.parse::<std::net::Ipv4Addr>().ok())
-            .unwrap_or_else(|| std::net::Ipv4Addr::new(127, 0, 0, 1));
+            .and_then(|s| s.parse::<Ipv4Addr>().ok())
+            .unwrap_or_else(|| Ipv4Addr::new(127, 0, 0, 1));
 
         let my_anr = Anr::build(
             &self.config.trainer_sk,
@@ -704,7 +693,7 @@ impl Context {
 
         for ip in &self.config.seed_nodes {
             let addr = format!("{}:{}", ip, 36969);
-            if let Ok(target) = addr.parse::<std::net::SocketAddr>() {
+            if let Ok(target) = addr.parse::<SocketAddr>() {
                 info!(%addr, count = shards.len(), challenge, "sending bootstrap new_phone_who_dis");
                 for shard in &shards {
                     sock.send_to_with_metrics(shard, target, &self.metrics)
@@ -716,7 +705,7 @@ impl Context {
                 self.metrics.add_outgoing_proto("new_phone_who_dis");
 
                 // Set handshake status to SentNewPhoneWhoDis for this peer
-                if let Ok(seed_ip) = ip.parse::<std::net::Ipv4Addr>() {
+                if let Ok(seed_ip) = ip.parse::<Ipv4Addr>() {
                     let _ = self.set_peer_handshake_status(seed_ip, SentNewPhoneWhoDis).await;
                 }
             }
@@ -810,7 +799,7 @@ mod tests {
         // create test config
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls::sign(&sk, &pk, crate::consensus::DST_POP).expect("pop");
+        let pop = bls::sign(&sk, &pk, consensus::DST_POP).expect("pop");
 
         let config = config::Config {
             work_folder: "/tmp/test".to_string(),
@@ -853,12 +842,9 @@ mod tests {
         let registry = NodeAnrs::new();
         let result = registry.get_random_not_handshaked(3).await;
 
-        // should not panic and should return a result
-        assert!(result.is_ok());
-
-        let unverified = result.unwrap();
+        // should not panic and should return a vector
         // should return at most 3 results as requested
-        assert!(unverified.len() <= 3);
+        assert!(result.len() <= 3);
     }
 
     #[tokio::test]
@@ -870,10 +856,10 @@ mod tests {
         // create test config with minimal requirements
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls::sign(&sk, &pk, crate::consensus::DST_POP).expect("pop");
+        let pop = bls::sign(&sk, &pk, consensus::DST_POP).expect("pop");
 
         // Use unique work folder to avoid OnceCell conflicts with other tests
-        let unique_id = format!("{}_{}", std::process::id(), crate::utils::misc::get_unix_nanos_now());
+        let unique_id = format!("{}_{}", std::process::id(), utils::misc::get_unix_nanos_now());
         let config = config::Config {
             work_folder: format!("/tmp/test_cleanup_{}", unique_id),
             version_3b: [1, 2, 3],
@@ -918,10 +904,11 @@ mod tests {
         // create test config
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls::sign(&sk, &pk, crate::consensus::DST_POP).expect("pop");
+        let pop = bls::sign(&sk, &pk, consensus::DST_POP).expect("pop");
 
+        let work_folder = format!("/tmp/test_bootstrap_{}", std::process::id());
         let config = config::Config {
-            work_folder: "/tmp/test2".to_string(),
+            work_folder,
             version_3b: [1, 2, 3],
             offline: false,
             http_ipv4: Ipv4Addr::new(127, 0, 0, 1),
@@ -973,7 +960,7 @@ mod tests {
 
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls::sign(&sk, &pk, crate::consensus::DST_POP).expect("pop");
+        let pop = bls::sign(&sk, &pk, consensus::DST_POP).expect("pop");
 
         let config = config::Config {
             work_folder: "/tmp/test_convenience".to_string(),

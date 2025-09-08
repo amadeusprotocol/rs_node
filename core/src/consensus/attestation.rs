@@ -11,6 +11,7 @@ use eetf::EncodeError as EtfEncodeError;
 use eetf::{Atom, Binary, List, Term};
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::net::Ipv4Addr;
 use tracing::{instrument, warn};
 
 #[derive(Debug, thiserror::Error)]
@@ -91,11 +92,7 @@ impl Protocol for AttestationBulk {
     }
 
     #[instrument(skip(self, _ctx), name = "AttestationBulk::handle", err)]
-    async fn handle(
-        &self,
-        _ctx: &Context,
-        _src: std::net::SocketAddr,
-    ) -> Result<protocol::Instruction, protocol::Error> {
+    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<protocol::Instruction, protocol::Error> {
         // TODO: handle the attestation bulk
         Ok(protocol::Instruction::Noop { why: "attestation bulk handling not implemented".to_string() })
     }

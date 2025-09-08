@@ -1,7 +1,7 @@
 mod dump_replay;
 
 pub use dump_replay::UdpSocketWrapper;
-use std::net::SocketAddr;
+use std::net::Ipv4Addr;
 use std::panic;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
@@ -25,8 +25,8 @@ pub fn init_tracing() {
     }));
 }
 
-pub fn get_peer_addr() -> SocketAddr {
-    std::env::var("UDP_ADDR").ok().and_then(|s| s.parse().ok()).unwrap_or_else(|| "127.0.0.1:36969".parse().unwrap())
+pub fn get_peer_addr() -> Ipv4Addr {
+    std::env::var("UDP_ADDR").ok().and_then(|s| s.parse().ok()).unwrap_or_else(|| "127.0.0.1".parse().unwrap())
 }
 
 pub fn get_http_port() -> u16 {

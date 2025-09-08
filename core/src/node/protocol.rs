@@ -22,9 +22,9 @@ use eetf::{Atom, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncode
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io::Error as IoError;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use tracing::{debug, info, instrument, warn};
+use tracing::{info, instrument, warn};
 
 /// Creates string representation as bytes, compatible with Erlang's :erlang.integer_to_binary/1
 fn pk_challenge_into_bin(pk: &[u8], challenge: i32) -> Vec<u8> {
@@ -46,15 +46,16 @@ pub trait Protocol: Typename + Debug + Send + Sync {
     /// Convert to ETF binary format for network transmission
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error>;
     /// Handle a message returning instructions for upper layers
-    async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error>;
+    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Instruction, Error>;
     /// Send this protocol message to a destination using context's UDP socket
     async fn send_to_with_metrics(
         &self,
         config: &Config,
         socket: Arc<dyn UdpSocketExt>,
-        dst: SocketAddr,
+        dst: Ipv4Addr,
         metrics: &Metrics,
     ) -> Result<(), Error> {
+        let dst = SocketAddr::new(std::net::IpAddr::V4(dst), config.udp_port);
         let payload = self.to_etf_bin().inspect_err(|e| metrics.add_error(e))?;
         let shards = ReedSolomonReassembler::build_shards(config, &payload).inspect_err(|e| metrics.add_error(e))?;
         for shard in &shards {
@@ -63,7 +64,8 @@ pub trait Protocol: Typename + Debug + Send + Sync {
         metrics.add_outgoing_proto(self.typename());
         Ok(())
     }
-    async fn send_to(&self, config: &Config, socket: Arc<dyn UdpSocketExt>, dst: SocketAddr) -> Result<(), Error> {
+    async fn send_to(&self, config: &Config, socket: Arc<dyn UdpSocketExt>, dst: Ipv4Addr) -> Result<(), Error> {
+        let dst = SocketAddr::new(std::net::IpAddr::V4(dst), config.udp_port);
         let shards = ReedSolomonReassembler::build_shards(config, &self.to_etf_bin()?)?;
         for shard in &shards {
             socket.send_to(shard, dst).await?;
@@ -112,7 +114,7 @@ impl Typename for Error {
 #[derive(Debug, strum_macros::IntoStaticStr)]
 pub enum Instruction {
     Noop { why: String },
-    SendPong { ts_m: u64, dst: SocketAddr },
+    SendPong { ts_m: u64, dst: Ipv4Addr },
     ValidTxs { txs: Vec<Vec<u8>> },
     Peers { ips: Vec<String> },
     ReceivedSol { sol: Solution },
@@ -127,7 +129,7 @@ pub enum Instruction {
     SpecialBusinessReply { business: Vec<u8> },
     SolicitEntry { hash: Vec<u8> },
     SolicitEntry2,
-    SendWhat { what: What, dst: SocketAddr },
+    SendWhat { what: What, dst: Ipv4Addr },
     ReplyWhatChallenge { anr: anr::Anr, challenge: u32 },
     ReceivedWhatResponse { responder_anr: anr::Anr, challenge: u32, their_signature: Vec<u8> },
     HandshakeComplete { anr: anr::Anr },
@@ -280,93 +282,24 @@ impl Protocol for Ping {
         let etf_data = encode_safe(&term);
         Ok(etf_data)
     }
-    async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
-        use crate::utils::bls12_381 as bls;
 
+    #[instrument(skip(self, ctx), fields(src = %src), name = "Ping::handle")]
+    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Instruction, Error> {
         // TODO: validate temporal and rooted entry signatures like in Elixir
-        // For now, skip signature validation to fix compilation
 
-        // check if peer has permission slip (handshaked and valid IP)
-        let has_permission_slip = if let std::net::IpAddr::V4(peer_ip) = src.ip() {
-            // check if peer is handshaked by looking up their public key
-            if let Ok(Some(peer)) = ctx.node_peers.by_ip(peer_ip).await {
-                if let Some(ref pk) = peer.pk {
-                    // check if this pk is handshaked with correct ip
-                    ctx.node_registry.is_handshaked(pk).await.unwrap_or_else(|_| false)
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        } else {
-            false
+        let signer = self.temporal.header.signer.to_vec();
+        let is_trainer = match crate::consensus::trainers_for_height(crate::consensus::chain_height()) {
+            Some(trainers) => trainers.iter().any(|pk| pk.as_slice() == signer),
+            None => false,
         };
 
-        // TODO: spawn peer broadcast task if has permission slip (simplified for now)
-        if has_permission_slip {
-            debug!("peer {} has permission slip, would broadcast peers", src);
+        if is_trainer || ctx.is_peer_handshaked(src).await {
+            ctx.node_peers.update_peer_from_ping(ctx, src, self).await;
+            Ok(Instruction::SendPong { ts_m: self.ts, dst: src })
+        } else {
+            warn!("{src} is not handshaked, not a trainer");
+            Ok(Instruction::Noop { why: "ping from non-trainer without slip".to_string() })
         }
-
-        // update peer info following Elixir implementation
-        if let std::net::IpAddr::V4(peer_ip) = src.ip() {
-            let current_time_ms = get_unix_millis_now();
-
-            // get signer from temporal entry header
-            let signer = self.temporal.header.signer.to_vec();
-
-            // check if this is a trainer for current height or has permission slip
-            let is_trainer = match crate::consensus::trainers_for_height(crate::consensus::chain_height()) {
-                Some(trainers) => trainers.iter().any(|pk| pk.as_slice() == signer),
-                None => false,
-            };
-
-            if has_permission_slip || is_trainer {
-                // try to update existing peer
-                let _ = ctx.node_peers.update_peer_activity(peer_ip, "ping").await;
-
-                // update peer with additional ping-specific data
-                if let Ok(Some(_)) = ctx.node_peers.by_ip(peer_ip).await {
-                    // Update via the peers system - use existing methods
-                    let _ =
-                        ctx.node_peers.update_peer_from_anr(peer_ip, &signer, "unknown", HandshakeStatus::None).await;
-                } else {
-                    // create new peer
-                    let new_peer = crate::node::peers::Peer {
-                        ip: peer_ip,
-                        pk: Some(signer.clone()),
-                        version: None, // will be set from ANR later
-                        latency: None,
-                        last_msg: current_time_ms,
-                        last_ping: Some(current_time_ms),
-                        last_pong: None,
-                        shared_secret: if let Ok(shared_key) = bls::get_shared_secret(&signer, &ctx.config.trainer_sk) {
-                            Some(shared_key.to_vec())
-                        } else {
-                            None
-                        },
-                        temporal: Some(crate::node::peers::TemporalInfo {
-                            header_unpacked: crate::node::peers::HeaderInfo {
-                                height: self.temporal.header.height,
-                                prev_hash: Some(self.temporal.header.prev_hash.to_vec()),
-                            },
-                        }),
-                        rooted: Some(crate::node::peers::RootedInfo {
-                            header_unpacked: crate::node::peers::HeaderInfo {
-                                height: self.rooted.header.height,
-                                prev_hash: Some(self.rooted.header.prev_hash.to_vec()),
-                            },
-                        }),
-                        last_seen: current_time_ms,
-                        last_msg_type: Some("ping".to_string()),
-                        handshake_status: HandshakeStatus::None,
-                    };
-                    let _ = ctx.node_peers.insert_new_peer(new_peer).await;
-                }
-            }
-        }
-
-        Ok(Instruction::SendPong { ts_m: self.ts, dst: src })
     }
 }
 
@@ -419,45 +352,14 @@ impl Protocol for Pong {
         Ok(etf_data)
     }
 
-    async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
-        // calculate latency and update peer information following Elixir implementation
-        if let std::net::IpAddr::V4(peer_ip) = src.ip() {
-            let current_time = get_unix_millis_now();
-            let latency = current_time.saturating_sub(self.ts);
-
-            debug!("observed pong from {} with latency {}ms", peer_ip, latency);
-
-            // try to update existing peer activity first
-            let _ = ctx.node_peers.update_peer_activity(peer_ip, "pong").await;
-
-            // check if peer exists and update with latency info
-            if let Ok(Some(_)) = ctx.node_peers.by_ip(peer_ip).await {
-                // For now, just update activity - could add latency update method to NodePeers later
-                debug!("updated existing peer {} activity", peer_ip);
-            } else {
-                // create new peer
-                let new_peer = crate::node::peers::Peer {
-                    ip: peer_ip,
-                    pk: None, // will be set from handshake later
-                    version: None,
-                    latency: Some(latency),
-                    last_msg: current_time,
-                    last_ping: None,
-                    last_pong: Some(current_time),
-                    shared_secret: None,
-                    temporal: None,
-                    rooted: None,
-                    last_seen: current_time,
-                    last_msg_type: Some("pong".to_string()),
-                    handshake_status: HandshakeStatus::None,
-                };
-                let _ = ctx.node_peers.insert_new_peer(new_peer).await;
-            }
-
-            return Ok(Instruction::Noop { why: "pong processed".to_string() });
+    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Instruction, Error> {
+        if ctx.is_peer_handshaked(src).await {
+            ctx.node_peers.update_peer_from_pong(src, self).await;
+            Ok(Instruction::Noop { why: "pong processed".to_string() })
+        } else {
+            warn!("{src} is not handshaked");
+            Ok(Instruction::Noop { why: "pong without slip".to_string() })
         }
-
-        Ok(Instruction::Noop { why: "ipv6 pong was not processed".to_string() })
     }
 }
 
@@ -491,7 +393,7 @@ impl Protocol for TxPool {
         Ok(etf_data)
     }
 
-    async fn handle(&self, _ctx: &Context, _src: SocketAddr) -> Result<Instruction, Error> {
+    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Instruction, Error> {
         // TODO: update ETS-like tx pool with valid_txs
         Ok(Instruction::Noop { why: "txpool handling not implemented".to_string() })
     }
@@ -551,7 +453,7 @@ impl Protocol for Peers {
         Ok(etf_data)
     }
 
-    async fn handle(&self, _ctx: &Context, _src: SocketAddr) -> Result<Instruction, Error> {
+    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Instruction, Error> {
         // TODO: update ETS-like peer table with new IPs
         Ok(Instruction::Noop { why: "peers handling not implemented".to_string() })
     }
@@ -595,22 +497,19 @@ impl Protocol for NewPhoneWhoDis {
         Ok(encode_safe(&map.into_term()))
     }
 
-    async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
+    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Instruction, Error> {
         // SECURITY: ip address spoofing protection
-        let ip4 = match src.ip() {
-            std::net::IpAddr::V4(ip4) if ip4 == self.anr.ip4 => ip4,
-            _ => {
-                warn!("new_phone_who_dis ip mismatched {src} <-> {}", self.anr.ip4);
-                return Err(Error::BadEtf("anr_ip_mismatch"));
-            }
-        };
+        if src != self.anr.ip4 {
+            warn!("new_phone_who_dis ip mismatched {src} <-> {}", self.anr.ip4);
+            return Err(Error::BadEtf("anr_ip_mismatch"));
+        }
 
         let anr = Anr::from_config(&ctx.get_config())?;
         let data = pk_challenge_into_bin(&ctx.get_config().trainer_pk, self.challenge);
         let signature = bls_sign(&ctx.get_config().trainer_sk, &data, crate::consensus::DST_ANR_CHALLENGE)?.to_vec();
 
         ctx.node_registry.insert(self.anr.clone()).await;
-        ctx.update_peer_from_anr(ip4, &self.anr.pk, &self.anr.version, HandshakeStatus::SentWhat).await;
+        ctx.update_peer_from_anr(src, &self.anr.pk, &self.anr.version, HandshakeStatus::SentWhat).await;
 
         Ok(Instruction::SendWhat { what: What { anr, challenge: self.challenge, signature }, dst: src })
     }
@@ -664,15 +563,12 @@ impl Protocol for What {
         Ok(encode_safe(&map.into_term()))
     }
 
-    async fn handle(&self, ctx: &Context, src: SocketAddr) -> Result<Instruction, Error> {
+    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Instruction, Error> {
         // SECURITY: ip address spoofing protection
-        let ip4 = match src.ip() {
-            std::net::IpAddr::V4(ip4) if ip4 == self.anr.ip4 => ip4,
-            _ => {
-                warn!("what ip mismatched {src} <-> {}", self.anr.ip4);
-                return Err(Error::BadEtf("anr_ip_mismatch"));
-            }
-        };
+        if src != self.anr.ip4 {
+            warn!("what ip mismatched {src} <-> {}", self.anr.ip4);
+            return Err(Error::BadEtf("anr_ip_mismatch"));
+        }
 
         // SECURITY: replay attack protection
         let now = get_unix_secs_now();
@@ -688,9 +584,14 @@ impl Protocol for What {
 
         ctx.node_registry.insert(self.anr.clone()).await;
         ctx.node_registry.set_handshaked(&self.anr.pk).await;
-        ctx.update_peer_from_anr(ip4, &self.anr.pk, &self.anr.version, HandshakeStatus::ReceivedWhat).await;
+        ctx.update_peer_from_anr(src, &self.anr.pk, &self.anr.version, HandshakeStatus::ReceivedWhat).await;
 
-        info!("peer {} completed handshake", bs58::encode(&self.anr.pk).into_string());
+        info!("{src} completed handshake, pk {}", bs58::encode(&self.anr.pk).into_string());
+        //
+        // let peer = ctx.node_peers.by_ip(src).await.unwrap();
+        // println!("{peer:?}");
+        // let anr = ctx.node_registry.get(&self.anr.pk).await.unwrap();
+        // println!("{anr:?}");
 
         Ok(Instruction::Noop { why: "handshake completed".to_string() })
     }
@@ -721,7 +622,7 @@ impl Protocol for SpecialBusiness {
         Ok(etf_data)
     }
 
-    async fn handle(&self, _ctx: &Context, _src: SocketAddr) -> Result<Instruction, Error> {
+    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Instruction, Error> {
         // TODO: Implement special business handling logic
         // For now, just pass the business data to the state handler
         Ok(Instruction::SpecialBusiness { business: self.business.clone() })
@@ -753,7 +654,7 @@ impl Protocol for SpecialBusinessReply {
         Ok(etf_data)
     }
 
-    async fn handle(&self, _ctx: &Context, _src: SocketAddr) -> Result<Instruction, Error> {
+    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Instruction, Error> {
         // TODO: Implement special business reply handling logic
         Ok(Instruction::SpecialBusinessReply { business: self.business.clone() })
     }
@@ -1001,7 +902,7 @@ mod tests {
         let test_challenges = vec![1i32, 255i32, 256i32, 65535i32, 65536i32, i32::MAX, 1693958400i32];
 
         for challenge in test_challenges {
-            let msg = What { anr: responder_anr.clone(), challenge: challenge, signature: signature.clone() };
+            let msg = What { anr: responder_anr.clone(), challenge, signature: signature.clone() };
 
             // Serialize to ETF
             let bin = msg.to_etf_bin().expect(&format!("serialize what challenge {}", challenge));
@@ -1059,7 +960,7 @@ mod tests {
         };
 
         let dummy_socket = Arc::new(MockSocket::new());
-        let target = "127.0.0.1:1234".parse().unwrap();
+        let target: Ipv4Addr = "127.0.0.1".parse().unwrap();
 
         match Context::with_config_and_socket(config, dummy_socket).await {
             Ok(ctx) => {

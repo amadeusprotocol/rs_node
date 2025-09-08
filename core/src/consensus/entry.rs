@@ -14,6 +14,7 @@ use crate::{bic, consensus};
 use eetf::{Atom, BigInteger, Binary, Map, Term};
 use std::collections::HashMap;
 use std::fmt;
+use std::net::Ipv4Addr;
 // use tracing::{instrument, warn};
 
 const MAX_TXS: usize = 100; // maximum number of transactions in an entry
@@ -224,11 +225,7 @@ impl Protocol for Entry {
         Ok(out)
     }
 
-    async fn handle(
-        &self,
-        _ctx: &Context,
-        _src: std::net::SocketAddr,
-    ) -> Result<protocol::Instruction, protocol::Error> {
+    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<protocol::Instruction, protocol::Error> {
         self.handle_inner().await.map_err(Into::into)
     }
 }

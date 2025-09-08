@@ -386,16 +386,16 @@ impl NodeAnrs {
     }
 
     /// Get anr by public key
-    pub async fn get(&self, pk: &[u8]) -> Result<Option<Anr>, Error> {
+    pub async fn get(&self, pk: &[u8]) -> Option<Anr> {
         let map = self.store.read().await;
-        Ok(map.get(pk).cloned())
+        map.get(pk).cloned()
     }
 
     /// Get all anrs
-    pub async fn get_all(&self) -> Result<Vec<Anr>, Error> {
+    pub async fn get_all(&self) -> Vec<Anr> {
         let map = self.store.read().await;
         let anrs: Vec<Anr> = map.values().cloned().collect();
-        Ok(anrs)
+        anrs
     }
 
     /// Set handshaked status (will silently return if pk not found)
@@ -407,7 +407,7 @@ impl NodeAnrs {
     }
 
     /// Get all handshaked node public keys
-    pub async fn handshaked(&self) -> Result<Vec<Vec<u8>>, Error> {
+    pub async fn handshaked(&self) -> Vec<Vec<u8>> {
         let map = self.store.read().await;
         let mut pks = Vec::new();
         for (k, v) in map.iter() {
@@ -415,11 +415,11 @@ impl NodeAnrs {
                 pks.push(k.clone());
             }
         }
-        Ok(pks)
+        pks
     }
 
     /// Get all not handshaked (pk, ip4) pairs
-    pub async fn not_handshaked_pk_ip4(&self) -> Result<Vec<(Vec<u8>, Ipv4Addr)>, Error> {
+    pub async fn not_handshaked_pk_ip4(&self) -> Vec<(Vec<u8>, Ipv4Addr)> {
         let map = self.store.read().await;
         let mut results = Vec::new();
 
@@ -429,79 +429,77 @@ impl NodeAnrs {
             }
         }
 
-        Ok(results)
+        results
     }
 
     /// Check if node is handshaked
-    pub async fn is_handshaked(&self, pk: &[u8]) -> Result<bool, Error> {
+    pub async fn is_handshaked(&self, pk: &[u8]) -> bool {
         let map = self.store.read().await;
-        Ok(map.get(pk).map(|v| v.handshaked).unwrap_or(false))
+        map.get(pk).map(|v| v.handshaked).unwrap_or(false)
     }
 
     /// Check if node is handshaked with valid ip4
-    pub async fn handshaked_and_valid_ip4(&self, pk: &[u8], ip4: &Ipv4Addr) -> Result<bool, Error> {
+    pub async fn handshaked_and_valid_ip4(&self, pk: &[u8], ip4: &Ipv4Addr) -> bool {
         let map = self.store.read().await;
-        Ok(map.get(pk).map(|v| v.handshaked && v.ip4 == *ip4).unwrap_or(false))
+        map.get(pk).map(|v| v.handshaked && v.ip4 == *ip4).unwrap_or(false)
     }
 
     /// Get random verified nodes
-    pub async fn get_random_verified(&self, count: usize) -> Result<Vec<Anr>, Error> {
+    pub async fn get_random_verified(&self, count: usize) -> Vec<Anr> {
         use rand::seq::SliceRandom;
 
-        let pks = self.handshaked().await?;
+        let pks = self.handshaked().await;
         let mut rng = rand::thread_rng();
         let selected: Vec<_> = pks.choose_multiple(&mut rng, count).cloned().collect();
 
         let mut anrs = Vec::new();
         for pk in selected {
-            if let Some(anr) = self.get(&pk).await? {
+            if let Some(anr) = self.get(&pk).await {
                 anrs.push(anr.pack());
             }
         }
 
-        Ok(anrs)
+        anrs
     }
 
     /// Get random unverified nodes
-    pub async fn get_random_not_handshaked(&self, count: usize) -> Result<Vec<(Vec<u8>, Ipv4Addr)>, Error> {
+    pub async fn get_random_not_handshaked(&self, count: usize) -> Vec<(Vec<u8>, Ipv4Addr)> {
         use rand::seq::SliceRandom;
         use std::collections::HashSet;
 
         // deduplicate by ip4
         let mut seen_ips = HashSet::new();
         let mut unique_pairs = Vec::new();
-        for (pk, ip4) in self.not_handshaked_pk_ip4().await? {
+        for (pk, ip4) in self.not_handshaked_pk_ip4().await {
             if seen_ips.insert(ip4) {
                 unique_pairs.push((pk, ip4));
             }
         }
 
-        debug!("selecting {count} unverified anrs from {}", unique_pairs.len());
-
         let mut rng = rand::thread_rng();
         let selected: Vec<_> = unique_pairs.choose_multiple(&mut rng, count).cloned().collect();
 
-        Ok(selected)
+        selected
     }
 
     /// Get all validators from handshaked nodes
-    pub async fn all_validators(&self) -> Result<Vec<Anr>, Error> {
+    pub async fn all_validators(&self) -> Vec<Anr> {
         // this would need integration with consensus module to get validator set
         // for now, return all handshaked nodes
-        let pks = self.handshaked().await?;
+        let pks = self.handshaked().await;
         let mut anrs = Vec::new();
 
         for pk in pks {
-            if let Some(anr) = self.get(&pk).await? {
+            if let Some(anr) = self.get(&pk).await {
                 anrs.push(anr);
             }
         }
 
-        Ok(anrs)
+        anrs
     }
 
     /// Get all handshaked (pk, ip4) pairs
-    pub async fn handshaked_pk_ip4(&self) -> Result<Vec<(Vec<u8>, Ipv4Addr)>, Error> {
+    pub async fn handshaked_pk_ip4(&self) -> Vec<(Vec<u8>, Ipv4Addr)> {
         let map = self.store.read().await;
         let mut results = Vec::new();
         for (k, v) in map.iter() {
@@ -509,11 +507,11 @@ impl NodeAnrs {
                 results.push((k.clone(), v.ip4));
             }
         }
-        Ok(results)
+        results
     }
 
     /// Get ip addresses for given public keys
-    pub async fn by_pks_ip<T: AsRef<[u8]>>(&self, pks: &[T]) -> Result<Vec<Ipv4Addr>, Error> {
+    pub async fn by_pks_ip<T: AsRef<[u8]>>(&self, pks: &[T]) -> Vec<Ipv4Addr> {
         // build a set of owned pk bytes for efficient lookup
         let pk_set: std::collections::HashSet<Vec<u8>> = pks.iter().map(|p| p.as_ref().to_vec()).collect();
         let mut ips = Vec::new();
@@ -525,11 +523,11 @@ impl NodeAnrs {
             }
         }
 
-        Ok(ips)
+        ips
     }
 
     /// Seed initial anrs (called on startup)
-    pub async fn seed(&self, config: &Config) -> Result<(), Error> {
+    pub async fn seed(&self, config: &Config) {
         for anr in config.seed_anrs.iter().cloned().map(Into::<Anr>::into) {
             self.insert(anr).await;
         }
@@ -539,16 +537,13 @@ impl NodeAnrs {
             self.set_handshaked(&config.get_pk()).await;
         }
 
-        let all = self.get_all().await?;
+        let all = self.get_all().await;
         debug!("seeded {} ANRs from config", all.len());
-
-        Ok(())
     }
 
     /// Clear all anrs (useful for testing)
-    pub async fn clear_all(&self) -> Result<(), Error> {
-        self.store.write().await.clear();
-        Ok(())
+    pub async fn clear_all(&self) {
+        self.store.write().await.clear()
     }
 
     /// Get count of anrs
@@ -607,24 +602,24 @@ mod tests {
         registry.insert(anr.clone()).await;
 
         // test get
-        let retrieved = registry.get(&pk).await.unwrap().unwrap();
+        let retrieved = registry.get(&pk).await.unwrap();
         assert_eq!(retrieved.pk, pk);
         assert!(!retrieved.handshaked, "Expected handshaked to be false after insert, got true");
 
         // test set_handshaked
         registry.set_handshaked(&pk).await;
-        let retrieved = registry.get(&pk).await.unwrap().unwrap();
+        let retrieved = registry.get(&pk).await.unwrap();
         assert!(retrieved.handshaked, "Expected handshaked to be true after set_handshaked");
 
         // test handshaked query
-        let handshaked_pks = registry.handshaked().await.unwrap();
+        let handshaked_pks = registry.handshaked().await;
         assert!(handshaked_pks.iter().any(|p| p == &pk), "pk should be in handshaked list");
 
         // test is_handshaked
-        assert!(registry.is_handshaked(&pk).await.unwrap(), "is_handshaked should return true");
+        assert!(registry.is_handshaked(&pk).await, "is_handshaked should return true");
 
         // test get_all
-        let all = registry.get_all().await.unwrap();
+        let all = registry.get_all().await;
         assert!(!all.is_empty());
         assert!(all.iter().any(|a| a.pk == pk));
 
@@ -633,10 +628,10 @@ mod tests {
         assert!(total_count >= 1, "Expected at least 1 ANR, got {}", total_count);
 
         // cleanup
-        registry.clear_all().await.unwrap();
+        registry.clear_all().await;
 
         // verify our pk was removed
-        assert!(registry.get(&pk).await.unwrap().is_none(), "Our pk should be removed");
+        assert!(registry.get(&pk).await.is_none(), "Our pk should be removed");
     }
 
     #[tokio::test]
@@ -694,7 +689,7 @@ mod tests {
         registry.insert(anr2).await;
 
         // verify old anr was not updated
-        let retrieved = registry.get(&pk).await.unwrap().unwrap();
+        let retrieved = registry.get(&pk).await.unwrap();
         assert_eq!(retrieved.ip4, Ipv4Addr::new(192, 168, 1, 1));
         assert_eq!(retrieved.ts, 1000);
         assert!(retrieved.handshaked);
@@ -718,7 +713,7 @@ mod tests {
         };
         registry.insert(anr3).await;
 
-        let retrieved = registry.get(&pk).await.unwrap().unwrap();
+        let retrieved = registry.get(&pk).await.unwrap();
         assert_eq!(retrieved.ts, 2000);
         assert_eq!(retrieved.version, "2.0.0");
         assert!(retrieved.handshaked); // should be preserved
@@ -742,7 +737,7 @@ mod tests {
         };
         registry.insert(anr4).await;
 
-        let retrieved = registry.get(&pk).await.unwrap().unwrap();
+        let retrieved = registry.get(&pk).await.unwrap();
         assert_eq!(retrieved.ts, 3000);
         assert_eq!(retrieved.ip4, Ipv4Addr::new(10, 0, 0, 1));
         assert!(!retrieved.handshaked); // should be reset
@@ -750,7 +745,7 @@ mod tests {
         assert_eq!(retrieved.error_tries, 0); // should be reset
 
         // cleanup
-        registry.clear_all().await.unwrap();
+        registry.clear_all().await;
     }
 
     #[tokio::test]
@@ -787,7 +782,7 @@ mod tests {
 
         // Test multiple calls to ensure randomness and correct count
         for run in 1..=10 {
-            let result = registry.get_random_not_handshaked(3).await.unwrap();
+            let result = registry.get_random_not_handshaked(3).await;
             println!("Run {}: got {} results", run, result.len());
 
             // Should return 3 results since we have 5 candidates
@@ -802,11 +797,11 @@ mod tests {
         }
 
         // Test asking for more than available
-        let result = registry.get_random_not_handshaked(10).await.unwrap();
+        let result = registry.get_random_not_handshaked(10).await;
         assert_eq!(result.len(), 5, "Should return all 5 when asking for 10");
 
         // cleanup
-        registry.clear_all().await.unwrap();
+        registry.clear_all().await;
     }
 
     #[test]

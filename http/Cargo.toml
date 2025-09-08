@@ -18,3 +18,4 @@ tracing = "0.1.41"
 tower-http = { version = "0.6", features = ["fs", "trace", "timeout"] }
 bs58 = "0.5"
 ama_core = { path = "../core" }
+sysinfo = "0.32"

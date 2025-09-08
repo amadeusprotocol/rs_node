@@ -1,3 +1,4 @@
+use ama_core::node::peers::HandshakeStatus;
 use ama_core::{Context, MetricsSnapshot, PeerInfo};
 use std::collections::HashMap;
 
@@ -31,11 +32,26 @@ pub fn page(
     _entries: &Vec<(u64, u64, u64)>,
     ctx: &Context,
 ) -> String {
-    let peers_count = peers.len();
+    // Calculate handshaked vs pending peer counts
+    let mut handshaked_count = 0;
+    let mut pending_count = 0;
+
+    for peer_info in peers.values() {
+        match peer_info.handshake_status {
+            HandshakeStatus::SentWhat | HandshakeStatus::ReceivedWhat => {
+                handshaked_count += 1;
+            }
+            _ => {
+                pending_count += 1;
+            }
+        }
+    }
+
     let uptime = ctx.get_uptime();
     let version = ctx.get_config().get_ver();
     let pubkey_bytes = ctx.get_config().get_pk();
     let pubkey = bs58::encode(pubkey_bytes).into_string();
+    let block_height = ctx.get_block_height();
 
     // Get uptime in seconds from metrics snapshot
     let uptime_seconds = snapshot.uptime as f64;
@@ -53,14 +69,10 @@ pub fn page(
     let network_in_pps = if uptime_seconds > 0.0 { incoming_packets as f64 / uptime_seconds } else { 0.0 };
     let network_out_pps = if uptime_seconds > 0.0 { outgoing_packets as f64 / uptime_seconds } else { 0.0 };
 
-    // System resources (stub values for now - will be read from context later)
-    let total_messages =
-        snapshot.incoming_protos.values().sum::<u64>() + snapshot.outgoing_protos.values().sum::<u64>();
-
-    // Stub system resource values - these will be replaced with real values from context later
-    let cpu_usage = std::cmp::min(85, std::cmp::max(15, (total_messages / 50) as i32 + 25)); // Simulated CPU usage
-    let memory_usage = std::cmp::min(80, std::cmp::max(20, peers_count as i32 * 3 + 35)); // Simulated memory usage
-    let disk_usage = std::cmp::min(60, std::cmp::max(10, (snapshot.uptime / 7200) as i32 + 25)); // Simulated disk usage
+    // Placeholder system resource values - will be updated by JavaScript
+    let cpu_usage = 0; // Will be updated from /api/metrics
+    let memory_usage = 0; // Will be updated from /api/metrics
+    let disk_usage = std::cmp::min(60, std::cmp::max(10, (snapshot.uptime / 7200) as i32 + 25)); // Still simulated for now
 
     format!(
         r#"
@@ -324,6 +336,18 @@ pub fn page(
             align-items: center;
         }}
         
+        .network-left {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        
+        .network-icon {{
+            width: 16px;
+            height: 16px;
+            color: hsl(var(--foreground));
+        }}
+        
         .network-label {{
             font-size: 16px;
             color: #9ca3af;
@@ -331,6 +355,42 @@ pub fn page(
         }}
         
         .network-value {{
+            font-size: 16px;
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+            font-weight: 600;
+        }}
+
+        .peer-stats {{
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }}
+        
+        .peer-row {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        
+        .peer-left {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        
+        .peer-icon {{
+            width: 16px;
+            height: 16px;
+            color: hsl(var(--foreground));
+        }}
+        
+        .peer-label {{
+            font-size: 16px;
+            color: #9ca3af;
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+        }}
+        
+        .peer-value {{
             font-size: 16px;
             font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
             font-weight: 600;
@@ -999,25 +1059,39 @@ pub fn page(
                             <path d="M4 12v6a8 3 0 0 0 16 0v-6"/>
                         </g>
                     </svg>
-                    <div class="metric-value">812,345</div>
+                    <div class="metric-value">{}</div>
                 </div>
             </div>
 
-            <!-- Connected Peers Card -->
+            <!-- Peer Nodes Card -->
             <div class="metric-card">
                 <div class="metric-header">
-                    <div class="metric-title">Connected Peers</div>
+                    <div class="metric-title">Peer Nodes</div>
                     <button class="info-btn">
                         <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                         </svg>
                     </button>
                 </div>
-                <div class="metric-content">
-                    <svg class="metric-icon-large" xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24">
-                        <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 7a4 4 0 1 0 8 0a4 4 0 1 0-8 0M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2m1-17.87a4 4 0 0 1 0 7.75M21 21v-2a4 4 0 0 0-3-3.85"/>
-                    </svg>
-                    <div class="metric-value">{}</div>
+                <div class="peer-stats">
+                    <div class="peer-row">
+                        <div class="peer-left">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="peer-icon">
+                                <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 7a4 4 0 1 0 8 0a4 4 0 1 0-8 0M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2m1-17.87a4 4 0 0 1 0 7.75M21 21v-2a4 4 0 0 0-3-3.85"/>
+                            </svg>
+                            <div class="peer-label">HANDSHAKED:</div>
+                        </div>
+                        <div class="peer-value" id="handshaked-count">{}</div>
+                    </div>
+                    <div class="peer-row">
+                        <div class="peer-left">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="peer-icon">
+                                <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7a4 4 0 1 0 8 0a4 4 0 0 0-8 0M6 21v-2a4 4 0 0 1 4-4h3.5m5.5 7v.01M19 19a2.003 2.003 0 0 0 .914-3.782a1.98 1.98 0 0 0-2.414.483"/>
+                            </svg>
+                            <div class="peer-label">PENDING:</div>
+                        </div>
+                        <div class="peer-value" id="pending-count">{}</div>
+                    </div>
                 </div>
             </div>
 
@@ -1033,19 +1107,39 @@ pub fn page(
                 </div>
                 <div class="network-stats">
                     <div class="network-row">
-                        <div class="network-label">DATA IN:</div>
+                        <div class="network-left">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="network-icon">
+                                <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 3v6m-7 9l-3 3l-3-3m3 3V3m13 3l-3-3l-3 3m3 15v-2m0-4v-2"/>
+                            </svg>
+                            <div class="network-label">DATA IN:</div>
+                        </div>
                         <div class="network-value">{:.1}</div>
                     </div>
                     <div class="network-row">
-                        <div class="network-label">PKT IN:</div>
+                        <div class="network-left">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="network-icon">
+                                <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 20H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h8m4 0v17m-3-3l3 3l3-3"/>
+                            </svg>
+                            <div class="network-label">PKT IN:</div>
+                        </div>
                         <div class="network-value">{:.0}</div>
                     </div>
                     <div class="network-row">
-                        <div class="network-label">DATA OUT:</div>
+                        <div class="network-left">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="network-icon">
+                                <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21v-6m13-9l-3-3l-3 3m3-3v18m-7-3l-3 3l-3-3M7 3v2m0 4v2"/>
+                            </svg>
+                            <div class="network-label">DATA OUT:</div>
+                        </div>
                         <div class="network-value">{:.1}</div>
                     </div>
                     <div class="network-row">
-                        <div class="network-label">PKT OUT:</div>
+                        <div class="network-left">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="network-icon">
+                                <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8m4 0V3m-3 3l3-3l3 3"/>
+                            </svg>
+                            <div class="network-label">PKT OUT:</div>
+                        </div>
                         <div class="network-value">{:.0}</div>
                     </div>
                 </div>
@@ -1098,7 +1192,7 @@ pub fn page(
                             <path d="M9 2v2"/>
                             <path d="M9 20v2"/>
                         </svg>
-                        <div class="resource-text">8 cores available</div>
+                        <div class="resource-text">0 cores available</div>
                     </div>
                 </div>
                 
@@ -1279,11 +1373,40 @@ pub fn page(
         }}
         
         function updateMetricsDisplay(metrics, peers) {{
-            // Update peer count
+            // Update all metric cards
+            const metricValues = document.querySelectorAll('.metric-value');
             const peerCount = Object.keys(peers).length;
-            const peerElements = document.querySelectorAll('.metric-value');
-            if (peerElements.length > 1) {{
-                peerElements[1].textContent = peerCount;
+            
+            // Update block height (first card - index 0)
+            if (metricValues.length > 0 && metrics.block_height !== undefined) {{
+                metricValues[0].textContent = metrics.block_height.toLocaleString();
+            }}
+            
+            // Update peer node counts (second card)
+            let handshakedCount = 0;
+            let pendingCount = 0;
+            
+            Object.values(peers).forEach(peer => {{
+                if (peer.handshake_status === 'sent_what' || peer.handshake_status === 'received_what') {{
+                    handshakedCount++;
+                }} else {{
+                    pendingCount++;
+                }}
+            }});
+            
+            const handshakedElement = document.getElementById('handshaked-count');
+            const pendingElement = document.getElementById('pending-count');
+            
+            if (handshakedElement) {{
+                handshakedElement.textContent = handshakedCount.toLocaleString();
+            }}
+            if (pendingElement) {{
+                pendingElement.textContent = pendingCount.toLocaleString();
+            }}
+            
+            // Update uptime (fourth card - index 1 in metricValues array, since Peer Nodes and Network I/O don't have metric-value)
+            if (metricValues.length > 1 && metrics.uptime_formatted) {{
+                metricValues[1].textContent = metrics.uptime_formatted;
             }}
             
             // Update network I/O if we have uptime data
@@ -1300,6 +1423,37 @@ pub fn page(
                     networkValues[1].textContent = `${{Math.round(inPps).toLocaleString()}} pkt/s`;
                     networkValues[2].textContent = `${{outMbps.toFixed(1)}} MB/s`;
                     networkValues[3].textContent = `${{Math.round(outPps).toLocaleString()}} pkt/s`;
+                }}
+            }}
+            
+            // Update system resources (CPU and memory)
+            if (metrics.cpu_usage !== undefined && metrics.memory_usage !== undefined) {{
+                const resourceValues = document.querySelectorAll('.resource-value');
+                const progressFills = document.querySelectorAll('.progress-fill');
+                
+                if (resourceValues.length >= 2 && progressFills.length >= 2) {{
+                    // CPU usage
+                    const coresAvailable = metrics.cores_available || 1;
+                    const cpuUsage = Math.round(metrics.cpu_usage) / coresAvailable;
+                    resourceValues[0].textContent = `${{cpuUsage}}%`;
+                    progressFills[0].style.width = `${{Math.min(100, Math.max(0, cpuUsage))}}%`;
+                    
+                    // Memory usage
+                    const memoryMB = (metrics.memory_usage / 1024 / 1024).toFixed(0);
+                    const memoryPercent = Math.round((metrics.memory_usage / 1024 / 1024) * 100 / 16384); // Assuming 16GB total
+                    resourceValues[1].textContent = `${{memoryPercent}}%`;
+                    progressFills[1].style.width = `${{Math.min(100, Math.max(0, memoryPercent))}}%`;
+                    
+                    // Update resource info texts
+                    const resourceTexts = document.querySelectorAll('.resource-text');
+                    if (resourceTexts.length >= 2) {{
+                        // Update CPU info text with cores available
+                        if (metrics.cores_available !== undefined) {{
+                            resourceTexts[0].textContent = `${{metrics.cores_available}} cores available`;
+                        }}
+                        // Update memory info text  
+                        resourceTexts[1].textContent = `${{memoryMB}} MB used`;
+                    }}
                 }}
             }}
             
@@ -1491,7 +1645,9 @@ pub fn page(
         pubkey,       // Full pubkey for onclick
         &pubkey[..8], // Shortened pubkey for display (first 8 chars)
         version,
-        peers_count,
+        block_height,
+        handshaked_count,
+        pending_count,
         network_in_mbps,
         network_in_pps,
         network_out_mbps,

@@ -16,7 +16,7 @@ pub struct MetricsSnapshot {
     pub errors: HashMap<String, u64>,
     pub udp: UdpStats,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub udpps: Option<UdpStats>,
+    pub udpps: Option<UdpStats>, // stats per second
     pub uptime: u32,
 }
 
@@ -198,29 +198,40 @@ impl Metrics {
 
     /// Get a complete metrics snapshot
     pub fn get_snapshot(&self) -> MetricsSnapshot {
-        let guard = Guard::new();
-        let uptime = get_unix_secs_now() - self.start_time;
+        let uptime = self.get_uptime();
 
         let mut incoming_protos = HashMap::new();
-        let mut iter = self.incoming_protos.iter(&guard);
-        while let Some((proto_name, counter)) = iter.next() {
-            incoming_protos.insert(proto_name.clone(), counter.load(Ordering::Relaxed));
-        }
-
-        let mut errors = HashMap::new();
-        let mut iter = self.errors.iter(&guard);
-        while let Some((error_type, counter)) = iter.next() {
-            errors.insert(error_type.clone(), counter.load(Ordering::Relaxed));
-        }
-
         let mut outgoing_protos = HashMap::new();
-        let mut iter = self.outgoing_protos.iter(&guard);
-        while let Some((proto_name, counter)) = iter.next() {
-            outgoing_protos.insert(proto_name.clone(), counter.load(Ordering::Relaxed));
+        let mut errors = HashMap::new();
+
+        {
+            // scc guarded synchronous section
+            let guard = Guard::new();
+
+            let mut iter = self.incoming_protos.iter(&guard);
+            while let Some((proto_name, counter)) = iter.next() {
+                incoming_protos.insert(proto_name.clone(), counter.load(Ordering::Relaxed));
+            }
+
+            let mut iter = self.outgoing_protos.iter(&guard);
+            while let Some((proto_name, counter)) = iter.next() {
+                outgoing_protos.insert(proto_name.clone(), counter.load(Ordering::Relaxed));
+            }
+
+            let mut iter = self.errors.iter(&guard);
+            while let Some((error_type, counter)) = iter.next() {
+                errors.insert(error_type.clone(), counter.load(Ordering::Relaxed));
+            }
         }
 
         let (udp, udpps) = self.get_udp_stats(uptime);
         MetricsSnapshot { incoming_protos, outgoing_protos, uptime, errors, udp, udpps }
+    }
+
+    // Small convenience function to get uptime
+    pub fn get_uptime(&self) -> u32 {
+        let now = get_unix_secs_now();
+        now.saturating_sub(self.start_time)
     }
 
     fn get_udp_stats(&self, uptime_seconds: u32) -> (UdpStats, Option<UdpStats>) {

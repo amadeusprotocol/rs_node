@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
 
 pub async fn config_from_sk(path: &str) -> Result<Config> {
     let sk = read_sk(path).await?;
-    Ok(Config::from_sk(sk))
+    Ok(Config::new_daemonless(sk))
 }
 
 async fn handle_gen_sk(path: &str) -> Result<()> {

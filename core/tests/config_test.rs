@@ -79,7 +79,7 @@ async fn test_config_has_all_essential_elixir_parts() {
 #[tokio::test]
 async fn test_config_from_sk() {
     let sk = [42u8; 64];
-    let config = Config::from_sk(sk);
+    let config = Config::new_daemonless(sk);
 
     assert_eq!(config.trainer_sk, sk);
     assert_eq!(config.trainer_pk.len(), 48);

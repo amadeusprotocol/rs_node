@@ -1,7 +1,8 @@
 use crate::config::Config;
-use crate::consensus;
 use crate::node::anr;
+use crate::node::protocol::{Ping, Pong};
 use crate::utils::misc::get_unix_millis_now;
+use crate::{Context, consensus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -25,7 +26,6 @@ pub enum HandshakeStatus {
     ReceivedWhat,
 }
 
-// minimal concurrent map wrapper to mimic scc::HashMap APIs used in this module
 #[derive(Debug)]
 struct ConcurrentMap<K, V> {
     inner: RwLock<HashMap<K, V>>,
@@ -154,15 +154,23 @@ impl NodePeers {
     pub async fn clear_stale_inner(&self, node_registry: &anr::NodeAnrs) -> Result<usize, Error> {
         let ts_m = get_unix_millis_now();
 
+        // let mut peers = Vec::new();
+        // self.peers
+        //     .scan(|_, peer| {
+        //         peers.push(peer.clone());
+        //     })
+        //     .await;
+        // let anrs = node_registry.get_all().await;
+        // println!("{:?} {:?}", peers.len(), anrs.len());
         // Get validators for current height + 1
         let height = consensus::chain_height();
         let validators = consensus::trainers_for_height(height + 1).unwrap_or_default();
         let validators: Vec<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();
 
-        let validator_anr_ips = node_registry.by_pks_ip(&validators).await?;
+        let validator_anr_ips = node_registry.by_pks_ip(&validators).await;
         let validators_map: std::collections::HashSet<Vec<u8>> = validators.into_iter().collect();
 
-        let handshaked_ips = node_registry.handshaked_pk_ip4().await?;
+        let handshaked_ips = node_registry.handshaked_pk_ip4().await;
 
         let mut cur_ips = Vec::new();
         let mut cur_val_ips = Vec::new();
@@ -244,12 +252,12 @@ impl NodePeers {
     }
 
     /// Insert a new peer if it doesn't already exist
-    pub async fn insert_new_peer(&self, mut peer: Peer) -> Result<bool, Error> {
+    pub async fn insert_new_peer(&self, mut peer: Peer) -> bool {
         if peer.last_msg == 0 {
             peer.last_msg = get_unix_millis_now();
         }
 
-        Ok(self.peers.insert(peer.ip, peer).await.is_ok())
+        self.peers.insert(peer.ip, peer).await.is_ok()
     }
 
     /// Seed initial peers with validators
@@ -260,7 +268,7 @@ impl NodePeers {
 
         let validator_ips: Vec<_> = node_registry
             .by_pks_ip(&validators)
-            .await?
+            .await
             .into_iter()
             .filter(|ip| *ip != config.get_public_ipv4())
             .collect();
@@ -438,8 +446,8 @@ impl NodePeers {
     }
 
     /// Get peer by IP address
-    pub async fn by_ip(&self, ip: Ipv4Addr) -> Result<Option<Peer>, Error> {
-        Ok(self.peers.read(&ip, |_, peer| peer.clone()).await)
+    pub async fn by_ip(&self, ip: Ipv4Addr) -> Option<Peer> {
+        self.peers.read(&ip, |_, peer| peer.clone()).await
     }
 
     /// Get IP addresses for a given public key
@@ -651,8 +659,113 @@ impl NodePeers {
         Ok(filtered)
     }
 
+    pub async fn update_peer_from_ping(&self, ctx: &Context, ip: Ipv4Addr, ping: &Ping) {
+        let current_time = get_unix_millis_now();
+        let signer = ping.temporal.header.signer.to_vec();
+        let sk = ctx.config.trainer_sk.clone();
+
+        // Calculate shared secret if possible
+        let shared_secret = if let Ok(shared_key) = crate::utils::bls12_381::get_shared_secret(&signer, &sk) {
+            Some(shared_key.to_vec())
+        } else {
+            None
+        };
+
+        let updated = self
+            .peers
+            .update(&ip, |_key, peer| {
+                //peer.pk = Some(signer.clone());
+                peer.last_ping = Some(current_time);
+                peer.last_seen = current_time;
+                peer.last_msg = current_time;
+                peer.last_msg_type = Some("ping".to_string());
+                peer.shared_secret = shared_secret.clone();
+                peer.temporal = Some(TemporalInfo {
+                    header_unpacked: HeaderInfo {
+                        height: ping.temporal.header.height,
+                        prev_hash: Some(ping.temporal.header.prev_hash.to_vec()),
+                    },
+                });
+                peer.rooted = Some(RootedInfo {
+                    header_unpacked: HeaderInfo {
+                        height: ping.rooted.header.height,
+                        prev_hash: Some(ping.rooted.header.prev_hash.to_vec()),
+                    },
+                });
+            })
+            .await
+            .is_some();
+
+        if !updated {
+            // Create new peer if it doesn't exist
+            let new_peer = Peer {
+                ip,
+                pk: Some(signer),
+                version: None,
+                latency: None,
+                last_msg: current_time,
+                last_ping: Some(current_time),
+                last_pong: None,
+                shared_secret,
+                temporal: Some(TemporalInfo {
+                    header_unpacked: HeaderInfo {
+                        height: ping.temporal.header.height,
+                        prev_hash: Some(ping.temporal.header.prev_hash.to_vec()),
+                    },
+                }),
+                rooted: Some(RootedInfo {
+                    header_unpacked: HeaderInfo {
+                        height: ping.rooted.header.height,
+                        prev_hash: Some(ping.rooted.header.prev_hash.to_vec()),
+                    },
+                }),
+                last_seen: current_time,
+                last_msg_type: Some("ping".to_string()),
+                handshake_status: HandshakeStatus::None,
+            };
+            self.insert_new_peer(new_peer).await;
+        }
+    }
+
+    pub async fn update_peer_from_pong(&self, ip: Ipv4Addr, pong: &Pong) {
+        let current_time = get_unix_millis_now();
+        let latency = current_time.saturating_sub(pong.ts);
+
+        let updated = self
+            .peers
+            .update(&ip, |_key, peer| {
+                peer.latency = Some(latency);
+                peer.last_pong = Some(current_time);
+                peer.last_seen = current_time;
+                peer.last_msg = current_time;
+                peer.last_msg_type = Some("pong".to_string());
+            })
+            .await
+            .is_some();
+
+        if !updated {
+            // Create new peer if it doesn't exist
+            let new_peer = Peer {
+                ip,
+                pk: None,
+                version: None,
+                latency: Some(latency),
+                last_msg: current_time,
+                last_ping: None,
+                last_pong: Some(current_time),
+                shared_secret: None,
+                temporal: None,
+                rooted: None,
+                last_seen: current_time,
+                last_msg_type: Some("pong".to_string()),
+                handshake_status: HandshakeStatus::None,
+            };
+            self.insert_new_peer(new_peer).await;
+        }
+    }
+
     /// Update peer activity and last message type
-    pub async fn update_peer_activity(&self, ip: Ipv4Addr, last_msg_type: &str) -> Result<(), Error> {
+    pub async fn update_peer_from_proto(&self, ip: Ipv4Addr, last_msg_type: &str) {
         let current_time = get_unix_millis_now();
 
         // Try to update existing peer first
@@ -683,10 +796,8 @@ impl NodePeers {
                 last_msg_type: Some(last_msg_type.to_string()),
                 handshake_status: HandshakeStatus::None,
             };
-            self.insert_new_peer(new_peer).await?;
+            self.insert_new_peer(new_peer).await;
         }
-
-        Ok(())
     }
 
     /// Set the handshaked status for a peer with the given public key
@@ -850,18 +961,18 @@ mod tests {
         };
 
         // Test insert
-        assert!(node_peers.insert_new_peer(peer.clone()).await.unwrap());
+        assert!(node_peers.insert_new_peer(peer.clone()).await);
 
         // Test size
         assert_eq!(node_peers.size().await, 1);
 
         // Test by_ip
-        let retrieved = node_peers.by_ip(ip).await.unwrap();
+        let retrieved = node_peers.by_ip(ip).await;
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().ip, ip);
 
         // Test is_online
-        let retrieved = node_peers.by_ip(ip).await.unwrap().unwrap();
+        let retrieved = node_peers.by_ip(ip).await.unwrap();
         assert!(NodePeers::is_online(&retrieved, None));
     }
 }

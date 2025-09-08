@@ -151,6 +151,10 @@ impl Config {
             .unwrap_or_else(|| Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    pub fn get_udp_port(&self) -> u16 {
+        self.udp_port
+    }
+
     /// Create Config instance matching elixir config/runtime.exs
     pub async fn from_fs(root: Option<&str>, sk: Option<&str>) -> Result<Self, Error> {
         // work folder from env or default
@@ -299,7 +303,7 @@ impl Config {
         }
     }
 
-    pub fn from_sk(sk: [u8; 64]) -> Self {
+    pub fn new_daemonless(sk: [u8; 64]) -> Self {
         let pk = get_pk(&sk);
         let pk_b58 = bs58::encode(pk).into_string();
         let pop = bls12_381::sign(&sk, &pk, crate::consensus::DST_POP)
