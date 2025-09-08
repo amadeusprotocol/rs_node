@@ -177,14 +177,14 @@ pub struct Entry {
 }
 
 impl TryFrom<&[u8]> for Entry {
-    type Error = bincode::error::DecodeError;
+    type Error = Error;
 
     fn try_from(bin: &[u8]) -> Result<Self, Self::Error> {
         let config = bincode::config::standard();
         let (entry, len): (Self, usize) = bincode::decode_from_slice(bin, config)?;
 
         if len != bin.len() {
-            return Err(bincode::error::DecodeError::Other("entry bin length mismatch"));
+            return Err(Error::BadEtf("entry_bin_extra_data"));
         }
 
         Ok(entry)
@@ -192,7 +192,7 @@ impl TryFrom<&[u8]> for Entry {
 }
 
 impl TryInto<Vec<u8>> for Entry {
-    type Error = bincode::error::EncodeError;
+    type Error = Error;
 
     fn try_into(self) -> Result<Vec<u8>, Self::Error> {
         let config = bincode::config::standard();
@@ -225,8 +225,30 @@ impl Protocol for Entry {
         Ok(out)
     }
 
-    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<protocol::Instruction, protocol::Error> {
-        self.handle_inner().await.map_err(Into::into)
+    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
+        let height = self.header.height;
+
+        // compute rooted_tip_height if possible
+        let rooted_height = fabric::get_rooted_tip()
+            .ok()
+            .flatten()
+            .map(TryInto::try_into)
+            .and_then(|h| h.ok())
+            .and_then(|h| fabric::get_entry_by_hash(&h))
+            .map(|e| e.header.height)
+            .unwrap_or(0);
+
+        if height >= rooted_height {
+            let hash = self.hash;
+            let epoch = self.get_epoch();
+            let slot = self.header.slot; // height is the same as slot in amadeus
+            let bin: Vec<u8> = self.clone().try_into()?;
+
+            fabric::insert_entry(&hash, height, slot, &bin, get_unix_millis_now())?;
+            archiver::store(bin, format!("epoch-{}", epoch), format!("entry-{}", height)).await?;
+        }
+
+        Ok(vec![protocol::Instruction::Noop { why: "entry handling not implemented".to_string() }])
     }
 }
 
@@ -255,32 +277,6 @@ impl Entry {
         let term = Term::from(Map { map: m });
         let out = encode_safe(&term);
         Ok(out)
-    }
-
-    async fn handle_inner(&self) -> Result<protocol::Instruction, Error> {
-        let height = self.header.height;
-
-        // compute rooted_tip_height if possible
-        let rooted_height = fabric::get_rooted_tip()
-            .ok()
-            .flatten()
-            .map(TryInto::try_into)
-            .and_then(|h| h.ok())
-            .and_then(|h| fabric::get_entry_by_hash(&h))
-            .map(|e| e.header.height)
-            .unwrap_or(0);
-
-        if height >= rooted_height {
-            let hash = self.hash;
-            let epoch = self.get_epoch();
-            let slot = self.header.slot; // height is the same as slot in amadeus
-            let bin: Vec<u8> = self.clone().try_into()?;
-
-            fabric::insert_entry(&hash, height, slot, &bin, get_unix_millis_now())?;
-            archiver::store(bin, format!("epoch-{}", epoch), format!("entry-{}", height)).await?;
-        }
-
-        Ok(protocol::Instruction::Noop { why: "entry handling not implemented".to_string() })
     }
 
     pub fn from_etf_bin_validated(bin: &[u8], entry_size_limit: usize) -> Result<Entry, Error> {

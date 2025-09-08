@@ -168,7 +168,7 @@ impl NodePeers {
         let validator_anr_ips = node_registry.by_pks_ip(&validators).await;
         let validators_map: std::collections::HashSet<Vec<u8>> = validators.into_iter().collect();
 
-        let handshaked_ips = node_registry.get_all_handshaked_ip4().await;
+        let handshaked_ips = node_registry.get_all_handshaked_anrs().await;
 
         let mut cur_ips = Vec::new();
         let mut cur_val_ips = Vec::new();
@@ -204,7 +204,8 @@ impl NodePeers {
         // Find missing validators and handshaked peers
         let missing_vals: Vec<_> = validator_anr_ips.iter().filter(|ip| !cur_val_ips.contains(ip)).cloned().collect();
 
-        let missing_ips: Vec<_> = handshaked_ips.into_iter().filter(|ip| !cur_ips.contains(ip)).collect();
+        let missing_ips: Vec<_> =
+            handshaked_ips.into_iter().map(|a| a.ip4).filter(|ip| !cur_ips.contains(ip)).collect();
 
         // Get max_peers config
         let add_size = self
@@ -885,7 +886,7 @@ impl NodePeers {
     }
 
     /// Update peer with version and public key information from ANR
-    pub async fn update_peer_from_anr(&self, ip: Ipv4Addr, pk: &[u8], version: &str, status: HandshakeStatus) {
+    pub async fn update_peer_from_anr(&self, ip: Ipv4Addr, pk: &[u8], version: &str, status: Option<HandshakeStatus>) {
         let current_time = get_unix_millis_now();
         let updated = self
             .peers
@@ -893,13 +894,15 @@ impl NodePeers {
                 peer.pk = Some(pk.to_vec());
                 peer.version = Some(version.to_string());
                 peer.last_seen = current_time;
-                peer.handshake_status = status.clone();
+                if let Some(status) = &status {
+                    peer.handshake_status = status.clone();
+                }
             })
             .await
             .is_some();
 
+        // Create new peer if it doesn't exist
         if !updated {
-            // Create new peer if it doesn't exist
             let peer = Peer {
                 ip,
                 pk: Some(pk.to_vec()),
@@ -913,7 +916,7 @@ impl NodePeers {
                 rooted: None,
                 last_seen: current_time,
                 last_msg_type: None,
-                handshake_status: HandshakeStatus::None,
+                handshake_status: status.unwrap_or(HandshakeStatus::None),
             };
             let _ = self.peers.insert(ip, peer).await;
         }

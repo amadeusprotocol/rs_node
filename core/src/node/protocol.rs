@@ -5,17 +5,15 @@ use crate::config::Config;
 use crate::consensus::attestation::AttestationBulk;
 use crate::consensus::consensus::{get_chain_tip_entry, get_rooted_tip_entry};
 use crate::consensus::entry::{Entry, EntrySummary};
-use crate::consensus::tx;
 use crate::consensus::{attestation, entry};
+use crate::consensus::{consensus, tx};
 use crate::metrics::Metrics;
 use crate::node::anr::Anr;
 use crate::node::peers::HandshakeStatus;
 use crate::node::{ReedSolomonReassembler, anr, msg_v2, peers, reassembler};
 use crate::socket::UdpSocketExt;
 use crate::utils::bls12_381;
-use crate::utils::bls12_381::sign as bls_sign;
-use crate::utils::bls12_381::verify as bls_verify;
-use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now, get_unix_secs_now};
+use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now, get_unix_secs_now, pk_challenge_into_bin};
 use crate::utils::safe_etf::encode_safe;
 use eetf::convert::TryAsRef;
 use eetf::{Atom, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, FixInteger, List, Map, Term};
@@ -25,16 +23,6 @@ use std::io::Error as IoError;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tracing::{info, instrument, warn};
-
-/// Creates string representation as bytes, compatible with Erlang's :erlang.integer_to_binary/1
-fn pk_challenge_into_bin(pk: &[u8], challenge: i32) -> Vec<u8> {
-    // challenge_binary = :erlang.integer_to_binary(challenge)
-    // signature_data = <<pk::binary, challenge_binary::binary>>
-    let challenge_binary = challenge.to_string().as_bytes().to_vec();
-    let mut signature_data = pk.to_vec();
-    signature_data.extend_from_slice(&challenge_binary);
-    signature_data
-}
 
 /// Every object that has this trait must be convertible from an Erlang ETF
 /// Binary representation and must be able to handle itself as a message
@@ -46,7 +34,7 @@ pub trait Protocol: Typename + Debug + Send + Sync {
     /// Convert to ETF binary format for network transmission
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error>;
     /// Handle a message returning instructions for upper layers
-    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Instruction, Error>;
+    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error>;
     /// Send this protocol message to a destination using context's UDP socket
     async fn send_to_with_metrics(
         &self,
@@ -59,6 +47,9 @@ pub trait Protocol: Typename + Debug + Send + Sync {
         let payload = self.to_etf_bin().inspect_err(|e| metrics.add_error(e))?;
         let shards = ReedSolomonReassembler::build_shards(config, &payload).inspect_err(|e| metrics.add_error(e))?;
         for shard in &shards {
+            if self.typename() == "ping" {
+                println!("{shard:?}");
+            }
             socket.send_to_with_metrics(shard, dst, metrics).await?;
         }
         metrics.add_outgoing_proto(self.typename());
@@ -89,7 +80,13 @@ pub enum Error {
     #[error(transparent)]
     Entry(#[from] entry::Error),
     #[error(transparent)]
+    Archiver(#[from] crate::utils::archiver::Error),
+    #[error(transparent)]
     Peers(#[from] peers::Error),
+    #[error(transparent)]
+    Consensus(#[from] consensus::Error),
+    #[error(transparent)]
+    Fabric(#[from] crate::consensus::fabric::Error),
     #[error(transparent)]
     Sol(#[from] sol::Error),
     #[error(transparent)]
@@ -115,6 +112,7 @@ impl Typename for Error {
 pub enum Instruction {
     Noop { why: String },
     SendPong { ts_m: u64, dst: Ipv4Addr },
+    SendPeersV2 { dst: Ipv4Addr },
     ValidTxs { txs: Vec<Vec<u8>> },
     Peers { ips: Vec<String> },
     ReceivedSol { sol: Solution },
@@ -129,7 +127,7 @@ pub enum Instruction {
     SpecialBusinessReply { business: Vec<u8> },
     SolicitEntry { hash: Vec<u8> },
     SolicitEntry2,
-    SendWhat { what: What, dst: Ipv4Addr },
+    SendWhat { challenge: i32, dst: Ipv4Addr },
     ReplyWhatChallenge { anr: anr::Anr, challenge: u32 },
     ReceivedWhatResponse { responder_anr: anr::Anr, challenge: u32, their_signature: Vec<u8> },
     HandshakeComplete { anr: anr::Anr },
@@ -158,6 +156,7 @@ pub fn parse_etf_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
         Solution::NAME => Box::new(Solution::from_etf_map_validated(map)?),
         TxPool::TYPENAME => Box::new(TxPool::from_etf_map_validated(map)?),
         Peers::NAME => Box::new(Peers::from_etf_map_validated(map)?),
+        PeersV2::NAME => Box::new(PeersV2::from_etf_map_validated(map)?),
         NewPhoneWhoDis::TYPENAME => Box::new(NewPhoneWhoDis::from_etf_map_validated(map)?),
         What::NAME => Box::new(What::from_etf_map_validated(map)?),
         SpecialBusiness::NAME => Box::new(SpecialBusiness::from_etf_map_validated(map)?),
@@ -195,6 +194,11 @@ pub struct TxPool {
 #[derive(Debug)]
 pub struct Peers {
     pub ips: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct PeersV2 {
+    pub anrs: Vec<Anr>,
 }
 
 #[derive(Debug)]
@@ -284,7 +288,7 @@ impl Protocol for Ping {
     }
 
     #[instrument(skip(self, ctx), fields(src = %src), name = "Ping::handle")]
-    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Instruction, Error> {
+    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
         // TODO: validate temporal and rooted entry signatures like in Elixir
 
         let signer = self.temporal.header.signer.to_vec();
@@ -295,10 +299,17 @@ impl Protocol for Ping {
 
         if is_trainer || ctx.is_peer_handshaked(src).await {
             ctx.node_peers.update_peer_from_ping(ctx, src, self).await;
-            Ok(Instruction::SendPong { ts_m: self.ts, dst: src })
+
+            let mut instructions = Vec::new();
+            if ctx.is_peer_handshaked(src).await {
+                instructions.push(Instruction::SendPeersV2 { dst: src });
+            }
+            instructions.push(Instruction::SendPong { ts_m: self.ts, dst: src });
+
+            Ok(instructions)
         } else {
             warn!("{src} is not handshaked, not a trainer");
-            Ok(Instruction::Noop { why: "ping from non-trainer without slip".to_string() })
+            Ok(vec![Instruction::Noop { why: "ping from non-trainer without slip".to_string() }])
         }
     }
 }
@@ -313,19 +324,10 @@ impl Ping {
     /// Assemble Ping from current temporal and rooted tips stored in RocksDB
     /// Takes only header, signature, mask for each tip
     pub fn from_current_tips() -> Result<Self, Error> {
-        // temporal summary
-        let temporal = match get_chain_tip_entry() {
-            Ok(Some(entry)) => entry.into(),
-            _ => return Err(Error::BadEtf("temporal_tip")),
-        };
+        let temporal = get_chain_tip_entry()?;
+        let rooted = get_rooted_tip_entry()?;
 
-        // rooted summary
-        let rooted = match get_rooted_tip_entry() {
-            Ok(Some(entry)) => entry.into(),
-            _ => return Err(Error::BadEtf("rooted_tip")),
-        };
-
-        Ok(Self::new(temporal, rooted))
+        Ok(Self::new(temporal.into(), rooted.into()))
     }
 }
 
@@ -352,13 +354,13 @@ impl Protocol for Pong {
         Ok(etf_data)
     }
 
-    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Instruction, Error> {
+    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
         if ctx.is_peer_handshaked(src).await {
             ctx.node_peers.update_peer_from_pong(src, self).await;
-            Ok(Instruction::Noop { why: "pong processed".to_string() })
+            Ok(vec![Instruction::Noop { why: "pong processed".to_string() }])
         } else {
             warn!("{src} is not handshaked");
-            Ok(Instruction::Noop { why: "pong without slip".to_string() })
+            Ok(vec![Instruction::Noop { why: "pong without slip".to_string() }])
         }
     }
 }
@@ -393,9 +395,9 @@ impl Protocol for TxPool {
         Ok(etf_data)
     }
 
-    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Instruction, Error> {
+    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
         // TODO: update ETS-like tx pool with valid_txs
-        Ok(Instruction::Noop { why: "txpool handling not implemented".to_string() })
+        Ok(vec![Instruction::Noop { why: "txpool handling not implemented".to_string() }])
     }
 }
 
@@ -453,14 +455,57 @@ impl Protocol for Peers {
         Ok(etf_data)
     }
 
-    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Instruction, Error> {
+    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
         // TODO: update ETS-like peer table with new IPs
-        Ok(Instruction::Noop { why: "peers handling not implemented".to_string() })
+        Ok(vec![Instruction::Noop { why: "peers handling not implemented".to_string() }])
     }
 }
 
 impl Peers {
     pub const NAME: &'static str = "peers";
+}
+
+impl Typename for PeersV2 {
+    fn typename(&self) -> &'static str {
+        Self::NAME
+    }
+}
+
+#[async_trait::async_trait]
+impl Protocol for PeersV2 {
+    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
+        let list = map.get_list("anrs").ok_or(Error::BadEtf("anrs"))?;
+        let mut anrs = Vec::new();
+        for term in list {
+            let anr_map = term.get_term_map().ok_or(Error::BadEtf("anr_map"))?;
+            let anr = Anr::from_etf_term_map(anr_map)?;
+            if anr.verify_signature() {
+                anrs.push(anr);
+            }
+        }
+        Ok(Self { anrs })
+    }
+
+    fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
+        let anr_terms: Vec<Term> = self.anrs.iter().map(|anr| anr.to_etf_term()).collect();
+        let mut m = HashMap::new();
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        m.insert(Term::Atom(Atom::from("anrs")), Term::from(List { elements: anr_terms }));
+        let term = Term::from(Map { map: m });
+        let etf_data = encode_safe(&term);
+        Ok(etf_data)
+    }
+
+    async fn handle(&self, ctx: &Context, _src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
+        for anr in &self.anrs {
+            ctx.node_anrs.insert(anr.clone()).await;
+        }
+        Ok(vec![Instruction::Noop { why: format!("inserted {} anrs", self.anrs.len()) }])
+    }
+}
+
+impl PeersV2 {
+    pub const NAME: &'static str = "peers_v2";
 }
 
 impl Ping {}
@@ -498,23 +543,19 @@ impl Protocol for NewPhoneWhoDis {
     }
 
     #[instrument(skip(self, ctx), fields(src = %src), name = "NewPhoneWhoDis::handle")]
-    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Instruction, Error> {
+    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
         // SECURITY: ip address spoofing protection
         if src != self.anr.ip4 {
             warn!("new_phone_who_dis ip mismatched with anr {}", self.anr.ip4);
             return Err(Error::BadEtf("anr_ip_mismatch"));
         }
 
-        let anr = Anr::from_config(&ctx.get_config())?;
-        let data = pk_challenge_into_bin(&ctx.get_config().trainer_pk, self.challenge);
-        let signature = bls_sign(&ctx.get_config().trainer_sk, &data, crate::consensus::DST_ANR_CHALLENGE)?.to_vec();
-
         ctx.node_anrs.insert(self.anr.clone()).await;
-        ctx.update_peer_from_anr(src, &self.anr.pk, &self.anr.version, HandshakeStatus::Completed).await;
+        ctx.update_peer_from_anr(src, &self.anr.pk, &self.anr.version, None).await;
 
         info!("completed handshake, pk {}", bs58::encode(&self.anr.pk).into_string());
 
-        Ok(Instruction::SendWhat { what: What { anr, challenge: self.challenge, signature }, dst: src })
+        Ok(vec![Instruction::SendWhat { challenge: self.challenge, dst: src }])
     }
 }
 
@@ -567,7 +608,7 @@ impl Protocol for What {
     }
 
     #[instrument(skip(self, ctx), fields(src = %src), name = "What::handle")]
-    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Instruction, Error> {
+    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
         // SECURITY: ip address spoofing protection
         if src != self.anr.ip4 {
             warn!("what ip mismatched with anr {}", self.anr.ip4);
@@ -578,26 +619,21 @@ impl Protocol for What {
         let now = get_unix_secs_now();
         let ts = self.challenge as u32; // challenge is a hidden seconds since epoch
         if ts < now.saturating_sub(6) {
-            return Ok(Instruction::Noop { why: format!("challenge is {} seconds old", now - ts) });
+            return Ok(vec![Instruction::Noop { why: format!("challenge is {} seconds old", now - ts) }]);
         }
 
         // FIXME: add check for ts being too far in the future?
 
         let data = pk_challenge_into_bin(&self.anr.pk, self.challenge);
-        bls_verify(&self.anr.pk, &self.signature, &data, crate::consensus::DST_ANR_CHALLENGE)?;
+        bls12_381::verify(&self.anr.pk, &self.signature, &data, crate::consensus::DST_ANR_CHALLENGE)?;
 
         ctx.node_anrs.insert(self.anr.clone()).await;
         ctx.node_anrs.set_handshaked(&self.anr.pk).await;
-        ctx.update_peer_from_anr(src, &self.anr.pk, &self.anr.version, HandshakeStatus::Completed).await;
+        ctx.update_peer_from_anr(src, &self.anr.pk, &self.anr.version, Some(HandshakeStatus::Completed)).await;
 
         info!("completed handshake, pk {}", bs58::encode(&self.anr.pk).into_string());
-        //
-        // let peer = ctx.node_peers.by_ip(src).await.unwrap();
-        // println!("{peer:?}");
-        // let anr = ctx.node_registry.get(&self.anr.pk).await.unwrap();
-        // println!("{anr:?}");
 
-        Ok(Instruction::Noop { why: "handshake completed".to_string() })
+        Ok(vec![Instruction::Noop { why: "handshake completed".to_string() }])
     }
 }
 
@@ -627,10 +663,10 @@ impl Protocol for SpecialBusiness {
         Ok(etf_data)
     }
 
-    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Instruction, Error> {
+    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
         // TODO: Implement special business handling logic
         // For now, just pass the business data to the state handler
-        Ok(Instruction::SpecialBusiness { business: self.business.clone() })
+        Ok(vec![Instruction::SpecialBusiness { business: self.business.clone() }])
     }
 }
 
@@ -660,9 +696,9 @@ impl Protocol for SpecialBusinessReply {
         Ok(etf_data)
     }
 
-    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Instruction, Error> {
+    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
         // TODO: Implement special business reply handling logic
-        Ok(Instruction::SpecialBusinessReply { business: self.business.clone() })
+        Ok(vec![Instruction::SpecialBusinessReply { business: self.business.clone() }])
     }
 }
 
@@ -682,6 +718,7 @@ impl SpecialBusinessReply {
 mod tests {
     use super::*;
     use crate::consensus::entry::{EntryHeader, EntrySummary};
+    use crate::utils::bls12_381::sign as bls_sign;
     use crate::utils::misc::get_unix_secs_now;
 
     #[tokio::test]

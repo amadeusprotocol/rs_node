@@ -177,7 +177,7 @@ pub fn get_shared_secret(public_key: &[u8], sk_bytes: &[u8]) -> Result<[u8; 48],
     let pk_g1 = parse_public_key(public_key)?; // validates pk
     // Convert blst SecretKey to scalar for elliptic curve multiplication
     let sk_scalar_bytes = sk.to_bytes();
-    let sk_scalar = Scalar::from_bytes(&sk_scalar_bytes).unwrap();
+    let sk_scalar = Scalar::from_bytes(&sk_scalar_bytes).into_option().ok_or(Error::InvalidSecretKey)?;
     Ok((pk_g1 * sk_scalar).to_affine().to_compressed())
 }
 

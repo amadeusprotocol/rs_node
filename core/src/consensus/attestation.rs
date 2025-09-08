@@ -92,9 +92,9 @@ impl Protocol for AttestationBulk {
     }
 
     #[instrument(skip(self, _ctx), name = "AttestationBulk::handle", err)]
-    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<protocol::Instruction, protocol::Error> {
+    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
         // TODO: handle the attestation bulk
-        Ok(protocol::Instruction::Noop { why: "attestation bulk handling not implemented".to_string() })
+        Ok(vec![protocol::Instruction::Noop { why: "attestation bulk handling not implemented".to_string() }])
     }
 }
 

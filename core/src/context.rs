@@ -1,11 +1,12 @@
+use crate::consensus::DST_ANR_CHALLENGE;
 use crate::node::anr::{Anr, NodeAnrs};
 use crate::node::peers::HandshakeStatus;
-use crate::node::peers::HandshakeStatus::Initiated;
 use crate::node::protocol::*;
 use crate::node::protocol::{Instruction, NewPhoneWhoDis};
 use crate::node::{anr, peers};
 use crate::socket::UdpSocketExt;
-use crate::utils::misc::{Typename, get_unix_secs_now};
+use crate::utils::bls12_381;
+use crate::utils::misc::{Typename, get_unix_secs_now, pk_challenge_into_bin};
 use crate::utils::misc::{format_duration, get_unix_millis_now};
 use crate::{SystemStats, config, consensus, get_system_stats, metrics, node, utils};
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,10 @@ use tracing::{debug, info, instrument, warn};
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
 pub enum Error {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Bls(#[from] bls12_381::Error),
     #[error(transparent)]
     Fabric(#[from] consensus::fabric::Error),
     #[error(transparent)]
@@ -126,8 +131,9 @@ impl Context {
                 loop {
                     ticker.tick().await;
                     if let Err(e) = ctx.broadcast_task().await {
-                        warn!("broadcast task error: {e}");
-                        ctx.metrics.add_error(&e);
+                        // broadcast errors are expected when starting from scratch
+                        debug!("broadcast task error: {e}");
+                        //ctx.metrics.add_error(&e);
                     }
                 }
             }
@@ -144,7 +150,7 @@ impl Context {
 
         for ip in &self.config.seed_ips {
             new_phone_who_dis.send_to_with_metrics(&self.config, self.socket.clone(), *ip, &self.metrics).await?;
-            self.node_peers.set_handshake_status(*ip, Initiated).await?;
+            self.node_peers.set_handshake_status(*ip, HandshakeStatus::Initiated).await?;
         }
 
         info!("sent new_phone_who_dis to {} seed nodes", self.config.seed_ips.len());
@@ -171,7 +177,7 @@ impl Context {
             let nodes_count = unverified_anrs.len();
             for ip in &unverified_anrs {
                 new_phone_who_dis.send_to_with_metrics(&self.config, self.socket.clone(), *ip, &self.metrics).await?;
-                self.node_peers.set_handshake_status(*ip, Initiated).await?;
+                self.node_peers.set_handshake_status(*ip, HandshakeStatus::Initiated).await?;
             }
 
             info!("sent new_phone_who_dis to {nodes_count} nodes");
@@ -182,7 +188,22 @@ impl Context {
 
     #[instrument(skip(self), name = "broadcast_task")]
     async fn broadcast_task(&self) -> Result<(), Error> {
-        // placeholder for Ping broadcast functionality
+        let ping = Ping::from_current_tips()?;
+
+        let my_ip = self.config.get_public_ipv4();
+        let peers = self.node_peers.all().await?;
+        if !peers.is_empty() {
+            let mut sent_count = 0;
+            for peer in peers {
+                if peer.ip != my_ip {
+                    self.send_message_to(&ping, peer.ip).await?;
+                    sent_count += 1;
+                }
+            }
+
+            debug!("sent {sent_count} ping messages");
+        }
+
         Ok(())
     }
 
@@ -195,8 +216,8 @@ impl Context {
     }
 
     /// Convenience function to send UDP data with metrics tracking
-    pub async fn send_to(&self, buf: &[u8], target: SocketAddr) -> std::io::Result<usize> {
-        self.socket.send_to_with_metrics(buf, target, &self.metrics).await
+    pub async fn send_message_to(&self, message: &impl Protocol, dst: Ipv4Addr) -> Result<(), Error> {
+        message.send_to_with_metrics(&self.config, self.socket.clone(), dst, &self.metrics).await.map_err(Into::into)
     }
 
     /// Convenience function to receive UDP data with metrics tracking
@@ -315,7 +336,7 @@ impl Context {
     }
 
     /// Update peer information from ANR data
-    pub async fn update_peer_from_anr(&self, ip: Ipv4Addr, pk: &[u8], version: &str, status: HandshakeStatus) {
+    pub async fn update_peer_from_anr(&self, ip: Ipv4Addr, pk: &[u8], version: &str, status: Option<HandshakeStatus>) {
         self.node_peers.update_peer_from_anr(ip, pk, version, status).await
     }
 
@@ -347,7 +368,7 @@ impl Context {
         None
     }
 
-    pub async fn handle(&self, message: Box<dyn Protocol>, src: Ipv4Addr) -> Result<Instruction, Error> {
+    pub async fn handle(&self, message: Box<dyn Protocol>, src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
         self.metrics.add_incoming_proto(message.typename());
         message.handle(self, src).await.map_err(|e| {
             warn!("can't handle {}: {e}", message.typename());
@@ -366,44 +387,45 @@ impl Context {
         match instruction {
             Instruction::Noop { why } => {
                 debug!("noop: {why}");
-                Ok(())
             }
 
-            Instruction::SendWhat { what, dst } => {
-                // Send the specified protocol message to the destination
-                let Context { config, socket, metrics, .. } = self;
-                what.send_to_with_metrics(config, socket.clone(), dst, metrics)
-                    .await
-                    .map_err(|e| Error::String(format!("Failed to send SendWhat to {}: {:?}", dst, e)))?;
-                Ok(())
+            Instruction::SendWhat { challenge, dst } => {
+                let anr = Anr::from_config(&self.config)?;
+                let data = pk_challenge_into_bin(&self.config.trainer_pk, challenge);
+                let signature = bls12_381::sign(&self.config.trainer_sk, &data, DST_ANR_CHALLENGE)?.to_vec();
+                let what = What { anr, challenge, signature };
+                self.send_message_to(&what, dst).await?;
             }
 
             Instruction::SendPong { ts_m, dst } => {
-                // Reply with pong message
                 let seen_time_ms = get_unix_millis_now();
                 let pong = Pong { ts: ts_m, seen_time: seen_time_ms };
-                pong.send_to_with_metrics(&self.config, self.socket.clone(), dst, &self.metrics)
-                    .await
-                    .map_err(|e| Error::String(format!("Failed to send pong: {:?}", e)))
+                self.send_message_to(&pong, dst).await?;
+            }
+
+            Instruction::SendPeersV2 { dst } => {
+                let anrs = self.node_anrs.get_random_handshaked_anrs(3).await;
+                if anrs.is_empty() {
+                    debug!("not sending peers_v2, no handshaked anrs");
+                    return Ok(());
+                }
+                let peers_v2 = PeersV2 { anrs };
+                self.send_message_to(&peers_v2, dst).await?;
             }
 
             Instruction::ValidTxs { txs } => {
                 // Insert valid transactions into tx pool
                 info!("received {} valid transactions", txs.len());
                 // TODO: implement TXPool.insert(txs) equivalent
-                Ok(())
             }
 
             Instruction::Peers { ips } => {
                 // Handle received peer IPs
                 info!("received {} peer IPs", ips.len());
-                for ip_str in ips {
-                    if let Ok(ip) = ip_str.parse::<Ipv4Addr>() {
-                        // TODO: add peer to NodePeers or update peer list
-                        debug!("adding peer IP: {}", ip);
-                    }
+                for ip in ips {
+                    // TODO: add peer to NodePeers or update peer list
+                    debug!("adding peer IP: {}", ip);
                 }
-                Ok(())
             }
 
             Instruction::ReceivedSol { sol: _ } => {
@@ -416,7 +438,6 @@ impl Context {
                 // - Check POP signature
                 // - Add to TXPool as gifted sol
                 // - Build submit_sol transaction
-                Ok(())
             }
 
             Instruction::ReceivedEntry { entry } => {
@@ -427,7 +448,6 @@ impl Context {
                 // - Check if entry already exists by hash
                 // - Validate entry
                 // - Insert into Fabric if height >= rooted_tip_height
-                Ok(())
             }
 
             Instruction::AttestationBulk { bulk } => {
@@ -437,7 +457,6 @@ impl Context {
                 // Following Elixir implementation:
                 // - Unpack and validate each attestation
                 // - Add to FabricCoordinatorGen or AttestationCache
-                Ok(())
             }
 
             Instruction::ConsensusesPacked { packed: _ } => {
@@ -447,7 +466,6 @@ impl Context {
                 // Following Elixir implementation:
                 // - Unpack each consensus
                 // - Send to FabricCoordinatorGen for validation
-                Ok(())
             }
 
             Instruction::CatchupEntryReq { heights } => {
@@ -455,13 +473,11 @@ impl Context {
                 info!("received catchup entry request for {} heights", heights.len());
                 if heights.len() > 100 {
                     warn!("catchup entry request too large: {} heights", heights.len());
-                    return Ok(());
                 }
                 // TODO: implement entry catchup response
                 // Following Elixir implementation:
                 // - For each height, get entries by height
                 // - Send entry messages back to requester
-                Ok(())
             }
 
             Instruction::CatchupTriReq { heights } => {
@@ -469,13 +485,11 @@ impl Context {
                 info!("received catchup tri request for {} heights", heights.len());
                 if heights.len() > 30 {
                     warn!("catchup tri request too large: {} heights", heights.len());
-                    return Ok(());
                 }
                 // TODO: implement tri catchup response
                 // Following Elixir implementation:
                 // - Get entries by height with attestations or consensus
                 // - Send entry messages with attached data back to requester
-                Ok(())
             }
 
             Instruction::CatchupBiReq { heights } => {
@@ -483,13 +497,11 @@ impl Context {
                 info!("received catchup bi request for {} heights", heights.len());
                 if heights.len() > 30 {
                     warn!("catchup bi request too large: {} heights", heights.len());
-                    return Ok(());
                 }
                 // TODO: implement bi catchup response
                 // Following Elixir implementation:
                 // - Get attestations and consensuses by height
                 // - Send attestation_bulk and consensus_bulk messages
-                Ok(())
             }
 
             Instruction::CatchupAttestationReq { hashes } => {
@@ -497,13 +509,11 @@ impl Context {
                 info!("received catchup attestation request for {} hashes", hashes.len());
                 if hashes.len() > 30 {
                     warn!("catchup attestation request too large: {} hashes", hashes.len());
-                    return Ok(());
                 }
                 // TODO: implement attestation catchup response
                 // Following Elixir implementation:
                 // - Get attestations by entry hash
                 // - Send attestation_bulk message back to requester
-                Ok(())
             }
 
             Instruction::SpecialBusiness { business: _ } => {
@@ -514,7 +524,6 @@ impl Context {
                 // - Parse business operation (slash_trainer_tx, slash_trainer_entry)
                 // - Generate appropriate attestation/signature
                 // - Reply with special_business_reply
-                Ok(())
             }
 
             Instruction::SpecialBusinessReply { business: _ } => {
@@ -525,7 +534,6 @@ impl Context {
                 // - Parse reply operation
                 // - Verify signatures
                 // - Forward to SpecialMeetingGen
-                Ok(())
             }
 
             Instruction::SolicitEntry { hash: _ } => {
@@ -536,7 +544,6 @@ impl Context {
                 // - Check if peer is authorized trainer
                 // - Compare entry scores
                 // - Potentially backstep temporal chain
-                Ok(())
             }
 
             Instruction::SolicitEntry2 => {
@@ -547,7 +554,6 @@ impl Context {
                 // - Check if peer is authorized trainer for next height
                 // - Get best entry for current height
                 // - Potentially rewind chain if needed
-                Ok(())
             }
 
             Instruction::ReplyWhatChallenge { anr: _, challenge: _ } => {
@@ -555,7 +561,6 @@ impl Context {
                 info!("replying to what challenge");
                 // TODO: implement what challenge reply
                 // This is handled internally by NewPhoneWhoDis protocol handler
-                Ok(())
             }
 
             Instruction::ReceivedWhatResponse { responder_anr: _, challenge: _, their_signature: _ } => {
@@ -563,7 +568,6 @@ impl Context {
                 info!("received what response");
                 // TODO: implement what response handling
                 // This is handled internally by What protocol handler
-                Ok(())
             }
 
             Instruction::HandshakeComplete { anr: _ } => {
@@ -571,9 +575,10 @@ impl Context {
                 info!("handshake completed with peer");
                 // TODO: mark peer as handshaked
                 // This is handled internally by What protocol handler
-                Ok(())
             }
-        }
+        };
+
+        Ok(())
     }
 }
 
@@ -806,10 +811,11 @@ mod tests {
         match Context::with_config_and_socket(config, socket).await {
             Ok(context) => {
                 let mut buf = [0u8; 1024];
-                let target = "127.0.0.1:1234".parse().unwrap();
+                let target: Ipv4Addr = "127.0.0.1".parse().unwrap();
 
+                let pong = Pong { ts: 1234567890, seen_time: 1234567890123 };
                 // Test send_to convenience function - should return error with MockSocket but not panic
-                match context.send_to(b"test", target).await {
+                match context.send_message_to(&pong, target).await {
                     Ok(_) => {
                         // unexpected success with MockSocket
                     }

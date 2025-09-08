@@ -124,9 +124,9 @@ impl Protocol for Solution {
         &self,
         _ctx: &Context,
         _src: std::net::Ipv4Addr,
-    ) -> Result<protocol::Instruction, protocol::Error> {
+    ) -> Result<Vec<protocol::Instruction>, protocol::Error> {
         // cache the solution
-        Ok(protocol::Instruction::Noop { why: "solution handling not implemented".to_string() })
+        Ok(vec![protocol::Instruction::Noop { why: "solution handling not implemented".to_string() }])
     }
 }
 

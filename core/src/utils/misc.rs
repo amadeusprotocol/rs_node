@@ -278,6 +278,16 @@ pub fn bitvec_to_bools(bytes: Vec<u8>) -> Vec<bool> {
 //     out
 // }
 
+/// Creates string representation as bytes, compatible with Erlang's :erlang.integer_to_binary/1
+pub fn pk_challenge_into_bin(pk: &[u8], challenge: i32) -> Vec<u8> {
+    // challenge_binary = :erlang.integer_to_binary(challenge)
+    // signature_data = <<pk::binary, challenge_binary::binary>>
+    let challenge_binary = challenge.to_string().as_bytes().to_vec();
+    let mut signature_data = pk.to_vec();
+    signature_data.extend_from_slice(&challenge_binary);
+    signature_data
+}
+
 /// Format a duration into human-readable form following the requirements:
 /// - seconds if less than a minute
 /// - minutes plus seconds if less than hour

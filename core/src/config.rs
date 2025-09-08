@@ -18,7 +18,7 @@ pub const QUORUM: usize = 3; // quorum size for AMA
 pub const QUORUM_SINGLE: usize = 1; // quorum size for single shard
 pub const CLEANUP_PERIOD_SECS: u64 = 8; // how often node does the cleanup
 pub const HANDSHAKE_PERIOD_SECS: u64 = 1; // how often node checks ANR status
-pub const BROADCAST_PERIOD_SECS: u64 = 5; // how often node broadcasts pings
+pub const BROADCAST_PERIOD_SECS: u64 = 1; // how often node broadcasts pings
 
 pub const VERSION: [u8; 3] = parse_version();
 

@@ -66,18 +66,20 @@ async fn recv_loop(ctx: Arc<Context>) -> anyhow::Result<()> {
                     debug!("received txpool from {src}");
                 }
 
-                let instruction = match ctx.handle(message, ip).await {
+                let instructions = match ctx.handle(message, ip).await {
                     Ok(i) => i,
                     Err(_) => continue,
                 };
 
-                if let Instruction::Noop { ref why } = instruction {
-                    // another example how to steer the core library
-                    debug!("noop instruction: {why}");
-                }
+                for instr in instructions {
+                    if let Instruction::Noop { ref why } = instr {
+                        // another example how to steer the core library
+                        debug!("noop instruction: {why}");
+                    }
 
-                // TODO: refactor to instruction.execute(&ctx).await?;
-                ctx.execute(instruction).await?;
+                    // TODO: refactor to instruction.execute(&ctx).await?;
+                    ctx.execute(instr).await?;
+                }
             }
             Ok(Ok((_, src))) => warn!("addr {src} not supported"),
             Ok(Err(e)) => return Err(e.into()),

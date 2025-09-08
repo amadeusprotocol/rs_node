@@ -483,16 +483,16 @@ impl NodeAnrs {
     }
 
     /// Get random verified nodes
-    pub async fn get_random_handshaked(&self, count: usize) -> Vec<Ipv4Addr> {
+    pub async fn get_random_handshaked_anrs(&self, count: usize) -> Vec<Anr> {
         use rand::seq::SliceRandom;
         use std::collections::HashSet;
 
         // deduplicate by ip4
         let mut seen_ips = HashSet::new();
         let mut unique_pairs = Vec::new();
-        for ip4 in self.get_all_handshaked_ip4().await {
-            if seen_ips.insert(ip4) {
-                unique_pairs.push(ip4);
+        for anr in self.get_all_handshaked_anrs().await {
+            if seen_ips.insert(anr.ip4) {
+                unique_pairs.push(anr);
             }
         }
 
@@ -519,12 +519,12 @@ impl NodeAnrs {
     }
 
     /// Get all handshaked (pk, ip4) pairs
-    pub async fn get_all_handshaked_ip4(&self) -> Vec<Ipv4Addr> {
+    pub async fn get_all_handshaked_anrs(&self) -> Vec<Anr> {
         let map = self.store.read().await;
         let mut results = Vec::new();
         for (_, v) in map.iter() {
             if v.handshaked {
-                results.push(v.ip4);
+                results.push(v.clone());
             }
         }
         results

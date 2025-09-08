@@ -145,17 +145,19 @@ pub fn trainer_for_slot_next_me(config: &crate::config::Config) -> bool {
     }
 }
 
-pub fn get_chain_tip_entry() -> Result<Option<Entry>, Error> {
-    match fabric::get_temporal_tip()? {
-        Some(hash) => Ok(fabric::get_entry_by_hash(&hash)),
-        None => Ok(None),
+/// Falls back to genesis if no entries yet
+pub fn get_chain_tip_entry() -> Result<Entry, Error> {
+    match fabric::get_temporal_tip()?.and_then(|h| fabric::get_entry_by_hash(&h)) {
+        Some(entry) => Ok(entry),
+        None => Err(Error::Missing("temporal_tip")),
     }
 }
 
-pub fn get_rooted_tip_entry() -> Result<Option<Entry>, Error> {
-    match fabric::get_rooted_tip()? {
-        Some(hash) => Ok(fabric::get_entry_by_hash(&hash)),
-        None => Ok(None),
+/// Falls back to genesis if no entries yet
+pub fn get_rooted_tip_entry() -> Result<Entry, Error> {
+    match fabric::get_rooted_tip()?.and_then(|h| fabric::get_entry_by_hash(&h)) {
+        Some(entry) => Ok(entry),
+        None => Err(Error::Missing("rooted_tip")),
     }
 }
 

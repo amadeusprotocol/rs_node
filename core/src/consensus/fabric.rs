@@ -1,8 +1,7 @@
 use crate::consensus;
 use crate::consensus::attestation::Attestation;
 use crate::consensus::entry::Entry;
-use crate::consensus::genesis;
-use crate::utils::misc::{TermExt, bitvec_to_bools, bools_to_bitvec, get_unix_millis_now};
+use crate::utils::misc::{TermExt, bitvec_to_bools, bools_to_bitvec};
 use crate::utils::rocksdb;
 use eetf::{Atom, Binary, Term};
 use std::collections::HashMap;
@@ -96,30 +95,30 @@ pub fn entries_by_slot(slot: u64) -> Result<Vec<Vec<u8>>, Error> {
 }
 
 /// Insert the genesis entry and initial state markers if not present yet
-pub fn insert_genesis() -> Result<(), Error> {
-    let genesis_entry = genesis::get_gen_entry();
-    if rocksdb::get(CF_DEFAULT, &genesis_entry.hash)?.is_some() {
-        return Ok(()); // already inserted, no-op
-    }
-
-    println!("🌌  Ahhh... Fresh Fabric. Marking genesis..");
-
-    let hash = genesis_entry.hash;
-    let height = genesis_entry.header.height;
-    let slot = genesis_entry.header.slot;
-    let entry_bin: Vec<u8> = genesis_entry.try_into()?;
-    insert_entry(&hash, height, slot, &entry_bin, get_unix_millis_now())?;
-
-    // insert genesis attestation aggregate (no-op until full trainers implemented)
-    let att = genesis::attestation();
-    aggregate_attestation(&att)?;
-
-    // set rooted_tip = genesis.hash and temporal_height = 0
-    set_rooted_tip(&hash)?;
-    rocksdb::put(CF_SYSCONF, b"temporal_height", &height.to_be_bytes())?;
-
-    Ok(())
-}
+// pub fn insert_genesis() -> Result<(), Error> {
+//     let genesis_entry = genesis::get_gen_entry();
+//     if rocksdb::get(CF_DEFAULT, &genesis_entry.hash)?.is_some() {
+//         return Ok(()); // already inserted, no-op
+//     }
+//
+//     println!("🌌  Ahhh... Fresh Fabric. Marking genesis..");
+//
+//     let hash = genesis_entry.hash;
+//     let height = genesis_entry.header.height;
+//     let slot = genesis_entry.header.slot;
+//     let entry_bin: Vec<u8> = genesis_entry.try_into()?;
+//     insert_entry(&hash, height, slot, &entry_bin, get_unix_millis_now())?;
+//
+//     // insert genesis attestation aggregate (no-op until full trainers implemented)
+//     let att = genesis::attestation();
+//     aggregate_attestation(&att)?;
+//
+//     // set rooted_tip = genesis.hash and temporal_height = 0
+//     set_rooted_tip(&hash)?;
+//     rocksdb::put(CF_SYSCONF, b"temporal_height", &height.to_be_bytes())?;
+//
+//     Ok(())
+// }
 
 /// Read Entry stub (height only) from CF_DEFAULT by entry hash (32 bytes)
 pub fn get_entry_by_hash(hash: &[u8; 32]) -> Option<Entry> {
