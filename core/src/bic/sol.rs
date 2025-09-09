@@ -64,7 +64,7 @@ pub enum Solution {
 
 impl crate::utils::misc::Typename for Solution {
     fn typename(&self) -> &'static str {
-        Self::NAME
+        Self::TYPENAME
     }
 }
 
@@ -112,7 +112,7 @@ impl Protocol for Solution {
         };
 
         let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
         m.insert(Term::Atom(Atom::from("sol")), Term::from(eetf::Binary { bytes: sol_bin }));
 
         let term = Term::from(eetf::Map { map: m });
@@ -131,7 +131,7 @@ impl Protocol for Solution {
 }
 
 impl Solution {
-    pub const NAME: &'static str = "sol";
+    pub const TYPENAME: &'static str = "sol";
 
     pub fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
         // convert solution back to binary format
@@ -171,7 +171,7 @@ impl Solution {
         };
 
         let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
         m.insert(Term::Atom(Atom::from("sol")), Term::from(eetf::Binary { bytes: sol_bin }));
 
         let term = Term::from(eetf::Map { map: m });

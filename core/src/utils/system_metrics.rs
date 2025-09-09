@@ -3,6 +3,7 @@
 pub struct SystemStats {
     pub cpu_usage: f32,
     pub memory_usage: u64,
+    pub total_memory: u64,
     pub cores_available: usize,
 }
 
@@ -11,6 +12,7 @@ impl Default for SystemStats {
         Self {
             cpu_usage: 0.0,
             memory_usage: 0,
+            total_memory: 16 * 1024 * 1024 * 1024, // Default to 16GB
             cores_available: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
         }
     }
@@ -36,13 +38,14 @@ mod inner {
     /// Cached system stats - updated periodically by background task
     static CACHED_CPU_USAGE: AtomicU32 = AtomicU32::new(0); // Store as u32 (percentage * 100 for precision)
     static CACHED_MEMORY_USAGE: AtomicU64 = AtomicU64::new(0);
+    static CACHED_TOTAL_MEMORY: AtomicU64 = AtomicU64::new(0);
     static STATS_UPDATER_STARTED: std::sync::Once = std::sync::Once::new();
 
     /// Start the background system stats updater
     fn ensure_stats_updater_started() {
         STATS_UPDATER_STARTED.call_once(|| {
             tokio::spawn(async {
-                let mut interval = interval(Duration::from_millis(500)); // Update every 500ms
+                let mut interval = interval(Duration::from_secs(1));
 
                 loop {
                     interval.tick().await;
@@ -50,6 +53,7 @@ mod inner {
                     if let Ok(current_pid) = sysinfo::get_current_pid() {
                         if let Ok(mut system) = SYSTEM_MONITOR.lock() {
                             system.refresh_processes(ProcessesToUpdate::Some(&[current_pid]), true);
+                            system.refresh_memory(); // Refresh system memory info
 
                             if let Some(process) = system.process(current_pid) {
                                 let cpu_usage = process.cpu_usage();
@@ -59,6 +63,10 @@ mod inner {
                                 CACHED_CPU_USAGE.store((cpu_usage * 100.0) as u32, Ordering::Relaxed);
                                 CACHED_MEMORY_USAGE.store(memory_usage, Ordering::Relaxed);
                             }
+
+                            // Cache total system memory
+                            let total_memory = system.total_memory();
+                            CACHED_TOTAL_MEMORY.store(total_memory, Ordering::Relaxed);
                         }
                     }
                 }
@@ -72,9 +80,10 @@ mod inner {
 
         let cpu_usage = CACHED_CPU_USAGE.load(Ordering::Relaxed) as f32 / 100.0;
         let memory_usage = CACHED_MEMORY_USAGE.load(Ordering::Relaxed);
+        let total_memory = CACHED_TOTAL_MEMORY.load(Ordering::Relaxed);
         let cores_available = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
 
-        SystemStats { cpu_usage, memory_usage, cores_available }
+        SystemStats { cpu_usage, memory_usage, total_memory, cores_available }
     }
 }
 

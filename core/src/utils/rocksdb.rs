@@ -1,6 +1,6 @@
 use once_cell::sync::OnceCell;
 use rocksdb::{
-    ColumnFamilyDescriptor, Direction, IteratorMode, MultiThreaded, OptimisticTransactionDB, Options, ReadOptions,
+    BlockBasedOptions, Cache, ColumnFamilyDescriptor, Direction, IteratorMode, MultiThreaded, OptimisticTransactionDB, Options, ReadOptions,
 };
 use tokio::fs::create_dir_all;
 
@@ -133,6 +133,16 @@ pub async fn init(base: &str) -> Result<(), Error> {
     let mut db_opts = Options::default();
     db_opts.create_if_missing(true);
     db_opts.create_missing_column_families(true);
+    
+    // Set RAM limits to 10MB total
+    db_opts.set_db_write_buffer_size(10 * 1024 * 1024); // 10MB total write buffer size
+    db_opts.set_max_write_buffer_number(3); // Maximum 3 write buffers per CF
+    
+    // Set block cache to 2MB (part of the 10MB limit)
+    let cache = Cache::new_lru_cache(2 * 1024 * 1024); // 2MB block cache
+    let mut block_opts = BlockBasedOptions::default();
+    block_opts.set_block_cache(&cache);
+    db_opts.set_block_based_table_factory(&block_opts);
 
     let cf_descs: Vec<_> = cf_names()
         .iter()
@@ -140,6 +150,9 @@ pub async fn init(base: &str) -> Result<(), Error> {
             let mut opts = Options::default();
             opts.set_target_file_size_base(2 * 1024 * 1024 * 1024);
             opts.set_target_file_size_multiplier(2);
+            // Set write buffer size per CF (shared from total 10MB)
+            opts.set_write_buffer_size(1024 * 1024); // 1MB per CF write buffer
+            opts.set_max_write_buffer_number(2); // Max 2 buffers per CF
             ColumnFamilyDescriptor::new(name, opts)
         })
         .collect();

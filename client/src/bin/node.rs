@@ -1,19 +1,30 @@
-use ama_core::node::protocol::{Instruction, TxPool};
+use ama_core::consensus::entry::Entry;
+use ama_core::node::protocol::Instruction;
 use ama_core::{Config, Context};
 use client::{UdpSocketWrapper, get_http_port, init_tracing};
 use http::serve as http_serve;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::spawn;
 use tokio::time::timeout;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, instrument, warn};
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     init_tracing();
 
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .max_blocking_threads(16)
+        .worker_threads(4)
+        .thread_name("ama-node")
+        .enable_all()
+        .build()?;
+
+    rt.block_on(node_main())
+}
+
+#[instrument(name = "node_main", skip_all)]
+async fn node_main() -> anyhow::Result<()> {
     let config = Config::from_fs(None, None).await?;
     info!("working inside {}", config.get_root());
     info!("public address {}", config.get_public_ipv4());
@@ -25,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
 
     // UDP amadeus node
     let ctx_local = ctx.clone();
-    let udp = spawn(async move {
+    let udp = tokio::spawn(async move {
         info!("udp server listening on {addr}");
         if let Err(e) = recv_loop(ctx_local).await {
             eprintln!("udp node error: {e}");
@@ -37,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
 
     // HTTP dashboard server
     let ctx_local = ctx.clone();
-    let http = spawn(async move {
+    let http = tokio::spawn(async move {
         info!("http server listening on {addr}");
         if let Err(e) = http_serve(socket, ctx_local).await {
             eprintln!("http server error: {e}");
@@ -45,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     tokio::try_join!(udp, http)?;
+
     Ok(())
 }
 
@@ -55,35 +67,46 @@ async fn recv_loop(ctx: Arc<Context>) -> anyhow::Result<()> {
         match timeout(Duration::from_secs(10), ctx.recv_from(&mut buf)).await {
             Ok(Ok((len, SocketAddr::V4(src)))) => {
                 let ip = src.ip().to_owned();
-
-                let message = match ctx.parse_udp(&buf[..len], ip).await {
-                    Some(p) => p,
-                    None => continue, // no message to process
-                };
-
-                if message.typename() == TxPool::TYPENAME {
-                    // example how to steer the core library
-                    debug!("received txpool from {src}");
-                }
-
-                let instructions = match ctx.handle(message, ip).await {
-                    Ok(i) => i,
-                    Err(_) => continue,
-                };
-
-                for instr in instructions {
-                    if let Instruction::Noop { ref why } = instr {
-                        // another example how to steer the core library
-                        debug!("noop instruction: {why}");
-                    }
-
-                    // TODO: refactor to instruction.execute(&ctx).await?;
-                    ctx.execute(instr).await?;
-                }
+                tokio::spawn(handle_packet(ctx.clone(), buf[..len].to_vec(), ip));
             }
             Ok(Ok((_, src))) => warn!("addr {src} not supported"),
             Ok(Err(e)) => return Err(e.into()),
             Err(_) => debug!("no messages, idling.."),
         }
     }
+}
+
+async fn handle_packet(ctx: Arc<Context>, buf: Vec<u8>, ip: Ipv4Addr) -> anyhow::Result<()> {
+    ctx.inc_tasks();
+    let res = handle_packet_inner(ctx.clone(), buf, ip).await;
+    ctx.dec_tasks();
+    res
+}
+
+async fn handle_packet_inner(ctx: Arc<Context>, buf: Vec<u8>, ip: Ipv4Addr) -> anyhow::Result<()> {
+    let message = match ctx.parse_udp(&buf, ip).await {
+        Some(p) => p,
+        None => return Ok(()), // no message to process
+    };
+
+    if matches!(message.typename(), Entry::TYPENAME) {
+        // example how to steer the core library
+        debug!("received entry from {ip}");
+    }
+
+    let instructions = match ctx.handle(message, ip).await {
+        Ok(i) => i,
+        Err(_) => return Ok(()), // ignore malformed messages
+    };
+
+    for instr in instructions {
+        if let Instruction::Noop { ref why } = instr {
+            // another example how to steer the core library
+            debug!("noop instruction: {why}");
+        }
+
+        ctx.execute(instr).await?;
+    }
+
+    Ok(())
 }

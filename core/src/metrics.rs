@@ -18,6 +18,7 @@ pub struct MetricsSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub udpps: Option<UdpStats>, // stats per second
     pub uptime: u32,
+    pub tasks: u64,
 }
 
 /// Packet statistics with rate calculations
@@ -54,12 +55,17 @@ amadeus_udp_bytes_total{{type="outgoing"}} {}
 
 # HELP amadeus_uptime_seconds Process uptime in seconds
 # TYPE amadeus_uptime_seconds gauge
-amadeus_uptime_seconds {}"#,
+amadeus_uptime_seconds {}
+
+# HELP amadeus_tasks_active Current number of active tasks
+# TYPE amadeus_tasks_active gauge
+amadeus_tasks_active {}"#,
             self.udp.incoming_packets,
             self.udp.outgoing_packets,
             self.udp.incoming_bytes,
             self.udp.outgoing_bytes,
-            self.uptime
+            self.uptime,
+            self.tasks
         );
 
         let mut udpps = "".to_string();
@@ -125,6 +131,9 @@ pub struct Metrics {
     // Sent packets counter by protocol type (dynamic)
     outgoing_protos: SccHashIndex<String, Arc<AtomicU64>>,
 
+    // Active tasks gauge
+    tasks: AtomicU64,
+
     // Start time for uptime calculation
     start_time: u32,
 }
@@ -142,6 +151,7 @@ impl Metrics {
             incoming_protos: handled_protos,
             errors,
             outgoing_protos: sent_packets,
+            tasks: AtomicU64::new(0),
             start_time: get_unix_secs_now(),
         }
     }
@@ -196,6 +206,16 @@ impl Metrics {
         }
     }
 
+    /// Increment active task count
+    pub fn inc_tasks(&self) {
+        self.tasks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrement active task count
+    pub fn dec_tasks(&self) {
+        self.tasks.fetch_sub(1, Ordering::Relaxed);
+    }
+
     /// Get a complete metrics snapshot
     pub fn get_snapshot(&self) -> MetricsSnapshot {
         let uptime = self.get_uptime();
@@ -225,7 +245,8 @@ impl Metrics {
         }
 
         let (udp, udpps) = self.get_udp_stats(uptime);
-        MetricsSnapshot { incoming_protos, outgoing_protos, uptime, errors, udp, udpps }
+        let tasks = self.tasks.load(Ordering::Relaxed);
+        MetricsSnapshot { incoming_protos, outgoing_protos, uptime, errors, udp, udpps, tasks }
     }
 
     // Small convenience function to get uptime
@@ -388,6 +409,7 @@ mod tests {
         assert_eq!(deserialized.outgoing_protos.get("test"), Some(&1));
         assert_eq!(deserialized.udp.incoming_packets, 1);
         assert_eq!(deserialized.udp.incoming_bytes, 100);
+        assert_eq!(deserialized.tasks, 0);
     }
 
     #[test]
@@ -402,5 +424,40 @@ mod tests {
         assert!(prometheus.contains("amadeus_incoming_protos_total{type=\"test_proto\"} 1"));
         assert!(prometheus.contains("amadeus_udp_packets_total{type=\"incoming\"} 1"));
         assert!(prometheus.contains("amadeus_udp_bytes_total{type=\"incoming\"} 50"));
+    }
+
+    #[test]
+    fn tasks_are_tracked_correctly() {
+        let m = Metrics::new();
+
+        // Initial tasks should be 0
+        let snapshot = m.get_snapshot();
+        assert_eq!(snapshot.tasks, 0);
+
+        // Add some tasks
+        m.inc_tasks();
+        m.inc_tasks();
+        m.inc_tasks();
+
+        let snapshot = m.get_snapshot();
+        assert_eq!(snapshot.tasks, 3);
+
+        // Remove a task
+        m.dec_tasks();
+
+        let snapshot = m.get_snapshot();
+        assert_eq!(snapshot.tasks, 2);
+    }
+
+    #[test]
+    fn prometheus_includes_tasks_gauge() {
+        let m = Metrics::new();
+        m.inc_tasks();
+        m.inc_tasks();
+
+        let snapshot = m.get_snapshot();
+        let prometheus = snapshot.to_prometheus_string();
+
+        assert!(prometheus.contains("amadeus_tasks_active 2"));
     }
 }

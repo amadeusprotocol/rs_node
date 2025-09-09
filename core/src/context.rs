@@ -287,6 +287,16 @@ impl Context {
         format_duration(self.metrics.get_uptime())
     }
 
+    /// Add a task to the metrics tracker
+    pub fn inc_tasks(&self) {
+        self.metrics.inc_tasks();
+    }
+
+    /// Remove a task from the metrics tracker
+    pub fn dec_tasks(&self) {
+        self.metrics.dec_tasks();
+    }
+
     pub fn get_block_height(&self) -> u64 {
         consensus::consensus::get_chain_height().unwrap_or(0)
     }
@@ -770,6 +780,65 @@ mod tests {
                 // the important thing is that it doesn't panic
             }
         }
+    }
+
+    #[test]
+    fn test_context_task_tracking() {
+        // test that Context task tracking wrapper functions work
+        use crate::utils::bls12_381 as bls;
+        use std::net::Ipv4Addr;
+
+        let sk = bls::generate_sk();
+        let pk = bls::get_public_key(&sk).expect("pk");
+        let pop = bls::sign(&sk, &pk, consensus::DST_POP).expect("pop");
+
+        let config = config::Config {
+            work_folder: "/tmp/test_tasks".to_string(),
+            version_3b: [1, 2, 3],
+            offline: false,
+            http_ipv4: Ipv4Addr::new(127, 0, 0, 1),
+            http_port: 3000,
+            udp_ipv4: Ipv4Addr::new(127, 0, 0, 1),
+            udp_port: 36969,
+            public_ipv4: Some("127.0.0.1".to_string()),
+            seed_ips: Vec::new(),
+            seed_anrs: Vec::new(),
+            other_nodes: Vec::new(),
+            trust_factor: 0.8,
+            max_peers: 100,
+            trainer_sk: sk,
+            trainer_pk: pk,
+            trainer_pk_b58: String::new(),
+            trainer_pop: pop.to_vec(),
+            archival_node: false,
+            autoupdate: false,
+            computor_type: None,
+            snapshot_height: 0,
+            anr: None,
+            anr_desc: None,
+            anr_name: None,
+        };
+
+        let socket = Arc::new(MockSocket::new());
+        let metrics = metrics::Metrics::new();
+        let node_peers = peers::NodePeers::default();
+        let node_anrs = crate::node::anr::NodeAnrs::new();
+        let reassembler = node::reassembler::ReedSolomonReassembler::new();
+
+        let ctx = Context { config, metrics, reassembler, node_peers, node_anrs, socket };
+
+        // Test task tracking via Context wrapper methods
+        let snapshot = ctx.get_metrics_snapshot();
+        assert_eq!(snapshot.tasks, 0);
+
+        ctx.inc_tasks();
+        ctx.inc_tasks();
+        let snapshot = ctx.get_metrics_snapshot();
+        assert_eq!(snapshot.tasks, 2);
+
+        ctx.dec_tasks();
+        let snapshot = ctx.get_metrics_snapshot();
+        assert_eq!(snapshot.tasks, 1);
     }
 
     #[tokio::test]

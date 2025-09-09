@@ -150,17 +150,17 @@ pub fn parse_etf_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
     let op_atom = map.get_atom("op").ok_or(Error::BadEtf("op"))?;
     let proto: Box<dyn Protocol> = match op_atom.name.as_str() {
         Ping::TYPENAME => Box::new(Ping::from_etf_map_validated(map)?),
-        Pong::NAME => Box::new(Pong::from_etf_map_validated(map)?),
-        Entry::NAME => Box::new(Entry::from_etf_map_validated(map)?),
-        AttestationBulk::NAME => Box::new(AttestationBulk::from_etf_map_validated(map)?),
-        Solution::NAME => Box::new(Solution::from_etf_map_validated(map)?),
+        Pong::TYPENAME => Box::new(Pong::from_etf_map_validated(map)?),
+        Entry::TYPENAME => Box::new(Entry::from_etf_map_validated(map)?),
+        AttestationBulk::TYPENAME => Box::new(AttestationBulk::from_etf_map_validated(map)?),
+        Solution::TYPENAME => Box::new(Solution::from_etf_map_validated(map)?),
         TxPool::TYPENAME => Box::new(TxPool::from_etf_map_validated(map)?),
-        Peers::NAME => Box::new(Peers::from_etf_map_validated(map)?),
-        PeersV2::NAME => Box::new(PeersV2::from_etf_map_validated(map)?),
+        Peers::TYPENAME => Box::new(Peers::from_etf_map_validated(map)?),
+        PeersV2::TYPENAME => Box::new(PeersV2::from_etf_map_validated(map)?),
         NewPhoneWhoDis::TYPENAME => Box::new(NewPhoneWhoDis::from_etf_map_validated(map)?),
-        What::NAME => Box::new(What::from_etf_map_validated(map)?),
-        SpecialBusiness::NAME => Box::new(SpecialBusiness::from_etf_map_validated(map)?),
-        SpecialBusinessReply::NAME => Box::new(SpecialBusinessReply::from_etf_map_validated(map)?),
+        What::TYPENAME => Box::new(What::from_etf_map_validated(map)?),
+        SpecialBusiness::TYPENAME => Box::new(SpecialBusiness::from_etf_map_validated(map)?),
+        SpecialBusinessReply::TYPENAME => Box::new(SpecialBusinessReply::from_etf_map_validated(map)?),
         _ => {
             warn!("Unknown operation: {}", op_atom.name);
             return Err(Error::BadEtf("op"));
@@ -333,7 +333,7 @@ impl Ping {
 
 impl Typename for Pong {
     fn typename(&self) -> &'static str {
-        Self::NAME
+        Self::TYPENAME
     }
 }
 
@@ -347,7 +347,7 @@ impl Protocol for Pong {
     }
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
         m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: self.ts.into() }));
         let term = Term::from(Map { map: m });
         let etf_data = encode_safe(&term);
@@ -366,7 +366,7 @@ impl Protocol for Pong {
 }
 
 impl Pong {
-    pub const NAME: &'static str = "pong";
+    pub const TYPENAME: &'static str = "pong";
 }
 
 impl Typename for TxPool {
@@ -428,7 +428,7 @@ impl TxPool {
 
 impl Typename for Peers {
     fn typename(&self) -> &'static str {
-        Self::NAME
+        Self::TYPENAME
     }
 }
 
@@ -448,7 +448,7 @@ impl Protocol for Peers {
         let ip_terms: Vec<Term> =
             self.ips.iter().map(|ip| Term::from(Binary { bytes: ip.as_bytes().to_vec() })).collect();
         let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
         m.insert(Term::Atom(Atom::from("ips")), Term::from(List { elements: ip_terms }));
         let term = Term::from(Map { map: m });
         let etf_data = encode_safe(&term);
@@ -462,12 +462,12 @@ impl Protocol for Peers {
 }
 
 impl Peers {
-    pub const NAME: &'static str = "peers";
+    pub const TYPENAME: &'static str = "peers";
 }
 
 impl Typename for PeersV2 {
     fn typename(&self) -> &'static str {
-        Self::NAME
+        Self::TYPENAME
     }
 }
 
@@ -489,7 +489,7 @@ impl Protocol for PeersV2 {
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let anr_terms: Vec<Term> = self.anrs.iter().map(|anr| anr.to_etf_term()).collect();
         let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
         m.insert(Term::Atom(Atom::from("anrs")), Term::from(List { elements: anr_terms }));
         let term = Term::from(Map { map: m });
         let etf_data = encode_safe(&term);
@@ -505,7 +505,7 @@ impl Protocol for PeersV2 {
 }
 
 impl PeersV2 {
-    pub const NAME: &'static str = "peers_v2";
+    pub const TYPENAME: &'static str = "peers_v2";
 }
 
 impl Ping {}
@@ -573,7 +573,7 @@ impl NewPhoneWhoDis {
 
 impl Typename for What {
     fn typename(&self) -> &'static str {
-        Self::NAME
+        Self::TYPENAME
     }
 }
 
@@ -598,7 +598,7 @@ impl Protocol for What {
 
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut map = TermMap::default();
-        map.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        map.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
         map.insert(Term::Atom(Atom::from("anr")), self.anr.to_etf_term());
         map.insert(Term::Atom(Atom::from("challenge")), Term::FixInteger(FixInteger { value: self.challenge }));
         map.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
@@ -636,12 +636,12 @@ impl Protocol for What {
 }
 
 impl What {
-    pub const NAME: &'static str = "what?";
+    pub const TYPENAME: &'static str = "what?";
 }
 
 impl Typename for SpecialBusiness {
     fn typename(&self) -> &'static str {
-        Self::NAME
+        Self::TYPENAME
     }
 }
 
@@ -654,7 +654,7 @@ impl Protocol for SpecialBusiness {
 
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
         m.insert(Term::Atom(Atom::from("business")), Term::from(Binary { bytes: self.business.clone() }));
         let term = Term::from(Map { map: m });
         let etf_data = encode_safe(&term);
@@ -669,12 +669,12 @@ impl Protocol for SpecialBusiness {
 }
 
 impl SpecialBusiness {
-    pub const NAME: &'static str = "special_business";
+    pub const TYPENAME: &'static str = "special_business";
 }
 
 impl Typename for SpecialBusinessReply {
     fn typename(&self) -> &'static str {
-        Self::NAME
+        Self::TYPENAME
     }
 }
 
@@ -687,7 +687,7 @@ impl Protocol for SpecialBusinessReply {
 
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
         m.insert(Term::Atom(Atom::from("business")), Term::from(Binary { bytes: self.business.clone() }));
         let term = Term::from(Map { map: m });
         let etf_data = encode_safe(&term);
@@ -701,10 +701,10 @@ impl Protocol for SpecialBusinessReply {
 }
 
 impl SpecialBusinessReply {
-    pub const NAME: &'static str = "special_business_reply";
+    pub const TYPENAME: &'static str = "special_business_reply";
     pub fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
         m.insert(Term::Atom(Atom::from("business")), Term::from(Binary { bytes: self.business.clone() }));
         let term = Term::from(Map { map: m });
         let etf_data = encode_safe(&term);

@@ -202,7 +202,7 @@ impl TryInto<Vec<u8>> for Entry {
 
 impl crate::utils::misc::Typename for Entry {
     fn typename(&self) -> &'static str {
-        Self::NAME
+        Self::TYPENAME
     }
 }
 
@@ -217,7 +217,7 @@ impl Protocol for Entry {
         let entry_bin: Vec<u8> = self.clone().try_into().map_err(|_| protocol::Error::BadEtf("entry"))?;
 
         let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
         m.insert(Term::Atom(Atom::from("entry_packed")), Term::from(Binary { bytes: entry_bin }));
 
         let term = Term::from(Map { map: m });
@@ -264,14 +264,14 @@ impl fmt::Debug for Entry {
 }
 
 impl Entry {
-    pub const NAME: &'static str = "entry";
+    pub const TYPENAME: &'static str = "entry";
 
     pub fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
         // encode entry as bincode first
         let entry_bin: Vec<u8> = self.clone().try_into().map_err(|_| protocol::Error::BadEtf("entry"))?;
 
         let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
         m.insert(Term::Atom(Atom::from("entry_packed")), Term::from(Binary { bytes: entry_bin }));
 
         let term = Term::from(Map { map: m });

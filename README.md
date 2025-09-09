@@ -2,9 +2,9 @@
 
 This initiative aims to create a Rust implementation of the [Amadeus Node](https://github.com/amadeus-robot/node.git).
 
-- core (ama_core): Core library, needed by every project in Amadeus ecosystem
-- client: The library with examples of using the core library (cli, node, etc.)
-- http: Web dashboard of the Amadeus Node, by default runs on port 3000
+- [core (ama_core)](./core/README.md): Core library, needed by every project in Amadeus ecosystem
+- [client](./client/README.md): The library with examples of using the core library (cli, node, etc.)
+- [http](./http/README.md): Web dashboard of the Amadeus Node, by default runs on port 3000
 
 ## Prerequisites
 
@@ -29,7 +29,8 @@ brew install rocksdb # or on MacOS (this will install `rocksdb_ldb` and `rocksdb
 
 ## Testing
 
-Check `.cargo/config.toml` for command aliases. Environment variables:
+Check `.cargo/config.toml` for command aliases. Environment variables reflect
+the original Elixir node settings:
 
 - `UDP_ADDR` - address of the peer, default `127.0.0.1:36969`
 - `UDP_DUMP` - file to dump the UDP traffic to
@@ -68,10 +69,12 @@ The node can be debugged using tokio-console (`cargo install tokio-console`)
 and logs that are printed to the output. Alternatively you can use gdb/lldb
 and leaks/heap.
 
+> Expect memory footprint in the debugging mode to be higher and grow
+
 ```bash
 cargo node
 # for tokio console debugging
-RUSTFLAGS="--cfg tokio_unstable" RUST_LOG=debug cargo node --features tokio-tracing
+RUSTFLAGS="--cfg tokio_unstable" RUST_LOG=debug cargo node --features debugging
 tokio-console # in another terminal
 # for memory leaks analysis
 leaks -nocontext $(pgrep -f "target/debug/node")
@@ -203,8 +206,6 @@ Before pushing changes, run `cargo fmt` and `cargo clippy` to maintain the quali
 
 ## Next
 
-- [ ] Connect to the real network
-- [ ] Debug and test the light client
 - [ ] Validation - through attestations
 - [ ] Implement the mutations hash
 - [ ] Running contracts in wasm runtime

@@ -1,1 +1,1 @@
-# Core Amadeus library
+# Amadeus Core Library

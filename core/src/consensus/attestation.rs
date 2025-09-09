@@ -59,25 +59,12 @@ impl Debug for Attestation {
 
 impl crate::utils::misc::Typename for AttestationBulk {
     fn typename(&self) -> &'static str {
-        Self::NAME
+        Self::TYPENAME
     }
 }
 
 #[async_trait::async_trait]
 impl Protocol for AttestationBulk {
-    fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        let attestation_terms: Result<Vec<Term>, Error> =
-            self.attestations.iter().map(|att| att.to_etf_bin().map(|bin| Term::from(Binary { bytes: bin }))).collect();
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::NAME)));
-        m.insert(
-            Term::Atom(Atom::from("attestations_packed")),
-            Term::from(List { elements: attestation_terms.map_err(protocol::Error::Att)? }),
-        );
-        let term = Term::from(eetf::Map { map: m });
-        let etf_data = encode_safe(&term);
-        Ok(etf_data)
-    }
     #[instrument(skip(map), name = "AttestationBulk::from_etf_map_validated")]
     fn from_etf_map_validated(map: TermMap) -> Result<Self, protocol::Error> {
         let list = map.get_list("attestations_packed").ok_or(Error::Missing("attestations_packed"))?;
@@ -91,6 +78,20 @@ impl Protocol for AttestationBulk {
         Ok(Self { attestations })
     }
 
+    fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
+        let attestation_terms: Result<Vec<Term>, Error> =
+            self.attestations.iter().map(|att| att.to_etf_bin().map(|bin| Term::from(Binary { bytes: bin }))).collect();
+        let mut m = HashMap::new();
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
+        m.insert(
+            Term::Atom(Atom::from("attestations_packed")),
+            Term::from(List { elements: attestation_terms.map_err(protocol::Error::Att)? }),
+        );
+        let term = Term::from(eetf::Map { map: m });
+        let etf_data = encode_safe(&term);
+        Ok(etf_data)
+    }
+
     #[instrument(skip(self, _ctx), name = "AttestationBulk::handle", err)]
     async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
         // TODO: handle the attestation bulk
@@ -99,7 +100,7 @@ impl Protocol for AttestationBulk {
 }
 
 impl AttestationBulk {
-    pub const NAME: &'static str = "attestation_bulk";
+    pub const TYPENAME: &'static str = "attestation_bulk";
 }
 
 impl Attestation {

@@ -56,18 +56,61 @@ pub fn page(
     // Get uptime in seconds from metrics snapshot
     let uptime_seconds = snapshot.uptime as f64;
 
-    // Calculate network I/O rates from actual metrics
-    let incoming_bytes = snapshot.udp.incoming_bytes as f64;
-    let outgoing_bytes = snapshot.udp.outgoing_bytes as f64;
-    let incoming_packets = snapshot.udp.incoming_packets;
-    let outgoing_packets = snapshot.udp.outgoing_packets;
+    // Helper function to format bytes with flexible units
+    let format_bytes_per_sec = |bytes_per_sec: f64| -> String {
+        if bytes_per_sec >= 1024.0 * 1024.0 * 1024.0 {
+            format!("{:.1} GB/s", bytes_per_sec / (1024.0 * 1024.0 * 1024.0))
+        } else if bytes_per_sec >= 1024.0 * 1024.0 {
+            format!("{:.1} MB/s", bytes_per_sec / (1024.0 * 1024.0))
+        } else if bytes_per_sec >= 1024.0 {
+            format!("{:.1} KB/s", bytes_per_sec / 1024.0)
+        } else {
+            format!("{:.0} B/s", bytes_per_sec)
+        }
+    };
 
-    let network_in_mbps =
-        if uptime_seconds > 0.0 { (incoming_bytes / uptime_seconds) / (1024.0 * 1024.0) } else { 0.0 };
-    let network_out_mbps =
-        if uptime_seconds > 0.0 { (outgoing_bytes / uptime_seconds) / (1024.0 * 1024.0) } else { 0.0 };
-    let network_in_pps = if uptime_seconds > 0.0 { incoming_packets as f64 / uptime_seconds } else { 0.0 };
-    let network_out_pps = if uptime_seconds > 0.0 { outgoing_packets as f64 / uptime_seconds } else { 0.0 };
+    // Helper function to format packets per second with k/M modifiers
+    let format_packets_per_sec = |pps: f64| -> String {
+        if pps >= 1_000_000.0 {
+            format!("{:.1}M pps", pps / 1_000_000.0)
+        } else if pps >= 1_000.0 {
+            format!("{:.1}k pps", pps / 1_000.0)
+        } else {
+            format!("{:.0} pps", pps)
+        }
+    };
+
+    // Use udpps (UDP per second) values directly from metrics snapshot
+    let (network_in_bytes_str, network_out_bytes_str, network_in_pps_str, network_out_pps_str) =
+        if let Some(ref udpps) = snapshot.udpps {
+            // Use the pre-calculated per-second values
+            let in_bytes_str = format_bytes_per_sec(udpps.incoming_bytes as f64);
+            let out_bytes_str = format_bytes_per_sec(udpps.outgoing_bytes as f64);
+            let in_pps_str = format_packets_per_sec(udpps.incoming_packets as f64);
+            let out_pps_str = format_packets_per_sec(udpps.outgoing_packets as f64);
+            (in_bytes_str, out_bytes_str, in_pps_str, out_pps_str)
+        } else {
+            // Fallback to calculating from totals if udpps not available
+            let incoming_bytes = snapshot.udp.incoming_bytes as f64;
+            let outgoing_bytes = snapshot.udp.outgoing_bytes as f64;
+            let incoming_packets = snapshot.udp.incoming_packets;
+            let outgoing_packets = snapshot.udp.outgoing_packets;
+
+            let in_bytes_per_sec = if uptime_seconds > 0.0 { incoming_bytes / uptime_seconds } else { 0.0 };
+            let out_bytes_per_sec = if uptime_seconds > 0.0 { outgoing_bytes / uptime_seconds } else { 0.0 };
+            let in_pps = if uptime_seconds > 0.0 { incoming_packets as f64 / uptime_seconds } else { 0.0 };
+            let out_pps = if uptime_seconds > 0.0 { outgoing_packets as f64 / uptime_seconds } else { 0.0 };
+
+            (
+                format_bytes_per_sec(in_bytes_per_sec),
+                format_bytes_per_sec(out_bytes_per_sec),
+                format_packets_per_sec(in_pps),
+                format_packets_per_sec(out_pps),
+            )
+        };
+
+    // Calculate total errors from all error types
+    let total_errors: u64 = snapshot.errors.values().sum();
 
     // Placeholder system resource values - will be updated by JavaScript
     let cpu_usage = 0; // Will be updated from /api/metrics
@@ -394,6 +437,96 @@ pub fn page(
             font-size: 16px;
             font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
             font-weight: 600;
+        }}
+
+        /* Uptime stats with mixed layout */
+        .uptime-stats {{
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }}
+
+        .uptime-main {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-height: 48px; /* Minimum height of 2 regular rows */
+            padding: 8px 4px; /* Internal padding for visual breathing room */
+        }}
+
+        .uptime-icon-large {{
+            width: 28px;
+            height: 28px;
+            color: hsl(var(--foreground));
+        }}
+
+        .uptime-value-large {{
+            font-size: 28px;
+            font-weight: 700;
+            color: hsl(var(--foreground));
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+        }}
+
+        .uptime-row {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+
+        .uptime-left {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+
+        .uptime-icon {{
+            width: 16px;
+            height: 16px;
+            color: hsl(var(--foreground));
+        }}
+
+        .uptime-label {{
+            font-size: 16px;
+            color: #9ca3af;
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+        }}
+
+        .uptime-secondary-value {{
+            font-size: 16px;
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+            font-weight: 600;
+        }}
+
+        /* Block Height stats with matching height */
+        .block-stats {{
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }}
+
+        .block-main {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-height: 48px; /* Minimum height of 2 regular rows */
+            padding: 8px 4px; /* Internal padding for visual breathing room */
+        }}
+
+        .block-icon-large {{
+            width: 28px;
+            height: 28px;
+            color: hsl(var(--foreground));
+        }}
+
+        .block-value-large {{
+            font-size: 28px;
+            font-weight: 700;
+            color: hsl(var(--foreground));
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+        }}
+
+        .block-spacer {{
+            height: 56px; /* Match height of 2 uptime rows (24px each + 8px gap) */
         }}
         
         /* System Resources */
@@ -1073,15 +1206,18 @@ pub fn page(
                         </svg>
                     </button>
                 </div>
-                <div class="metric-content">
-                    <svg class="metric-icon-large" xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24">
-                        <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
-                            <path d="M4 6a8 3 0 1 0 16 0A8 3 0 1 0 4 6"/>
-                            <path d="M4 6v6a8 3 0 0 0 16 0V6"/>
-                            <path d="M4 12v6a8 3 0 0 0 16 0v-6"/>
-                        </g>
-                    </svg>
-                    <div class="metric-value">{}</div>
+                <div class="block-stats">
+                    <div class="block-main">
+                        <svg class="block-icon-large" xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24">
+                            <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+                                <path d="M4 6a8 3 0 1 0 16 0A8 3 0 1 0 4 6"/>
+                                <path d="M4 6v6a8 3 0 0 0 16 0V6"/>
+                                <path d="M4 12v6a8 3 0 0 0 16 0v-6"/>
+                            </g>
+                        </svg>
+                        <div class="block-value-large">{}</div>
+                    </div>
+                    <div class="block-spacer"></div>
                 </div>
             </div>
 
@@ -1135,7 +1271,7 @@ pub fn page(
                             </svg>
                             <div class="network-label">DATA IN:</div>
                         </div>
-                        <div class="network-value">{:.1}</div>
+                        <div class="network-value">{}</div>
                     </div>
                     <div class="network-row">
                         <div class="network-left">
@@ -1144,7 +1280,7 @@ pub fn page(
                             </svg>
                             <div class="network-label">PKT IN:</div>
                         </div>
-                        <div class="network-value">{:.0}</div>
+                        <div class="network-value">{}</div>
                     </div>
                     <div class="network-row">
                         <div class="network-left">
@@ -1153,7 +1289,7 @@ pub fn page(
                             </svg>
                             <div class="network-label">DATA OUT:</div>
                         </div>
-                        <div class="network-value">{:.1}</div>
+                        <div class="network-value">{}</div>
                     </div>
                     <div class="network-row">
                         <div class="network-left">
@@ -1162,7 +1298,7 @@ pub fn page(
                             </svg>
                             <div class="network-label">PKT OUT:</div>
                         </div>
-                        <div class="network-value">{:.0}</div>
+                        <div class="network-value">{}</div>
                     </div>
                 </div>
             </div>
@@ -1177,11 +1313,31 @@ pub fn page(
                         </svg>
                     </button>
                 </div>
-                <div class="metric-content">
-                    <svg class="metric-icon-large" xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24">
-                        <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12h4.5L9 6l4 12l2-9l1.5 3H21"/>
-                    </svg>
-                    <div class="metric-value">{}</div>
+                <div class="uptime-stats">
+                    <div class="uptime-main">
+                        <svg class="uptime-icon-large" xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24">
+                            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12h4.5L9 6l4 12l2-9l1.5 3H21"/>
+                        </svg>
+                        <div class="uptime-value-large">{}</div>
+                    </div>
+                    <div class="uptime-row">
+                        <div class="uptime-left">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="uptime-icon">
+                                <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9h6M4 5h4M6 5v11a1 1 0 0 0 1 1h5m0-9a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1zm0 8a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1z"/>
+                            </svg>
+                            <div class="uptime-label">TASKS:</div>
+                        </div>
+                        <div class="uptime-secondary-value" id="tasks-count">{}</div>
+                    </div>
+                    <div class="uptime-row">
+                        <div class="uptime-left">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="uptime-icon">
+                                <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0m9-3v4m0 3v.01"/>
+                            </svg>
+                            <div class="uptime-label">ERRORS:</div>
+                        </div>
+                        <div class="uptime-secondary-value" id="errors-count">{}</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1233,13 +1389,13 @@ pub fn page(
                             <line x1="6" x2="6.01" y1="6" y2="6"/>
                             <line x1="6" x2="6.01" y1="18" y2="18"/>
                         </svg>
-                        <div class="resource-text">16GB total</div>
+                        <div class="resource-text">Loading...</div>
                     </div>
                 </div>
                 
                 <div class="resource-item">
                     <div class="resource-header">
-                        <div class="resource-label">Disk Usage</div>
+                        <div class="resource-label">Disk Usage (not real)</div>
                         <div class="resource-value">{}%</div>
                     </div>
                     <div class="progress-bar">
@@ -1252,7 +1408,7 @@ pub fn page(
                             <line x1="6" x2="6.01" y1="16" y2="16"/>
                             <line x1="10" x2="10.01" y1="16" y2="16"/>
                         </svg>
-                        <div class="resource-text">2TB available</div>
+                        <div class="resource-text">2TB available (not real)</div>
                     </div>
                 </div>
             </div>
@@ -1618,12 +1774,12 @@ pub fn page(
         
         function updateMetricsDisplay(metrics, peers) {{
             // Update all metric cards
-            const metricValues = document.querySelectorAll('.metric-value');
             const peerCount = Object.keys(peers).length;
             
-            // Update block height (first card - index 0)
-            if (metricValues.length > 0 && metrics.block_height !== undefined) {{
-                metricValues[0].textContent = metrics.block_height.toLocaleString();
+            // Update block height using specific selector
+            const blockHeightElement = document.querySelector('.block-value-large');
+            if (blockHeightElement && metrics.block_height !== undefined) {{
+                blockHeightElement.textContent = metrics.block_height.toLocaleString();
             }}
             
             // Update peer node counts (second card)
@@ -1640,6 +1796,8 @@ pub fn page(
             
             const handshakedElement = document.getElementById('handshaked-count');
             const pendingElement = document.getElementById('pending-count');
+            const tasksElement = document.getElementById('tasks-count');
+            const errorsElement = document.getElementById('errors-count');
             
             if (handshakedElement) {{
                 handshakedElement.textContent = handshakedCount.toLocaleString();
@@ -1647,26 +1805,87 @@ pub fn page(
             if (pendingElement) {{
                 pendingElement.textContent = pendingCount.toLocaleString();
             }}
-            
-            // Update uptime (fourth card - index 1 in metricValues array, since Peer Nodes and Network I/O don't have metric-value)
-            if (metricValues.length > 1 && metrics.uptime_formatted) {{
-                metricValues[1].textContent = metrics.uptime_formatted;
+            if (tasksElement && metrics.tasks !== undefined) {{
+                tasksElement.textContent = metrics.tasks.toLocaleString();
+            }}
+            if (errorsElement && metrics.errors) {{
+                // Calculate total errors from all error types
+                const totalErrors = Object.values(metrics.errors).reduce((sum, count) => sum + count, 0);
+                errorsElement.textContent = totalErrors.toLocaleString();
             }}
             
-            // Update network I/O if we have uptime data
-            if (metrics.uptime && metrics.uptime > 0) {{
+            // Update uptime using specific selector  
+            const uptimeElement = document.querySelector('.uptime-value-large');
+            if (uptimeElement && metrics.uptime_formatted) {{
+                uptimeElement.textContent = metrics.uptime_formatted;
+            }}
+            
+            // Helper function to format bytes with flexible units
+            function formatBytesPerSec(bytesPerSec) {{
+                if (bytesPerSec >= 1024 * 1024 * 1024) {{
+                    return `${{(bytesPerSec / (1024 * 1024 * 1024)).toFixed(1)}} GB/s`;
+                }} else if (bytesPerSec >= 1024 * 1024) {{
+                    return `${{(bytesPerSec / (1024 * 1024)).toFixed(1)}} MB/s`;
+                }} else if (bytesPerSec >= 1024) {{
+                    return `${{(bytesPerSec / 1024).toFixed(1)}} KB/s`;
+                }} else {{
+                    return `${{Math.round(bytesPerSec)}} B/s`;
+                }}
+            }}
+
+            // Helper function to format packets per second with k/M modifiers
+            function formatPacketsPerSec(pps) {{
+                if (pps >= 1000000) {{
+                    return `${{(pps / 1000000).toFixed(1)}}M pps`;
+                }} else if (pps >= 1000) {{
+                    return `${{(pps / 1000).toFixed(1)}}k pps`;
+                }} else {{
+                    return `${{Math.round(pps)}} pps`;
+                }}
+            }}
+
+            // Helper function to format memory with flexible units
+            function formatMemorySize(bytes) {{
+                if (bytes >= 1024 * 1024 * 1024) {{
+                    return `${{(bytes / (1024 * 1024 * 1024)).toFixed(1)}} GB`;
+                }} else if (bytes >= 1024 * 1024) {{
+                    return `${{(bytes / (1024 * 1024)).toFixed(0)}} MB`;
+                }} else if (bytes >= 1024) {{
+                    return `${{(bytes / 1024).toFixed(0)}} KB`;
+                }} else {{
+                    return `${{Math.round(bytes)}} B`;
+                }}
+            }}
+
+            // Update network I/O using udpps values directly from metrics
+            if (metrics.udpps) {{
+                // Use the pre-calculated per-second values from udpps
+                const inBytesStr = formatBytesPerSec(metrics.udpps.incoming_bytes || 0);
+                const outBytesStr = formatBytesPerSec(metrics.udpps.outgoing_bytes || 0);
+                const inPpsStr = formatPacketsPerSec(metrics.udpps.incoming_packets || 0);
+                const outPpsStr = formatPacketsPerSec(metrics.udpps.outgoing_packets || 0);
+                
+                const networkValues = document.querySelectorAll('.network-value');
+                if (networkValues.length >= 4) {{
+                    networkValues[0].textContent = inBytesStr;
+                    networkValues[1].textContent = inPpsStr;
+                    networkValues[2].textContent = outBytesStr;
+                    networkValues[3].textContent = outPpsStr;
+                }}
+            }} else if (metrics.uptime && metrics.uptime > 0) {{
+                // Fallback to calculating from totals if udpps not available
                 const uptime = metrics.uptime;
-                const inMbps = ((metrics.udp?.incoming_bytes || 0) / uptime) / (1024 * 1024);
-                const outMbps = ((metrics.udp?.outgoing_bytes || 0) / uptime) / (1024 * 1024);
+                const inBytesPerSec = (metrics.udp?.incoming_bytes || 0) / uptime;
+                const outBytesPerSec = (metrics.udp?.outgoing_bytes || 0) / uptime;
                 const inPps = (metrics.udp?.incoming_packets || 0) / uptime;
                 const outPps = (metrics.udp?.outgoing_packets || 0) / uptime;
                 
                 const networkValues = document.querySelectorAll('.network-value');
                 if (networkValues.length >= 4) {{
-                    networkValues[0].textContent = `${{inMbps.toFixed(1)}} MB/s`;
-                    networkValues[1].textContent = `${{Math.round(inPps).toLocaleString()}} pkt/s`;
-                    networkValues[2].textContent = `${{outMbps.toFixed(1)}} MB/s`;
-                    networkValues[3].textContent = `${{Math.round(outPps).toLocaleString()}} pkt/s`;
+                    networkValues[0].textContent = formatBytesPerSec(inBytesPerSec);
+                    networkValues[1].textContent = formatPacketsPerSec(inPps);
+                    networkValues[2].textContent = formatBytesPerSec(outBytesPerSec);
+                    networkValues[3].textContent = formatPacketsPerSec(outPps);
                 }}
             }}
             
@@ -1682,9 +1901,10 @@ pub fn page(
                     resourceValues[0].textContent = `${{cpuUsage}}%`;
                     progressFills[0].style.width = `${{Math.min(100, Math.max(0, cpuUsage))}}%`;
                     
-                    // Memory usage
-                    const memoryMB = (metrics.memory_usage / 1024 / 1024).toFixed(0);
-                    const memoryPercent = Math.round((metrics.memory_usage / 1024 / 1024) * 100 / 16384); // Assuming 16GB total
+                    // Memory usage - use flexible formatting
+                    const memoryUsedFormatted = formatMemorySize(metrics.memory_usage || 0);
+                    const totalMemoryGB = metrics.total_memory ? (metrics.total_memory / (1024 * 1024 * 1024)).toFixed(1) : '16.0';
+                    const memoryPercent = metrics.total_memory ? Math.round((metrics.memory_usage * 100) / metrics.total_memory) : 0;
                     resourceValues[1].textContent = `${{memoryPercent}}%`;
                     progressFills[1].style.width = `${{Math.min(100, Math.max(0, memoryPercent))}}%`;
                     
@@ -1695,8 +1915,8 @@ pub fn page(
                         if (metrics.cores_available !== undefined) {{
                             resourceTexts[0].textContent = `${{metrics.cores_available}} cores available`;
                         }}
-                        // Update memory info text  
-                        resourceTexts[1].textContent = `${{memoryMB}} MB used`;
+                        // Update memory info text with flexible units and total memory
+                        resourceTexts[1].textContent = `${{totalMemoryGB}} GB available (${{memoryUsedFormatted}} used)`;
                     }}
                 }}
             }}
@@ -1829,11 +2049,13 @@ pub fn page(
         block_height,
         handshaked_count,
         pending_count,
-        network_in_mbps,
-        network_in_pps,
-        network_out_mbps,
-        network_out_pps,
+        network_in_bytes_str,
+        network_in_pps_str,
+        network_out_bytes_str,
+        network_out_pps_str,
         uptime,
+        snapshot.tasks,
+        total_errors,
         cpu_usage,
         cpu_usage,
         memory_usage,

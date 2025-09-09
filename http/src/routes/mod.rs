@@ -55,6 +55,10 @@ async fn api_metrics(State(ctx): State<Arc<Context>>) -> Json<Value> {
             serde_json::Value::Number(serde_json::Number::from(system_stats.memory_usage)),
         );
         obj.insert(
+            "total_memory".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(system_stats.total_memory)),
+        );
+        obj.insert(
             "cores_available".to_string(),
             serde_json::Value::Number(serde_json::Number::from(system_stats.cores_available)),
         );

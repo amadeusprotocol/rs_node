@@ -17,7 +17,10 @@ bincode = "2.0.1"
 clap = { version = "4.5.46", features = ["derive"] }
 async-trait = "0.1.89"
 tracing = "0.1.41"
+jemallocator = "0.5.4"
+jemalloc-ctl = { version = "0.5.4", optional = true }
 
 [features]
-default = []
-tokio-tracing = ["dep:console-subscriber", "tokio/tracing"]
+default = ["system-metrics"]
+system-metrics = ["ama_core/system-metrics"]
+debugging = ["dep:console-subscriber", "dep:jemalloc-ctl", "tokio/tracing"]
