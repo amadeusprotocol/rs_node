@@ -84,7 +84,7 @@ pub fn parse_xor_mapped_v4(resp: &[u8], _txid: &[u8; 12]) -> Option<Ipv4Addr> {
 async fn get_ip_stun() -> Result<Option<Ipv4Addr>, std::io::Error> {
     use rand::RngCore;
     let mut txid = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut txid);
+    rand::rng().fill_bytes(&mut txid);
     let req = build_stun_binding_request(&txid);
 
     let local = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));

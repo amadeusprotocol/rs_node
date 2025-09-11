@@ -1,6 +1,5 @@
 use crate::utils::misc::{Typename, get_unix_secs_now};
 use scc::HashIndex as SccHashIndex;
-use scc::ebr::Guard;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -160,10 +159,10 @@ impl Metrics {
     pub fn add_incoming_proto(&self, name: &str) {
         // correct way of handling ownership in scc HashIndex
         let name = name.to_owned();
-        if let Some(counter) = self.incoming_protos.get(&name) {
+        if let Some(counter) = self.incoming_protos.peek_with(&name, |_, v| v.clone()) {
             counter.fetch_add(1, Ordering::Relaxed);
         } else {
-            let _ = self.incoming_protos.insert(name, Arc::new(AtomicU64::new(1)));
+            let _ = self.incoming_protos.insert_sync(name, Arc::new(AtomicU64::new(1)));
         }
     }
 
@@ -171,10 +170,10 @@ impl Metrics {
     pub fn add_outgoing_proto(&self, name: &str) {
         // correct way of handling ownership in scc HashIndex
         let name = name.to_owned();
-        if let Some(counter) = self.outgoing_protos.get(&name) {
+        if let Some(counter) = self.outgoing_protos.peek_with(&name, |_, v| v.clone()) {
             counter.fetch_add(1, Ordering::Relaxed);
         } else {
-            let _ = self.outgoing_protos.insert(name, Arc::new(AtomicU64::new(1)));
+            let _ = self.outgoing_protos.insert_sync(name, Arc::new(AtomicU64::new(1)));
         }
     }
 
@@ -199,10 +198,10 @@ impl Metrics {
     fn add_error_by_name(&self, error_type: &str) {
         // correct way of handling ownership in scc HashIndex
         let et_owned = error_type.to_string();
-        if let Some(counter) = self.errors.get(&et_owned) {
+        if let Some(counter) = self.errors.peek_with(&et_owned, |_, v| v.clone()) {
             counter.fetch_add(1, Ordering::Relaxed);
         } else {
-            let _ = self.errors.insert(et_owned, Arc::new(AtomicU64::new(1)));
+            let _ = self.errors.insert_sync(et_owned, Arc::new(AtomicU64::new(1)));
         }
     }
 
@@ -224,25 +223,21 @@ impl Metrics {
         let mut outgoing_protos = HashMap::new();
         let mut errors = HashMap::new();
 
-        {
-            // scc guarded synchronous section
-            let guard = Guard::new();
+        // Collect data using the new scc 3.0 API
+        self.incoming_protos.iter_sync(|proto_name, counter| {
+            incoming_protos.insert(proto_name.clone(), counter.load(Ordering::Relaxed));
+            true
+        });
 
-            let mut iter = self.incoming_protos.iter(&guard);
-            while let Some((proto_name, counter)) = iter.next() {
-                incoming_protos.insert(proto_name.clone(), counter.load(Ordering::Relaxed));
-            }
+        self.outgoing_protos.iter_sync(|proto_name, counter| {
+            outgoing_protos.insert(proto_name.clone(), counter.load(Ordering::Relaxed));
+            true
+        });
 
-            let mut iter = self.outgoing_protos.iter(&guard);
-            while let Some((proto_name, counter)) = iter.next() {
-                outgoing_protos.insert(proto_name.clone(), counter.load(Ordering::Relaxed));
-            }
-
-            let mut iter = self.errors.iter(&guard);
-            while let Some((error_type, counter)) = iter.next() {
-                errors.insert(error_type.clone(), counter.load(Ordering::Relaxed));
-            }
-        }
+        self.errors.iter_sync(|error_type, counter| {
+            errors.insert(error_type.clone(), counter.load(Ordering::Relaxed));
+            true
+        });
 
         let (udp, udpps) = self.get_udp_stats(uptime);
         let tasks = self.tasks.load(Ordering::Relaxed);

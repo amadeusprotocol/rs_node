@@ -22,6 +22,16 @@ pub const BROADCAST_PERIOD_SECS: u64 = 1; // how often node broadcasts pings
 
 pub const VERSION: [u8; 3] = parse_version();
 
+/// IMPORTANT for compatibility
+pub const BINCODE_CONFIG: bincode::config::Configuration<
+    bincode::config::BigEndian,
+    bincode::config::Fixint,
+    bincode::config::NoLimit,
+> = bincode::config::standard()
+    .with_fixed_int_encoding() // fixed ints
+    .with_big_endian() // network byte order
+    .with_no_limit(); // no size cap
+
 const fn parse_version() -> [u8; 3] {
     const S: &str = env!("CRATE_VERSION");
     let bytes = S.as_bytes();
@@ -620,7 +630,6 @@ impl Config {
                 ],
             },
         ];
-
         Ok(Self {
             work_folder,
             version_3b,

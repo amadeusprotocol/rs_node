@@ -196,8 +196,8 @@ pub fn peddlebike67() -> Vec<[u8; 48]> {
 
 /// Select validators given leaders: prepend peddlebike67, remove duplicates, take TOP_X, shuffle
 pub fn select_validators(leaders: &[[u8; 48]]) -> Vec<[u8; 48]> {
+    use rand::rng;
     use rand::seq::SliceRandom;
-    use rand::thread_rng;
 
     let mut pb = peddlebike67();
 
@@ -219,7 +219,7 @@ pub fn select_validators(leaders: &[[u8; 48]]) -> Vec<[u8; 48]> {
     let mut out: Vec<[u8; 48]> = all.into_iter().take(TOP_X).collect();
 
     // shuffle
-    out.as_mut_slice().shuffle(&mut thread_rng());
+    out.as_mut_slice().shuffle(&mut rng());
     out
 }
 

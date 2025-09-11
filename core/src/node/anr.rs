@@ -446,10 +446,10 @@ impl NodeAnrs {
 
     /// Get random verified nodes
     pub async fn get_random_verified(&self, count: usize) -> Vec<Anr> {
-        use rand::seq::SliceRandom;
+        use rand::seq::IndexedRandom;
 
         let pks = self.handshaked().await;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let selected: Vec<_> = pks.choose_multiple(&mut rng, count).cloned().collect();
 
         let mut anrs = Vec::new();
@@ -464,7 +464,7 @@ impl NodeAnrs {
 
     /// Get random unverified nodes
     pub async fn get_random_not_handshaked(&self, count: usize) -> Vec<Ipv4Addr> {
-        use rand::seq::SliceRandom;
+        use rand::seq::IndexedRandom;
         use std::collections::HashSet;
 
         // deduplicate by ip4
@@ -476,7 +476,7 @@ impl NodeAnrs {
             }
         }
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let selected: Vec<_> = unique_pairs.choose_multiple(&mut rng, count).cloned().collect();
 
         selected
@@ -484,7 +484,7 @@ impl NodeAnrs {
 
     /// Get random verified nodes
     pub async fn get_random_handshaked_anrs(&self, count: usize) -> Vec<Anr> {
-        use rand::seq::SliceRandom;
+        use rand::seq::IndexedRandom;
         use std::collections::HashSet;
 
         // deduplicate by ip4
@@ -496,7 +496,7 @@ impl NodeAnrs {
             }
         }
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let selected: Vec<_> = unique_pairs.choose_multiple(&mut rng, count).cloned().collect();
 
         selected

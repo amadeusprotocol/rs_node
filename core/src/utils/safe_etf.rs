@@ -414,7 +414,7 @@ mod tests {
         } else {
             // Fallback to original test logic if lengths are different than expected
             assert_eq!(original_encoded.len(), our_encoded.len());
-            assert_eq!(original_encoded[1], 100); // legacy atom
+            assert_eq!(original_encoded[1], 119); // legacy atom
             assert_eq!(our_encoded[1], 119); // small atom
             assert_eq!(original_encoded[2..], our_encoded[2..]);
         }

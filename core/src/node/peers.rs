@@ -218,7 +218,7 @@ impl NodePeers {
             // Shuffle and take limited missing IPs
             let mut missing_ips = missing_ips;
             use rand::seq::SliceRandom;
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
             missing_ips.shuffle(&mut rng);
             missing_ips.truncate(add_size);
             missing_ips
@@ -314,7 +314,7 @@ impl NodePeers {
         }
 
         use rand::seq::SliceRandom;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut peers = online_peers;
         peers.shuffle(&mut rng);
         peers.truncate(no);
@@ -554,7 +554,7 @@ impl NodePeers {
                 }
 
                 use rand::seq::SliceRandom;
-                let mut rng = rand::thread_rng();
+                let mut rng = rand::rng();
                 ips.shuffle(&mut rng);
                 Ok(ips)
             }
@@ -572,7 +572,7 @@ impl NodePeers {
                 }
 
                 use rand::seq::SliceRandom;
-                let mut rng = rand::thread_rng();
+                let mut rng = rand::rng();
                 let mut ips = not_trainer_ips;
                 ips.shuffle(&mut rng);
                 ips.truncate(cnt);
