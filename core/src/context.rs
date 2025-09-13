@@ -209,12 +209,26 @@ impl Context {
         Ok(())
     }
 
+    async fn autoupdate_task(&self) -> Result<(), Error> {
+        // TODO: check if updates are available, then download and verify update signature and
+        // apply set the flag to make the node restart after it's slot
+        Ok(())
+    }
+
     pub fn get_prometheus_metrics(&self) -> String {
         self.metrics.get_prometheus()
     }
 
     pub fn get_json_metrics(&self) -> Value {
         self.metrics.get_json()
+    }
+
+    pub fn get_json_health(&self) -> Value {
+        serde_json::json!({
+            "status": "ok",
+            "version": env!("CARGO_PKG_VERSION"),
+            "uptime": self.metrics.get_uptime()
+        })
     }
 
     /// Convenience function to send UDP data with metrics tracking

@@ -16,7 +16,7 @@ The contractstate is a key-value store that holds the state of the chain. It is
 the main source of truth for the current state of the blockchain. The contractstate
 is updated every time a new block is applied. The contractstate is stored in a
 dedicated column family in the RocksDB database, aka Fabric. When the blockchain
-starts the genesis entry is applied to form the initial contractstate.
+starts, the special genesis entry is applied to form the initial contractstate.
 
 ## Entries
 
@@ -25,7 +25,7 @@ height and slot number. The height tells the position of the entry from the bott
 while the slot number is telling what trainer is responsible for this entry. Entries
 contain transactions that alter the contractstate. Each transaction is transformed
 into a mutation and a reverse mutation. The mutations are applied to the contractstate
-when blocks are applied, and the reverse mutations are applied when blocks are rewound.</br></br>
+when entries are applied, and the reverse mutations are applied when entries are rewound.</br>
 
 The chain of entries form a continuous ledger that consists of 2 main parts:
 
@@ -49,7 +49,7 @@ separately, while individually optimizing the storage for each:
   be snapshotted and stored often, because it is the main source of truth and also
   to accelerate the bootstrap of new nodes)
 - realtime networking data or cheap to rebuild data, like peers, indices, etc. (can
-  be easily rebuilt from scratch on each node start from the contractstate, seed config,
+  be easily rebuilt from scratch when starting a node from the contractstate, seed config,
   handshakes etc.)
 
 ## Transactions

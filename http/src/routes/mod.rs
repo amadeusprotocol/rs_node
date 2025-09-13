@@ -1,5 +1,6 @@
 use ama_core::Context;
-use axum::{Router, extract::State, response::Json, routing::get};
+use axum::{Router, extract::State, response::{Json, Response}, routing::get};
+use axum::http::{header, StatusCode};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -23,6 +24,7 @@ pub fn app(ctx: Arc<Context>) -> Router {
         .nest("/errors", errors::router(ctx.clone()))
         .nest("/entries", entries::router(ctx.clone()))
         .nest("/api", api_router(ctx.clone()))
+        .merge(system_router(ctx))
 }
 
 async fn api_peers(State(ctx): State<Arc<Context>>) -> Json<Value> {
@@ -69,4 +71,23 @@ async fn api_metrics(State(ctx): State<Arc<Context>>) -> Json<Value> {
 
 fn api_router(ctx: Arc<Context>) -> Router {
     Router::new().route("/peers", get(api_peers)).route("/metrics", get(api_metrics)).with_state(ctx)
+}
+
+async fn prometheus_metrics(State(ctx): State<Arc<Context>>) -> Response<String> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/plain; version=0.0.4")
+        .body(ctx.get_prometheus_metrics())
+        .unwrap()
+}
+
+async fn health(State(ctx): State<Arc<Context>>) -> Json<Value> {
+    Json(ctx.get_json_health())
+}
+
+fn system_router(ctx: Arc<Context>) -> Router {
+    Router::new()
+        .route("/metrics", get(prometheus_metrics))
+        .route("/health", get(health))
+        .with_state(ctx)
 }

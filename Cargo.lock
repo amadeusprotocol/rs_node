@@ -74,6 +74,7 @@ dependencies = [
  "eetf",
  "flate2",
  "group",
+ "hex",
  "miniz_oxide",
  "num-traits",
  "once_cell",

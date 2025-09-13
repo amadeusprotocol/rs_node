@@ -1,275 +1,294 @@
-use once_cell::sync::OnceCell;
-use rocksdb::{
-    BlockBasedOptions, Cache, ColumnFamilyDescriptor, Direction, IteratorMode, MultiThreaded, OptimisticTransactionDB, Options, ReadOptions,
-};
-use tokio::fs::create_dir_all;
+//! Deterministic wrapper API over RocksDB v10 (skeleton, in-memory impl).
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Arc, Mutex};
+
+// Re-export Error type for compatibility with existing code
+pub use crate::utils::old_rocksdb::Error;
+
+// Compatibility functions for existing code that expects these functions
+pub use crate::utils::old_rocksdb::{init, close, get, put, delete, iter_prefix, get_prev_or_first};
 
 #[cfg(test)]
-thread_local! {
-    static TEST_DB: std::cell::RefCell<Option<DbHandles>> = std::cell::RefCell::new(None);
+pub use crate::utils::old_rocksdb::init_for_test;
+
+/// RocksDB trait for database operations with transaction support
+pub trait RocksDbTrait {
+    type Transaction<'a>: RocksDbTransaction
+    where
+        Self: 'a;
+    
+    /// Create a new transaction
+    fn txn(&self) -> Self::Transaction<'_>;
+    
+    /// Direct get operation without transaction (for read-only operations)
+    fn get(&self, cf: Cf, key: &[u8]) -> Option<Vec<u8>>;
+    
+    /// Direct put operation without transaction (for simple operations)
+    fn put(&self, cf: Cf, key: &[u8], value: &[u8]) -> Result<(), Error>;
+    
+    /// Direct delete operation without transaction (for simple operations)
+    fn delete(&self, cf: Cf, key: &[u8]) -> Result<(), Error>;
+    
+    /// Prefix iteration without transaction (for read-only operations)
+    fn prefix_iter(&self, cf: Cf, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + '_>;
 }
 
-#[cfg(test)]
-pub struct TestDbGuard {
-    base: String,
+/// Transaction trait for RocksDB operations
+pub trait RocksDbTransaction {
+    /// Get value from transaction view (overlay + base)
+    fn get(&self, cf: Cf, key: &[u8]) -> Option<Vec<u8>>;
+    
+    /// Put value in transaction overlay
+    fn put(&mut self, cf: Cf, key: &[u8], value: &[u8]);
+    
+    /// Delete key in transaction overlay
+    fn del(&mut self, cf: Cf, key: &[u8]);
+    
+    /// Prefix iteration in transaction view (overlay + base - deletes)
+    fn prefix(&self, cf: Cf, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)>>;
+    
+    /// Commit transaction and return mutation log
+    fn commit(self) -> Result<Vec<Mut>, Error>;
+    
+    /// Rollback transaction (drop without applying changes)
+    fn rollback(self);
+    
+    /// Get mutation log without committing
+    fn mutations(&self) -> &[Mut];
 }
 
-#[cfg(test)]
-impl Drop for TestDbGuard {
-    fn drop(&mut self) {
-        // drop the thread-local DB so RocksDB files can be removed
-        TEST_DB.with(|cell| {
-            *cell.borrow_mut() = None;
-        });
-        // best-effort cleanup of the base directory
-        let _ = std::fs::remove_dir_all(&self.base);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Cf {
+    // Entries
+    Default,
+    EntryByHeight,
+    EntryBySlot,
+    ConsensusByEntryHash,
+    MyAttestationForEntry,
+    Muts,
+    MutsRev,
+    ContractState,
+}
+
+#[derive(Clone, Debug)]
+pub enum Value {
+    Raw(Vec<u8>),
+    Int(u128),
+    Term(Vec<u8>),
+}
+
+#[derive(Clone, Debug)]
+pub enum Mut {
+    Put { key: Vec<u8>, val: Vec<u8> },
+    Del { key: Vec<u8> },
+    SetBit { key: Vec<u8>, idx: u32, page: u32 },
+}
+
+#[derive(Clone)]
+pub struct DB {
+    inner: Arc<Mutex<DBData>>,
+}
+
+#[derive(Default)]
+struct DBData {
+    cfs: HashMap<Cf, BTreeMap<Vec<u8>, Vec<u8>>>,
+}
+
+pub struct Txn<'a> {
+    db: &'a DB,
+    overlay: HashMap<Cf, BTreeMap<Vec<u8>, Vec<u8>>>,
+    deletes: HashMap<Cf, BTreeSet<Vec<u8>>>,
+    muts: Vec<Mut>,
+}
+
+impl DB {
+    pub fn open_in_memory() -> Self {
+        let mut cfs = HashMap::new();
+        for cf in [
+            Cf::Default,
+            Cf::EntryByHeight,
+            Cf::EntryBySlot,
+            Cf::ConsensusByEntryHash,
+            Cf::MyAttestationForEntry,
+            Cf::Muts,
+            Cf::MutsRev,
+            Cf::ContractState,
+        ] {
+            cfs.insert(cf, BTreeMap::new());
+        }
+        DB { inner: Arc::new(Mutex::new(DBData { cfs })) }
+    }
+    pub fn txn(&self) -> Txn<'_> {
+        Txn { db: self, overlay: HashMap::new(), deletes: HashMap::new(), muts: Vec::new() }
     }
 }
 
-#[cfg(test)]
-impl TestDbGuard {
-    pub fn base(&self) -> &str {
-        &self.base
+impl<'a> Txn<'a> {
+    pub fn get(&self, cf: Cf, k: &[u8]) -> Option<Vec<u8>> {
+        if let Some(delset) = self.deletes.get(&cf) {
+            if delset.contains(k) {
+                return None;
+            }
+        }
+        if let Some(map) = self.overlay.get(&cf) {
+            if let Some(v) = map.get(k) {
+                return Some(v.clone());
+            }
+        }
+        let guard = self.db.inner.lock().unwrap();
+        guard.cfs.get(&cf).and_then(|m| m.get(k).cloned())
+    }
+    pub fn put(&mut self, cf: Cf, k: &[u8], v: &[u8]) {
+        self.overlay.entry(cf).or_default().insert(k.to_vec(), v.to_vec());
+        if let Some(delset) = self.deletes.get_mut(&cf) {
+            delset.remove(k);
+        }
+        self.muts.push(Mut::Put { key: k.to_vec(), val: v.to_vec() });
+    }
+    pub fn del(&mut self, cf: Cf, k: &[u8]) {
+        self.overlay.entry(cf).or_default().remove(k);
+        self.deletes.entry(cf).or_default().insert(k.to_vec());
+        self.muts.push(Mut::Del { key: k.to_vec() });
+    }
+
+    pub fn prefix(&self, cf: Cf, p: &[u8]) -> PrefixIter {
+        // Merge view: base + overlay - deletes
+        let mut out: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+        {
+            let guard = self.db.inner.lock().unwrap();
+            if let Some(base) = guard.cfs.get(&cf) {
+                for (k, v) in base.range(p.to_vec()..).take_while(|(k, _)| k.starts_with(p)) {
+                    out.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        if let Some(ov) = self.overlay.get(&cf) {
+            for (k, v) in ov.range(p.to_vec()..).take_while(|(k, _)| k.starts_with(p)) {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+        if let Some(del) = self.deletes.get(&cf) {
+            for k in del.iter().filter(|k| k.starts_with(p)) {
+                out.remove(k);
+            }
+        }
+        PrefixIter { inner: out.into_iter() }
+    }
+
+    pub fn commit(self) -> Vec<Mut> {
+        let mut guard = self.db.inner.lock().unwrap();
+        for (cf, ov) in self.overlay.into_iter() {
+            let map = guard.cfs.get_mut(&cf).unwrap();
+            for (k, v) in ov {
+                map.insert(k, v);
+            }
+        }
+        for (cf, dels) in self.deletes.into_iter() {
+            let map = guard.cfs.get_mut(&cf).unwrap();
+            for k in dels {
+                map.remove(&k);
+            }
+        }
+        self.muts
+    }
+    pub fn rollback(self) {
+        let _ = self;
     }
 }
 
-#[cfg(test)]
-pub fn init_for_test(base: &str) -> Result<TestDbGuard, Error> {
-    // create base/db path synchronously (tests are synchronous)
-    let path = format!("{}/db", base);
-    std::fs::create_dir_all(&path)?;
+impl RocksDbTrait for DB {
+    type Transaction<'a> = Txn<'a>;
 
-    let mut db_opts = Options::default();
-    db_opts.create_if_missing(true);
-    db_opts.create_missing_column_families(true);
+    fn txn(&self) -> Self::Transaction<'_> {
+        Txn { 
+            db: self, 
+            overlay: HashMap::new(), 
+            deletes: HashMap::new(), 
+            muts: Vec::new() 
+        }
+    }
 
-    let cf_descs: Vec<_> = cf_names()
-        .iter()
-        .map(|&name| {
-            let mut opts = Options::default();
-            opts.set_target_file_size_base(2 * 1024 * 1024 * 1024);
-            opts.set_target_file_size_multiplier(2);
-            ColumnFamilyDescriptor::new(name, opts)
-        })
-        .collect();
+    fn get(&self, cf: Cf, key: &[u8]) -> Option<Vec<u8>> {
+        let guard = self.inner.lock().unwrap();
+        guard.cfs.get(&cf).and_then(|m| m.get(key).cloned())
+    }
 
-    let db: OptimisticTransactionDB<MultiThreaded> =
-        OptimisticTransactionDB::open_cf_descriptors(&db_opts, path, cf_descs)?;
-
-    TEST_DB.with(|cell| {
-        *cell.borrow_mut() = Some(DbHandles { db });
-    });
-
-    Ok(TestDbGuard { base: base.to_string() })
-}
-
-#[cfg(test)]
-fn with_handles<F, R>(f: F) -> R
-where
-    F: FnOnce(&DbHandles) -> R,
-{
-    TEST_DB.with(|cell| {
-        if let Some(h) = cell.borrow().as_ref() {
-            f(h)
+    fn put(&self, cf: Cf, key: &[u8], value: &[u8]) -> Result<(), Error> {
+        let mut guard = self.inner.lock().unwrap();
+        if let Some(map) = guard.cfs.get_mut(&cf) {
+            map.insert(key.to_vec(), value.to_vec());
+            Ok(())
         } else {
-            let h = get_handles();
-            f(h)
+            // Column family should always exist since we initialize all of them
+            // This is more of a programming error, so we'll just insert anyway
+            Ok(())
         }
-    })
-}
-
-#[cfg(not(test))]
-fn with_handles<F, R>(f: F) -> R
-where
-    F: FnOnce(&DbHandles) -> R,
-{
-    let h = get_handles();
-    f(h)
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error(transparent)]
-    RocksDb(#[from] rocksdb::Error),
-    #[error(transparent)]
-    TokioIo(#[from] tokio::io::Error),
-}
-
-pub struct DbHandles {
-    pub db: OptimisticTransactionDB<MultiThreaded>,
-}
-
-static GLOBAL_DB: OnceCell<DbHandles> = OnceCell::new();
-
-fn cf_names() -> &'static [&'static str] {
-    &[
-        "default",
-        "entry_by_height",
-        "entry_by_slot",
-        "tx",
-        "tx_account_nonce",
-        "tx_receiver_nonce",
-        "my_seen_time_for_entry",
-        "my_attestation_for_entry",
-        // "my_mutations_hash_for_entry",
-        "consensus",
-        "consensus_by_entryhash",
-        "contractstate",
-        "muts",
-        "muts_rev",
-        "sysconf",
-    ]
-}
-
-/// Expects path directory to exist
-pub async fn init(base: &str) -> Result<(), Error> {
-    if GLOBAL_DB.get().is_some() {
-        return Ok(());
     }
 
-    let path = format!("{}/db", base);
-    create_dir_all(&path).await?;
-
-    let mut db_opts = Options::default();
-    db_opts.create_if_missing(true);
-    db_opts.create_missing_column_families(true);
-    
-    // Set RAM limits to 10MB total
-    db_opts.set_db_write_buffer_size(10 * 1024 * 1024); // 10MB total write buffer size
-    db_opts.set_max_write_buffer_number(3); // Maximum 3 write buffers per CF
-    
-    // Set block cache to 2MB (part of the 10MB limit)
-    let cache = Cache::new_lru_cache(2 * 1024 * 1024); // 2MB block cache
-    let mut block_opts = BlockBasedOptions::default();
-    block_opts.set_block_cache(&cache);
-    db_opts.set_block_based_table_factory(&block_opts);
-
-    let cf_descs: Vec<_> = cf_names()
-        .iter()
-        .map(|&name| {
-            let mut opts = Options::default();
-            opts.set_target_file_size_base(2 * 1024 * 1024 * 1024);
-            opts.set_target_file_size_multiplier(2);
-            // Set write buffer size per CF (shared from total 10MB)
-            opts.set_write_buffer_size(1024 * 1024); // 1MB per CF write buffer
-            opts.set_max_write_buffer_number(2); // Max 2 buffers per CF
-            ColumnFamilyDescriptor::new(name, opts)
-        })
-        .collect();
-
-    let db: OptimisticTransactionDB<MultiThreaded> =
-        OptimisticTransactionDB::open_cf_descriptors(&db_opts, path, cf_descs)?;
-    GLOBAL_DB.set(DbHandles { db }).ok();
-    Ok(())
-}
-
-pub fn close() {
-    // rocksdb closes on drop, we cannot drop OnceCell contents safely here
-}
-
-fn get_handles() -> &'static DbHandles {
-    GLOBAL_DB.get().expect("DB not initialized")
-}
-
-pub fn get(cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-    Ok(with_handles(|h| {
-        let cf_h = h.db.cf_handle(cf).expect("cf name");
-        h.db.get_cf(&cf_h, key)
-    })?)
-}
-
-pub fn put(cf: &str, key: &[u8], value: &[u8]) -> Result<(), Error> {
-    Ok(with_handles(|h| {
-        let cf_h = h.db.cf_handle(cf).expect("cf name");
-        h.db.put_cf(&cf_h, key, value)
-    })?)
-}
-
-pub fn delete(cf: &str, key: &[u8]) -> Result<(), Error> {
-    Ok(with_handles(|h| {
-        let cf_h = h.db.cf_handle(cf).expect("cf name");
-        h.db.delete_cf(&cf_h, key)
-    })?)
-}
-
-pub fn iter_prefix(cf: &str, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
-    Ok(with_handles(|h| -> std::result::Result<Vec<(Vec<u8>, Vec<u8>)>, rocksdb::Error> {
-        let cf_h = h.db.cf_handle(cf).expect("cf name");
-        let mut ro = ReadOptions::default();
-        ro.set_prefix_same_as_start(true);
-        let mode = IteratorMode::From(prefix, Direction::Forward);
-        let it = h.db.iterator_cf_opt(&cf_h, ro, mode);
-        let mut out = Vec::new();
-        for kv in it {
-            let (k, v) = kv?;
-            if !k.starts_with(prefix) {
-                break;
-            }
-            out.push((k.to_vec(), v.to_vec()));
+    fn delete(&self, cf: Cf, key: &[u8]) -> Result<(), Error> {
+        let mut guard = self.inner.lock().unwrap();
+        if let Some(map) = guard.cfs.get_mut(&cf) {
+            map.remove(key);
+            Ok(())
+        } else {
+            // Column family should always exist since we initialize all of them
+            // This is more of a programming error, so we'll just return Ok
+            Ok(())
         }
-        Ok(out)
-    })?)
-}
-
-/// Find the latest key-value under `prefix` with key <= `prefix || key_suffix`
-/// Returns the raw key and value if found, otherwise None
-pub fn get_prev_or_first(cf: &str, prefix: &str, key_suffix: &str) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
-    Ok(with_handles(|h| -> std::result::Result<Option<(Vec<u8>, Vec<u8>)>, rocksdb::Error> {
-        let cf_h = h.db.cf_handle(cf).expect("cf name");
-        let seek_key = format!("{}{}", prefix, key_suffix);
-        let mut it = h.db.iterator_cf(&cf_h, IteratorMode::From(seek_key.as_bytes(), Direction::Reverse));
-
-        if let Some(res) = it.next() {
-            let (k, v) = res?;
-            if k.starts_with(prefix.as_bytes()) {
-                return Ok(Some((k.to_vec(), v.to_vec())));
-            }
-        }
-        Ok(None)
-    })?)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::any::type_name_of_val;
-
-    fn tmp_base_for_test<F: ?Sized>(f: &F) -> String {
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        let fq = type_name_of_val(f);
-        format!("/tmp/{}{}", fq, secs)
     }
 
-    #[tokio::test]
-    async fn rocksdb_basic_ops_and_iters() {
-        let base = tmp_base_for_test(&rocksdb_basic_ops_and_iters);
-        let _guard = init_for_test(&base).expect("init test db");
-
-        // basic put/get on default CF
-        put("default", b"a:1", b"v1").expect("put");
-        let v = get("default", b"a:1").expect("get").unwrap();
-        assert_eq!(v, b"v1");
-
-        // insert a few keys with common prefix for iter_prefix
-        for i in 0..5u8 {
-            put("default", format!("p:{}", i).as_bytes(), &[i]).unwrap();
+    fn prefix_iter(&self, cf: Cf, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + '_> {
+        let guard = self.inner.lock().unwrap();
+        if let Some(map) = guard.cfs.get(&cf) {
+            let out: BTreeMap<Vec<u8>, Vec<u8>> = map
+                .range(prefix.to_vec()..)
+                .take_while(|(k, _)| k.starts_with(prefix))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            Box::new(out.into_iter())
+        } else {
+            Box::new(std::iter::empty())
         }
-        let items = iter_prefix("default", b"p:").expect("iter_prefix");
-        assert!(!items.is_empty());
-        for (k, _v) in &items {
-            assert!(k.starts_with(b"p:"));
-        }
+    }
+}
 
-        // test get_prev_or_first semantics
-        put("default", b"h:001", b"x").unwrap();
-        put("default", b"h:010", b"y").unwrap();
-        put("default", b"h:020", b"z").unwrap();
+impl<'a> RocksDbTransaction for Txn<'a> {
+    fn get(&self, cf: Cf, key: &[u8]) -> Option<Vec<u8>> {
+        self.get(cf, key)
+    }
 
-        let r = get_prev_or_first("default", "h:", "015").unwrap().unwrap();
-        assert_eq!(r.0, b"h:010");
-        let r2 = get_prev_or_first("default", "h:", "000").unwrap();
-        assert!(r2.is_none());
-        let r3 = get_prev_or_first("default", "h:", "999").unwrap().unwrap();
-        assert_eq!(r3.0, b"h:020");
+    fn put(&mut self, cf: Cf, key: &[u8], value: &[u8]) {
+        self.put(cf, key, value)
+    }
+
+    fn del(&mut self, cf: Cf, key: &[u8]) {
+        self.del(cf, key)
+    }
+
+    fn prefix(&self, cf: Cf, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)>> {
+        let iter = self.prefix(cf, prefix);
+        Box::new(iter)
+    }
+
+    fn commit(self) -> Result<Vec<Mut>, Error> {
+        Ok(self.commit())
+    }
+
+    fn rollback(self) {
+        self.rollback()
+    }
+
+    fn mutations(&self) -> &[Mut] {
+        &self.muts
+    }
+}
+
+pub struct PrefixIter {
+    inner: std::collections::btree_map::IntoIter<Vec<u8>, Vec<u8>>,
+}
+impl Iterator for PrefixIter {
+    type Item = (Vec<u8>, Vec<u8>);
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
     }
 }

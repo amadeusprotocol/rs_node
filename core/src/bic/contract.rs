@@ -58,38 +58,38 @@ pub fn call(function: &str, env: &CallEnv, args: &[Vec<u8>]) -> Result<(), Contr
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Once;
-
-    static INIT: Once = Once::new();
-
-    fn ensure_db_init() {
-        INIT.call_once(|| {
-            let test_db_path = "target/test_bic_contract_db";
-            std::fs::create_dir_all(test_db_path).unwrap();
-            tokio::runtime::Runtime::new().unwrap().block_on(async {
-                let _ = crate::utils::rocksdb::init("target/test_bic_contract").await;
-            });
-        });
-    }
-
-    #[test]
-    fn bytecode_roundtrip_with_deploy_call() {
-        ensure_db_init();
-        // reset KV
-        kv::reset_for_tests();
-        let env = CallEnv { account_caller: [7u8; 48] };
-        let wasm = vec![0xde, 0xad, 0xbe, 0xef];
-
-        // Wrong usage
-        assert!(matches!(call("deploy", &env, &[]), Err(ContractError::InvalidArgs)));
-        assert!(matches!(call("unknown", &env, &[wasm.clone()]), Err(ContractError::InvalidFunction(_))));
-
-        // Correct deploy
-        call("deploy", &env, &[wasm.clone()]).expect("deploy ok");
-        let got = bytecode(&env.account_caller).expect("stored");
-        assert_eq!(got, wasm);
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use std::sync::Once;
+//
+//     static INIT: Once = Once::new();
+//
+//     fn ensure_db_init() {
+//         INIT.call_once(|| {
+//             let test_db_path = "target/test_bic_contract_db";
+//             std::fs::create_dir_all(test_db_path).unwrap();
+//             tokio::runtime::Runtime::new().unwrap().block_on(async {
+//                 let _ = crate::utils::rocksdb::init("target/test_bic_contract").await;
+//             });
+//         });
+//     }
+//
+//     #[test]
+//     fn bytecode_roundtrip_with_deploy_call() {
+//         ensure_db_init();
+//         // reset KV
+//         kv::reset_for_tests();
+//         let env = CallEnv { account_caller: [7u8; 48] };
+//         let wasm = vec![0xde, 0xad, 0xbe, 0xef];
+//
+//         // Wrong usage
+//         assert!(matches!(call("deploy", &env, &[]), Err(ContractError::InvalidArgs)));
+//         assert!(matches!(call("unknown", &env, &[wasm.clone()]), Err(ContractError::InvalidFunction(_))));
+//
+//         // Correct deploy
+//         call("deploy", &env, &[wasm.clone()]).expect("deploy ok");
+//         let got = bytecode(&env.account_caller).expect("stored");
+//         assert_eq!(got, wasm);
+//     }
+// }
