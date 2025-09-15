@@ -3,7 +3,8 @@ use crate::consensus::attestation::Attestation;
 use crate::consensus::entry::Entry;
 use crate::utils::misc::{TermExt, bitvec_to_bools, bools_to_bitvec};
 use crate::utils::rocksdb;
-use eetf::{Atom, Binary, Term};
+use crate::utils::safe_etf::encode_safe_deterministic;
+use eetf::{Atom, Binary, Term, BigInteger};
 use std::collections::HashMap;
 // TODO: make the database trait that the fabric will use
 
@@ -51,7 +52,11 @@ pub fn insert_entry(hash: &[u8; 32], height: u64, slot: u64, entry_bin: &[u8], s
     // idempotent: if already present under default CF, do nothing
     if rocksdb::get(CF_DEFAULT, hash)?.is_none() {
         rocksdb::put(CF_DEFAULT, hash, entry_bin)?;
-        rocksdb::put(CF_MY_SEEN_TIME_FOR_ENTRY, hash, &seen_millis.to_be_bytes())?;
+
+        // Store seen time using ETF deterministic format like Elixir
+        let seen_time_term = Term::from(BigInteger { value: seen_millis.into() });
+        let seen_time_bin = encode_safe_deterministic(&seen_time_term);
+        rocksdb::put(CF_MY_SEEN_TIME_FOR_ENTRY, hash, &seen_time_bin)?;
 
         // index by height and slot -> key format allows efficient range queries
         // use compound key to support multiple entries per height/slot
@@ -120,10 +125,10 @@ pub fn entries_by_slot(slot: u64) -> Result<Vec<Vec<u8>>, Error> {
 //     Ok(())
 // }
 
-/// Read Entry stub (height only) from CF_DEFAULT by entry hash (32 bytes)
+/// Read Entry from CF_DEFAULT by entry hash (32 bytes) using ETF format
 pub fn get_entry_by_hash(hash: &[u8; 32]) -> Option<Entry> {
     let bin = rocksdb::get(CF_DEFAULT, hash).ok()??;
-    let entry = Entry::try_from(bin.as_slice()).ok()?;
+    let entry = Entry::unpack(&bin).ok()?;
     Some(entry)
 }
 
@@ -131,6 +136,19 @@ pub fn get_entry_by_hash(hash: &[u8; 32]) -> Option<Entry> {
 pub struct EntryStub {
     pub hash: [u8; 32],
     pub header_height: u64,
+}
+
+/// Get seen time for entry hash using ETF format
+pub fn get_seen_time_for_entry(hash: &[u8; 32]) -> Result<Option<u64>, Error> {
+    if let Some(bin) = rocksdb::get(CF_MY_SEEN_TIME_FOR_ENTRY, hash)? {
+        let term = Term::decode(bin.as_slice())?;
+        if let Some(integer_val) = TermExt::get_integer(&term) {
+            let seen_millis: u64 = integer_val.try_into().map_err(|_| Error::BadEtf("seen_time"))?;
+            return Ok(Some(seen_millis));
+        }
+        return Err(Error::BadEtf("seen_time_format"));
+    }
+    Ok(None)
 }
 
 pub fn my_attestation_by_entryhash(hash: &[u8]) -> Result<Option<Attestation>, Error> {
@@ -160,8 +178,7 @@ fn pack_consensus_map(map: &HashMap<[u8; 32], StoredConsensus>) -> Result<Vec<u8
         outer.insert(key, Term::from(eetf::Map { map: inner }));
     }
     let term = Term::from(eetf::Map { map: outer });
-    let mut out = Vec::new();
-    term.encode(&mut out)?;
+    let out = encode_safe_deterministic(&term);
     Ok(out)
 }
 

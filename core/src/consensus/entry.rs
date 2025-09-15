@@ -8,7 +8,7 @@ use crate::node::protocol;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381;
 use crate::utils::misc::{TermExt, TermMap, bitvec_to_bools, bools_to_bitvec, get_unix_millis_now};
-use crate::utils::safe_etf::encode_safe;
+use crate::utils::safe_etf::{encode_safe, encode_safe_deterministic};
 use crate::utils::{archiver, blake3};
 use crate::{bic, consensus};
 use eetf::{Atom, BigInteger, Binary, Map, Term};
@@ -106,7 +106,7 @@ impl EntrySummary {
     }
 }
 
-#[derive(bincode::Decode, bincode::Encode, Clone)]
+#[derive(Clone)]
 pub struct EntryHeader {
     pub height: u64, // no need in u128 for next centuries
     pub slot: u64,
@@ -162,12 +162,12 @@ impl EntryHeader {
         map.insert(Term::Atom(Atom::from("txs_hash")), Term::from(Binary { bytes: self.txs_hash.to_vec() }));
 
         let term = Term::Map(Map { map });
-        let out = encode_safe(&term);
+        let out = encode_safe_deterministic(&term);
         Ok(out)
     }
 }
 
-#[derive(bincode::Decode, bincode::Encode, Clone)]
+#[derive(Clone)]
 pub struct Entry {
     pub hash: [u8; 32],
     pub header: EntryHeader,
@@ -176,18 +176,68 @@ pub struct Entry {
     pub txs: Vec<Vec<u8>>,       // list of tx binaries that can be empty
 }
 
+impl Entry {
+    /// Pack entry to ETF deterministic format (like Elixir Entry.pack/1)
+    pub fn pack(&self) -> Result<Vec<u8>, Error> {
+        let mut map = HashMap::new();
+
+        // Convert header to ETF binary first
+        let header_bin = self.header.to_etf_bin()?;
+        map.insert(Term::Atom(Atom::from("header")), Term::from(Binary { bytes: header_bin }));
+
+        // Convert txs to ETF list of binaries
+        let txs_terms: Vec<Term> = self.txs.iter()
+            .map(|tx| Term::from(Binary { bytes: tx.clone() }))
+            .collect();
+        map.insert(Term::Atom(Atom::from("txs")), Term::from(eetf::List { elements: txs_terms }));
+
+        map.insert(Term::Atom(Atom::from("hash")), Term::from(Binary { bytes: self.hash.to_vec() }));
+        map.insert(Term::Atom(Atom::from("signature")), Term::from(Binary { bytes: self.signature.to_vec() }));
+
+        // Handle optional mask
+        if let Some(mask) = &self.mask {
+            let mask_bytes = bools_to_bitvec(mask);
+            map.insert(Term::Atom(Atom::from("mask")), Term::from(Binary { bytes: mask_bytes }));
+        }
+
+        let term = Term::from(eetf::Map { map });
+        let out = encode_safe_deterministic(&term);
+        Ok(out)
+    }
+
+    /// Unpack entry from ETF deterministic format (like Elixir Entry.unpack/1)
+    pub fn unpack(entry_packed: &[u8]) -> Result<Self, Error> {
+        let term = Term::decode(entry_packed)?;
+        let map = term.get_term_map().ok_or(Error::BadEtf("entry"))?;
+
+        let hash = map.get_binary("hash").ok_or(Error::BadEtf("hash"))?;
+        let header_bin: Vec<u8> = map.get_binary("header").ok_or(Error::BadEtf("header"))?;
+        let signature = map.get_binary("signature").ok_or(Error::BadEtf("signature"))?;
+        let mask = map.get_binary("mask").map(bitvec_to_bools);
+        let txs: Vec<Vec<u8>> = map.get_list("txs")
+            .unwrap_or_default()
+            .iter()
+            .filter_map(TermExt::get_binary)
+            .map(Into::into)
+            .collect();
+
+        let header = EntryHeader::from_etf_bin(&header_bin)?;
+
+        Ok(Entry {
+            hash,
+            header,
+            signature,
+            mask,
+            txs,
+        })
+    }
+}
+
 impl TryFrom<&[u8]> for Entry {
     type Error = Error;
 
     fn try_from(bin: &[u8]) -> Result<Self, Self::Error> {
-        let config = bincode::config::standard();
-        let (entry, len): (Self, usize) = bincode::decode_from_slice(bin, config)?;
-
-        if len != bin.len() {
-            return Err(Error::BadEtf("entry_bin_extra_data"));
-        }
-
-        Ok(entry)
+        Self::unpack(bin)
     }
 }
 
@@ -195,8 +245,7 @@ impl TryInto<Vec<u8>> for Entry {
     type Error = Error;
 
     fn try_into(self) -> Result<Vec<u8>, Self::Error> {
-        let config = bincode::config::standard();
-        bincode::encode_to_vec(&self, config).map_err(Into::into)
+        self.pack()
     }
 }
 
@@ -213,8 +262,8 @@ impl Protocol for Entry {
         Entry::from_etf_bin_validated(bin, ENTRY_SIZE).map_err(Into::into)
     }
     fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        // encode entry as bincode first
-        let entry_bin: Vec<u8> = self.clone().try_into().map_err(|_| protocol::Error::BadEtf("entry"))?;
+        // encode entry using ETF deterministic format
+        let entry_bin: Vec<u8> = self.pack().map_err(|_| protocol::Error::BadEtf("entry"))?;
 
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
@@ -267,8 +316,8 @@ impl Entry {
     pub const TYPENAME: &'static str = "entry";
 
     pub fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        // encode entry as bincode first
-        let entry_bin: Vec<u8> = self.clone().try_into().map_err(|_| protocol::Error::BadEtf("entry"))?;
+        // encode entry using ETF deterministic format
+        let entry_bin: Vec<u8> = self.pack().map_err(|_| protocol::Error::BadEtf("entry"))?;
 
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
@@ -284,7 +333,27 @@ impl Entry {
             return Err(Error::BadEtf("entry_bin_too_large"));
         }
 
-        let parsed = ParsedEntry::from_etf_bin(bin)?;
+        // Validate deterministic ETF encoding first
+        let parsed_entry = Entry::unpack(bin)?;
+        let repacked = parsed_entry.pack()?;
+        if bin != repacked {
+            return Err(Error::BadEtf("not_deterministicly_encoded"));
+        }
+
+        // Validate header deterministic encoding
+        let header_repacked = parsed_entry.header.to_etf_bin()?;
+        // Note: We need to extract original header binary from the entry to compare
+        let term = Term::decode(bin)?;
+        let map = term.get_term_map().ok_or(Error::BadEtf("entry"))?;
+        let original_header_bin = map.get_binary("header").ok_or(Error::BadEtf("header"))?;
+        if original_header_bin != header_repacked {
+            return Err(Error::BadEtf("not_deterministicly_encoded_header"));
+        }
+
+        let parsed = ParsedEntry {
+            entry: parsed_entry,
+            header_bin: original_header_bin,
+        };
         parsed.validate_signature()?;
         let is_special = parsed.entry.mask.is_some();
         parsed.entry.validate_contents(is_special)?;
@@ -352,16 +421,12 @@ struct ParsedEntry {
 
 impl ParsedEntry {
     fn from_etf_bin(bin: &[u8]) -> Result<Self, Error> {
-        let map = Term::decode(bin)?.get_term_map().ok_or(Error::BadEtf("entry"))?;
-        let hash = map.get_binary("hash").ok_or(Error::BadEtf("hash"))?;
+        let entry = Entry::unpack(bin)?;
+        let term = Term::decode(bin)?;
+        let map = term.get_term_map().ok_or(Error::BadEtf("entry"))?;
         let header_bin: Vec<u8> = map.get_binary("header").ok_or(Error::BadEtf("header"))?;
-        let signature = map.get_binary("signature").ok_or(Error::BadEtf("signature"))?;
-        let mask = map.get_binary("mask").map(bitvec_to_bools);
-        let txs: Vec<Vec<u8>> =
-            map.get_list("txs").unwrap_or_default().iter().filter_map(TermExt::get_binary).map(Into::into).collect();
 
-        let header = EntryHeader::from_etf_bin(&header_bin)?;
-        Ok(ParsedEntry { entry: Entry { hash, header, signature, mask, txs }, header_bin })
+        Ok(ParsedEntry { entry, header_bin })
     }
 
     fn validate_signature(&self) -> Result<(), Error> {

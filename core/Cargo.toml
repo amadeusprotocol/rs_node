@@ -25,7 +25,7 @@ blst = "0.3.15"
 thiserror = "2.0.15"
 group = "0.13.0"
 once_cell = "1.19.0"
-rocksdb = { version = "0.24.0", default-features = false, features = ["lz4", "snappy"] }
+rust-rocksdb = { git = "https://github.com/zaidoon1/rust-rocksdb", default-features = false, features = ["lz4", "snappy"] }
 tracing = { version = "0.1.41", default-features = false, features = ["std", "attributes"] }
 async-trait = "0.1.89"
 wasmer = { version = "4.4.0", features = ["cranelift"] }

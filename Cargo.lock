@@ -81,7 +81,7 @@ dependencies = [
  "rand 0.9.2",
  "ratatui",
  "reed-solomon-simd",
- "rocksdb",
+ "rust-rocksdb",
  "scc",
  "serde",
  "serde_json",
@@ -1633,20 +1633,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "librocksdb-sys"
-version = "0.17.3+10.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cef2a00ee60fe526157c9023edab23943fae1ce2ab6f4abb2a807c1746835de9"
-dependencies = [
- "bindgen",
- "bzip2-sys",
- "cc",
- "libc",
- "libz-sys",
- "lz4-sys",
-]
-
-[[package]]
 name = "libz-sys"
 version = "1.1.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2329,13 +2315,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3582f63211428f83597b51b2ddb88e2a91a9d52d12831f9d08f5e624e8977422"
 
 [[package]]
-name = "rocksdb"
-version = "0.24.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddb7af00d2b17dbd07d82c0063e25411959748ff03e8d4f96134c2ff41fce34f"
+name = "rust-librocksdb-sys"
+version = "0.39.0+10.5.1"
+source = "git+https://github.com/zaidoon1/rust-rocksdb#19a34dc72a311753cac649dd3c3051507d08ed52"
+dependencies = [
+ "bindgen",
+ "bzip2-sys",
+ "cc",
+ "glob",
+ "libc",
+ "libz-sys",
+ "lz4-sys",
+]
+
+[[package]]
+name = "rust-rocksdb"
+version = "0.43.0"
+source = "git+https://github.com/zaidoon1/rust-rocksdb#19a34dc72a311753cac649dd3c3051507d08ed52"
 dependencies = [
  "libc",
- "librocksdb-sys",
+ "parking_lot",
+ "rust-librocksdb-sys",
 ]
 
 [[package]]
