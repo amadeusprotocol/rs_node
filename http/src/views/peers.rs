@@ -117,7 +117,7 @@ pub fn page(peers: &HashMap<String, PeerInfo>) -> String {
         <div class="table-container">
             <table>
                 <thead>
-                    <tr><th>Address</th><th>Version</th><th>Status</th><th>Last Message</th><th>Last Seen</th></tr>
+                    <tr><th>Address</th><th>Version</th><th>Status</th><th>Last Message</th><th>Temporal</th><th>Rooted</th><th>Last Seen</th></tr>
                 </thead>
                 <tbody id="peer-tbody">
                     {rows}
@@ -159,11 +159,13 @@ function renderPeers() {{
             <td>${{esc(info.version || 'N/A')}}</td>
             <td>${{status}}</td>
             <td>${{esc(info.last_msg || 'N/A')}}</td>
+            <td>${{info.temporal_height || 0}}</td>
+            <td>${{info.rooted_height || 0}}</td>
             <td>${{timeAgo}}</td>
         </tr>`;
     }}
     
-    tbody.innerHTML = html || '<tr><td colspan="5" style="text-align: center; color: #8e8e93;">No peers connected</td></tr>';
+    tbody.innerHTML = html || '<tr><td colspan="7" style="text-align: center; color: #8e8e93;">No peers connected</td></tr>';
 }}
 
 function getHandshakeStatusDisplay(status) {{
@@ -247,11 +249,15 @@ pub fn rows(peers: &HashMap<String, PeerInfo>) -> String {
                <td>{}</td>\
                <td>{}</td>\
                <td>{}</td>\
+               <td>{}</td>\
+               <td>{}</td>\
              </tr>",
             esc(addr),
             esc(info.version.as_deref().unwrap_or("N/A")),
             status_html,
             esc(&info.last_msg),
+            info.temporal_height,
+            info.rooted_height,
             time_ago,
         );
     }

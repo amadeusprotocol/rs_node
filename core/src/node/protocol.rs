@@ -47,9 +47,6 @@ pub trait Protocol: Typename + Debug + Send + Sync {
         let payload = self.to_etf_bin().inspect_err(|e| metrics.add_error(e))?;
         let shards = ReedSolomonReassembler::build_shards(config, &payload).inspect_err(|e| metrics.add_error(e))?;
         for shard in &shards {
-            if self.typename() == "ping" {
-                println!("{shard:?}");
-            }
             socket.send_to_with_metrics(shard, dst, metrics).await?;
         }
         metrics.add_outgoing_proto(self.typename());

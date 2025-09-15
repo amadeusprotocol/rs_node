@@ -60,7 +60,9 @@ pub struct PeerInfo {
     pub last_msg: String,
     pub handshake_status: HandshakeStatus,
     pub version: Option<String>,
-    pub height: u64,
+    pub height: u64, // Keep for backward compatibility
+    pub temporal_height: u64,
+    pub rooted_height: u64,
     pub latency: u64,
 }
 
@@ -261,12 +263,17 @@ impl Context {
                     continue; // skip self
                 }
 
+                let temporal_height = peer.temporal.map(|t| t.header_unpacked.height).unwrap_or(0);
+                let rooted_height = peer.rooted.map(|r| r.header_unpacked.height).unwrap_or(0);
+
                 let peer_info = PeerInfo {
                     last_ts: peer.last_seen,
                     last_msg: peer.last_msg_type.unwrap_or_else(|| "unknown".to_string()),
                     handshake_status: peer.handshake_status.clone(),
                     version: peer.version.clone(),
-                    height: peer.temporal.map(|t| t.header_unpacked.height).unwrap_or(0),
+                    height: temporal_height, // Keep for backward compatibility
+                    temporal_height,
+                    rooted_height,
                     latency: peer.latency.unwrap_or(0),
                 };
 
@@ -312,7 +319,32 @@ impl Context {
     }
 
     pub fn get_block_height(&self) -> u64 {
-        consensus::consensus::get_chain_height().unwrap_or(0)
+        // Use rooted height as the main block height metric
+        self.get_rooted_height()
+    }
+
+    /// Get temporal height from fabric
+    pub fn get_temporal_height(&self) -> u64 {
+        // Get temporal height from temporal tip entry (same as block height)
+        match consensus::consensus::get_chain_tip_entry() {
+            Ok(entry) => entry.header.height,
+            Err(_) => {
+                // Fallback to stored temporal_height in sysconf
+                match consensus::fabric::get_temporal_height() {
+                    Ok(Some(height)) => height,
+                    Ok(None) | Err(_) => 0 // fallback to 0 if not available
+                }
+            }
+        }
+    }
+
+    /// Get rooted height from fabric
+    pub fn get_rooted_height(&self) -> u64 {
+        // Get rooted height from rooted tip entry
+        match consensus::consensus::get_rooted_tip_entry() {
+            Ok(entry) => entry.header.height,
+            Err(_) => 0 // default to 0 if not available
+        }
     }
 
     pub async fn get_entries(&self) -> Vec<(u64, u64, u64)> {

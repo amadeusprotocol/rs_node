@@ -31,11 +31,11 @@ pub enum Error {
 }
 
 const CF_DEFAULT: &str = "default";
-const CF_ENTRY_BY_HEIGHT: &str = "entry_by_height";
-const CF_ENTRY_BY_SLOT: &str = "entry_by_slot";
-const CF_MY_SEEN_TIME_FOR_ENTRY: &str = "my_seen_time_for_entry";
-const CF_MY_ATTESTATION_FOR_ENTRY: &str = "my_attestation_for_entry";
-const CF_CONSENSUS_BY_ENTRYHASH: &str = "consensus_by_entryhash";
+const CF_ENTRY_BY_HEIGHT: &str = "entry_by_height|height:entryhash";
+const CF_ENTRY_BY_SLOT: &str = "entry_by_slot|slot:entryhash";
+const CF_MY_SEEN_TIME_FOR_ENTRY: &str = "my_seen_time_entry|entryhash";
+const CF_MY_ATTESTATION_FOR_ENTRY: &str = "my_attestation_for_entry|entryhash";
+const CF_CONSENSUS_BY_ENTRYHASH: &str = "consensus_by_entryhash|Map<mutationshash,consensus>";
 const CF_SYSCONF: &str = "sysconf";
 
 /// Initialize Fabric DB area (creates/open RocksDB with the required CFs)

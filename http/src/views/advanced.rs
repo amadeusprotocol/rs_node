@@ -52,6 +52,7 @@ pub fn page(
     let pubkey_bytes = ctx.get_config().get_pk();
     let pubkey = bs58::encode(pubkey_bytes).into_string();
     let block_height = ctx.get_block_height();
+    let temporal_height = ctx.get_temporal_height();
 
     // Get uptime in seconds from metrics snapshot
     let uptime_seconds = snapshot.uptime as f64;
@@ -1217,7 +1218,19 @@ pub fn page(
                         </svg>
                         <div class="block-value-large">{}</div>
                     </div>
-                    <div class="block-spacer"></div>
+                    <div class="uptime-row">
+                        <div class="uptime-left">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="uptime-icon">
+                                <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+                                    <path d="M4 6a8 3 0 1 0 16 0A8 3 0 1 0 4 6"/>
+                                    <path d="M4 6v6a8 3 0 0 0 16 0V6"/>
+                                    <path d="M4 12v6a8 3 0 0 0 16 0v-6"/>
+                                </g>
+                            </svg>
+                            <div class="uptime-label">TEMPORAL:</div>
+                        </div>
+                        <div class="uptime-secondary-value" id="temporal-height">{}</div>
+                    </div>
                 </div>
             </div>
 
@@ -1476,8 +1489,17 @@ pub fn page(
                                             <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 10l5 5 5-5"/>
                                         </svg>
                                     </th>
-                                    <th class="sortable" onclick="sortPeersTable('height')">
-                                        <span>BLOCK HEIGHT</span>
+                                    <th class="sortable" onclick="sortPeersTable('temporal')">
+                                        <span>TEMPORAL</span>
+                                        <svg class="sort-arrow sort-asc" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="display: none;">
+                                            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 14l5-5 5 5"/>
+                                        </svg>
+                                        <svg class="sort-arrow sort-desc" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="display: none;">
+                                            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 10l5 5 5-5"/>
+                                        </svg>
+                                    </th>
+                                    <th class="sortable" onclick="sortPeersTable('rooted')">
+                                        <span>ROOTED</span>
                                         <svg class="sort-arrow sort-asc" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="display: none;">
                                             <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 14l5-5 5 5"/>
                                         </svg>
@@ -1591,6 +1613,14 @@ pub fn page(
                         aVal = typeof a.peerInfo.latency === 'number' ? a.peerInfo.latency : -1;
                         bVal = typeof b.peerInfo.latency === 'number' ? b.peerInfo.latency : -1;
                         break;
+                    case 'temporal':
+                        aVal = typeof a.peerInfo.temporal_height === 'number' ? a.peerInfo.temporal_height : -1;
+                        bVal = typeof b.peerInfo.temporal_height === 'number' ? b.peerInfo.temporal_height : -1;
+                        break;
+                    case 'rooted':
+                        aVal = typeof a.peerInfo.rooted_height === 'number' ? a.peerInfo.rooted_height : -1;
+                        bVal = typeof b.peerInfo.rooted_height === 'number' ? b.peerInfo.rooted_height : -1;
+                        break;
                     case 'height':
                         aVal = typeof a.peerInfo.height === 'number' ? a.peerInfo.height : -1;
                         bVal = typeof b.peerInfo.height === 'number' ? b.peerInfo.height : -1;
@@ -1623,7 +1653,7 @@ pub fn page(
             if (!tbody) return;
             
             if (peersData.length === 0) {{
-                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: #9ca3af; font-style: italic;">No peers connected</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px; color: #9ca3af; font-style: italic;">No peers connected</td></tr>';
                 return;
             }}
             
@@ -1677,7 +1707,8 @@ pub fn page(
                 
                 // Extract peer info fields with defaults
                 const latency = peerInfo.latency || '-';
-                const blockHeight = peerInfo.height || '-';
+                const temporalHeight = peerInfo.temporal_height || '-';
+                const rootedHeight = peerInfo.rooted_height || '-';
                 const version = peerInfo.version || '-';
                 
                 return `
@@ -1690,7 +1721,8 @@ pub fn page(
                             </div>
                         </td>
                         <td class="font-mono">${{typeof latency === 'number' ? latency + 'ms' : latency}}</td>
-                        <td class="font-mono">${{typeof blockHeight === 'number' ? blockHeight.toLocaleString() : blockHeight}}</td>
+                        <td class="font-mono">${{typeof temporalHeight === 'number' ? temporalHeight.toLocaleString() : temporalHeight}}</td>
+                        <td class="font-mono">${{typeof rootedHeight === 'number' ? rootedHeight.toLocaleString() : rootedHeight}}</td>
                         <td class="font-mono">${{version}}</td>
                     </tr>
                 `;
@@ -1782,6 +1814,12 @@ pub fn page(
             const blockHeightElement = document.querySelector('.block-value-large');
             if (blockHeightElement && metrics.block_height !== undefined) {{
                 blockHeightElement.textContent = metrics.block_height.toLocaleString();
+            }}
+
+            // Update temporal height
+            const temporalHeightElement = document.getElementById('temporal-height');
+            if (temporalHeightElement && metrics.temporal_height !== undefined) {{
+                temporalHeightElement.textContent = metrics.temporal_height.toLocaleString();
             }}
             
             // Update peer node counts (second card)
@@ -2049,6 +2087,7 @@ pub fn page(
         &pubkey[..8], // Shortened pubkey for display (first 8 chars)
         version,
         block_height,
+        temporal_height,
         handshaked_count,
         pending_count,
         network_in_bytes_str,
