@@ -665,69 +665,47 @@ impl NodePeers {
         Ok(filtered)
     }
 
-    pub async fn update_peer_from_ping(&self, ctx: &Context, ip: Ipv4Addr, ping: &Ping) {
-        let current_time = get_unix_millis_now();
-        let signer = ping.temporal.header.signer.to_vec();
-        let sk = ctx.config.trainer_sk.clone();
+    pub async fn update_peer_ping_timestamp(&self, ip: Ipv4Addr, ts_m: u64) {
+        // Update using ConcurrentMap's update method
+        self.peers.update(&ip, |_key, peer| {
+            peer.last_ping = Some(ts_m);
+        }).await;
+    }
 
-        // Calculate shared secret if possible
-        let shared_secret = if let Ok(shared_key) = crate::utils::bls12_381::get_shared_secret(&signer, &sk) {
-            Some(shared_key.to_vec())
-        } else {
-            None
-        };
+    pub async fn update_peer_from_ping(&self, _ctx: &Context, ip: Ipv4Addr, ping: &Ping) {
+        // v1.1.7+ simplified ping - just update timestamp
+        self.update_peer_ping_timestamp(ip, ping.ts_m).await;
+        let current_time = get_unix_millis_now();
 
         let updated = self
             .peers
             .update(&ip, |_key, peer| {
-                //peer.pk = Some(signer.clone());
                 peer.last_ping = Some(current_time);
                 peer.last_seen = current_time;
                 peer.last_msg = current_time;
                 peer.last_msg_type = Some("ping".to_string());
-                peer.shared_secret = shared_secret.clone();
-                peer.temporal = Some(TemporalInfo {
-                    header_unpacked: HeaderInfo {
-                        height: ping.temporal.header.height,
-                        prev_hash: Some(ping.temporal.header.prev_hash.to_vec()),
-                    },
-                });
-                peer.rooted = Some(RootedInfo {
-                    header_unpacked: HeaderInfo {
-                        height: ping.rooted.header.height,
-                        prev_hash: Some(ping.rooted.header.prev_hash.to_vec()),
-                    },
-                });
+                // ping timestamp already updated in update_peer_ping_timestamp
             })
             .await
             .is_some();
 
         if !updated {
-            // Create new peer if it doesn't exist
+            // Create new peer if it doesn't exist (v1.1.7+ simplified)
             let new_peer = Peer {
                 ip,
-                pk: Some(signer),
+                pk: None, // Will be set during handshake
                 version: None,
                 latency: None,
                 last_msg: current_time,
                 last_ping: Some(current_time),
                 last_pong: None,
-                shared_secret,
-                temporal: Some(TemporalInfo {
-                    header_unpacked: HeaderInfo {
-                        height: ping.temporal.header.height,
-                        prev_hash: Some(ping.temporal.header.prev_hash.to_vec()),
-                    },
-                }),
-                rooted: Some(RootedInfo {
-                    header_unpacked: HeaderInfo {
-                        height: ping.rooted.header.height,
-                        prev_hash: Some(ping.rooted.header.prev_hash.to_vec()),
-                    },
-                }),
+                shared_secret: None,
+                temporal: None, // No longer used in v1.1.7+
+                rooted: None,   // No longer used in v1.1.7+
                 last_seen: current_time,
                 last_msg_type: Some("ping".to_string()),
                 handshake_status: HandshakeStatus::None,
+                // ping timestamp set via separate method call
             };
             self.insert_new_peer(new_peer).await;
         }

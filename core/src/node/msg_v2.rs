@@ -130,6 +130,14 @@ impl MessageV2 {
         let version_bytes = &bin[3..6];
         let version = format!("{}.{}.{}", version_bytes[0], version_bytes[1], version_bytes[2]);
 
+        // Enforce minimum version 1.1.7 for v1.1.7+ compatibility
+        let major = version_bytes[0];
+        let minor = version_bytes[1];
+        let patch = version_bytes[2];
+        if major < 1 || (major == 1 && minor < 1) || (major == 1 && minor == 1 && patch < 7) {
+            return Err(Error::VersionNotSupported);
+        }
+
         // next is 7 zero bits and 1 flag bit, total 1 byte
         let flag_byte = bin[6];
         if flag_byte & 0b11111110 != 0 {

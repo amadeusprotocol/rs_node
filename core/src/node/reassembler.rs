@@ -320,7 +320,7 @@ mod tests {
     async fn test_message_v2_roundtrip_small() {
         // test small message (single shard)
         let payload = b"hello world".to_vec();
-        let version = "1.1.6";
+        let version = "1.1.7";
 
         let messages = test_build_message_v2(payload.clone(), version).unwrap();
         assert_eq!(messages.len(), 1);
@@ -350,7 +350,7 @@ mod tests {
             let hash = hasher.finish();
             payload.extend_from_slice(&hash.to_le_bytes());
         }
-        let version = "1.1.6";
+        let version = "1.1.7";
 
         let messages = test_build_message_v2(payload.clone(), version).unwrap();
         // If it's still a single shard, that's ok, just test the roundtrip
@@ -401,7 +401,7 @@ mod tests {
             let hash = hasher.finish();
             payload.extend_from_slice(&hash.to_le_bytes());
         }
-        let version = "1.1.6";
+        let version = "1.1.7";
 
         let messages = test_build_message_v2(payload.clone(), version).unwrap();
 

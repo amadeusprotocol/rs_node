@@ -194,7 +194,7 @@ impl EncryptedMessage {
             // Need to shard using Reed-Solomon
             let shard_size = 1024;
             let total_shards = ((encrypted_payload.len() + shard_size - 1) / shard_size) as u16;
-            let redundancy = total_shards / 4 + 1;  // 25% redundancy
+            let _redundancy = total_shards / 4 + 1;  // 25% redundancy
 
             // TODO: Implement Reed-Solomon sharding
             // For now, return error

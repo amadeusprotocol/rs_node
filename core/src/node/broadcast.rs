@@ -115,17 +115,7 @@ impl BroadcastManager {
             .map_err(|e| BroadcastError::Encryption(e.to_string()))?;
 
         // Get version from config
-        let version_str = self.config.get_ver();
-        let parts: Vec<&str> = version_str.split('.').collect();
-        let version = if parts.len() == 3 {
-            (
-                parts[0].parse().unwrap_or(1),
-                parts[1].parse().unwrap_or(1),
-                parts[2].parse().unwrap_or(8),
-            )
-        } else {
-            (1, 1, 8)
-        };
+        let version = self.config.get_ver_3b();
 
         // Encrypt the message
         let messages = EncryptedMessage::encrypt(

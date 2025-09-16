@@ -41,15 +41,24 @@ async fn test_config_has_all_essential_elixir_parts() {
     assert_eq!(config.trust_factor, 0.9);
     assert_eq!(config.max_peers, 500);
 
-    // verify seed anrs from config.exs
-    assert_eq!(config.seed_anrs.len(), 30);
+    // verify seed anrs from config.exs (v1.1.7+ has 2 seed ANRs)
+    assert_eq!(config.seed_anrs.len(), 2);
     let seed_anr = &config.seed_anrs[0];
     assert_eq!(seed_anr.ip4, "72.9.144.110");
     assert_eq!(seed_anr.port, 36969);
-    assert_eq!(seed_anr.version, "1.1.6");
-    assert_eq!(seed_anr.ts, 1755802866);
-    assert_eq!(seed_anr.signature.len(), 0);
+    assert_eq!(seed_anr.version, "1.1.7");
+    assert_eq!(seed_anr.ts, 1757522697);
+    assert_eq!(seed_anr.signature.len(), 96); // v1.1.7 has BLS signatures
     assert_eq!(seed_anr.pk.len(), 48);
+
+    // verify second seed ANR (new in v1.1.7)
+    let seed_anr2 = &config.seed_anrs[1];
+    assert_eq!(seed_anr2.ip4, "167.235.169.185");
+    assert_eq!(seed_anr2.port, 36969);
+    assert_eq!(seed_anr2.version, "1.1.7");
+    assert_eq!(seed_anr2.ts, 1757525152);
+    assert_eq!(seed_anr2.signature.len(), 96); // v1.1.7 has BLS signatures
+    assert_eq!(seed_anr2.pk.len(), 48);
 
     // verify trainer keys
     assert_eq!(config.trainer_sk.len(), 64);
@@ -109,4 +118,30 @@ async fn test_config_env_parsing() {
     }
     let config = Config::from_fs(Some(tmp.to_str()), None).await.unwrap();
     assert_eq!(config.computor_type, Some(ComputorType::Default));
+}
+
+#[tokio::test]
+async fn test_config_version_methods() {
+    // per-test tmp dir
+    let tmp = TmpTestDir::for_test(&test_config_version_methods).unwrap();
+    let config = Config::from_fs(Some(tmp.to_str()), None).await.unwrap();
+
+    // Test that get_ver() returns a string and get_ver_3b() returns consistent tuple
+    let version_str = config.get_ver();
+    let version_3b = config.get_ver_3b();
+
+    // Parse the string version and compare with tuple
+    let parts: Vec<&str> = version_str.split('.').collect();
+    assert_eq!(parts.len(), 3, "Version string should have 3 parts");
+
+    let expected_major = parts[0].parse::<u8>().unwrap();
+    let expected_minor = parts[1].parse::<u8>().unwrap();
+    let expected_patch = parts[2].parse::<u8>().unwrap();
+
+    assert_eq!(version_3b.0, expected_major);
+    assert_eq!(version_3b.1, expected_minor);
+    assert_eq!(version_3b.2, expected_patch);
+
+    // Verify it matches the version_3b field directly
+    assert_eq!(version_3b, (config.version_3b[0], config.version_3b[1], config.version_3b[2]));
 }

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, warn, info};
+use tracing::{debug, info};
 use eetf::Term;
 
 /// Handles incoming UDP packets and message reassembly
