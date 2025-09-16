@@ -211,13 +211,6 @@ async fn handle_contract_tx(config: &Config, wasm_path: &str, send: bool) -> Res
     send_transaction(config, tx_packed).await
 }
 
-pub async fn send_transaction(config: &Config, tx_packed: Vec<u8>) -> Result<()> {
-    use ama_core::node::protocol::Protocol;
-
-    let socket = UdpSocketWrapper(UdpSocket::bind("0.0.0.0").await?);
-    let tx = TxPool { valid_txs: vec![tx_packed] };
-    let node_addr = get_peer_addr();
-    tx.send_to(config, Arc::new(socket), node_addr).await?;
-    println!("sent transaction to {node_addr}");
-    Ok(())
+pub async fn send_transaction(_config: &Config, _tx_packed: Vec<u8>) -> Result<()> {
+    unimplemented!("the pure cli tool must send the transaction using https, not udp");
 }

@@ -21,6 +21,7 @@ reed-solomon-simd = "3.1.0" # patched in workspace
 bincode = { version = "=2.0.1", features = ["derive"] } # pinned for snapshots compatibility
 blake3 = "1.8.2"
 bls12_381 = "0.8.0"
+sha2 = "0.10"
 blst = "0.3.15"
 thiserror = "2.0.15"
 group = "0.13.0"
@@ -35,6 +36,7 @@ serde_json = "1.0"
 hex = "0.4"
 scc = "3.0.2"
 strum_macros = "0.27.2"
+aes-gcm = "0.10"
 sysinfo = { version = "0.37.0", optional = true }
 
 [features]

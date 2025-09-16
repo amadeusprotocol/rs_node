@@ -35,28 +35,216 @@ pub trait Protocol: Typename + Debug + Send + Sync {
     /// Handle a message returning instructions for upper layers
     async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error>;
     /// Send this protocol message to a destination using context's UDP socket
+    /// Uses hybrid approach: encrypted if ANR available, MessageV2 fallback otherwise
     async fn send_to_with_metrics(
         &self,
-        config: &Config,
-        socket: Arc<dyn UdpSocketExt>,
+        ctx: &Context,
         dst: Ipv4Addr,
-        metrics: &Metrics,
     ) -> Result<(), Error> {
-        let dst = SocketAddr::new(std::net::IpAddr::V4(dst), config.udp_port);
-        let payload = self.to_etf_bin().inspect_err(|e| metrics.add_error(e))?;
-        let shards = ReedSolomonReassembler::build_shards(config, &payload).inspect_err(|e| metrics.add_error(e))?;
-        for shard in &shards {
-            socket.send_to_with_metrics(shard, dst, metrics).await?;
+        use crate::node::msg_encrypted::EncryptedMessage;
+        use miniz_oxide::deflate::{CompressionLevel, compress_to_vec};
+
+        let dst_addr = SocketAddr::new(std::net::IpAddr::V4(dst), ctx.config.udp_port);
+        let payload = self.to_etf_bin().inspect_err(|e| ctx.metrics.add_error(e))?;
+
+        // Look up ANR for destination to get public key
+        let dst_anr = ctx.node_anrs.get_by_ip4(dst).await;
+
+        match dst_anr {
+            Some(anr) => {
+                // Have ANR - use encrypted format (v1.1.7+)
+                // Order: ETF -> Compress -> Encrypt -> Shard -> Headers
+                let compressed = compress_to_vec(&payload, CompressionLevel::DefaultLevel as u8);
+                let shared_secret = crate::utils::bls12_381::get_shared_secret(&anr.pk, &ctx.config.get_sk())?;
+
+                // Get version from config
+                let version_str = ctx.config.get_ver();
+                let parts: Vec<&str> = version_str.split('.').collect();
+                let version = if parts.len() == 3 {
+                    (
+                        parts[0].parse().unwrap_or(1),
+                        parts[1].parse().unwrap_or(1),
+                        parts[2].parse().unwrap_or(8),
+                    )
+                } else {
+                    (1, 1, 8)
+                };
+
+                // Encrypt message using v1.1.7+ protocol
+                let messages = EncryptedMessage::encrypt(
+                    &ctx.config.get_pk(),
+                    &shared_secret,
+                    &compressed,
+                    version,
+                ).map_err(Error::MsgEncrypted)?;
+
+                // Send all shards
+                for msg in messages {
+                    let packet = msg.to_bytes();
+                    ctx.socket.send_to_with_metrics(&packet, dst_addr, &ctx.metrics).await?;
+                }
+            }
+            None => {
+                // No ANR - fallback to MessageV2 signature-based format for bootstrap
+                // Order: ETF -> Compress -> Sign -> Shard -> Headers (same as Elixir)
+                tracing::debug!("No ANR for {}, using MessageV2 fallback for bootstrap", dst);
+                let shards = ReedSolomonReassembler::build_shards(&ctx.config, &payload)?;
+                for shard in &shards {
+                    ctx.socket.send_to_with_metrics(shard, dst_addr, &ctx.metrics).await?;
+                }
+            }
         }
-        metrics.add_outgoing_proto(self.typename());
+
+        ctx.metrics.add_outgoing_proto(self.typename());
         Ok(())
     }
-    async fn send_to(&self, config: &Config, socket: Arc<dyn UdpSocketExt>, dst: Ipv4Addr) -> Result<(), Error> {
-        let dst = SocketAddr::new(std::net::IpAddr::V4(dst), config.udp_port);
-        let shards = ReedSolomonReassembler::build_shards(config, &self.to_etf_bin()?)?;
+
+    /// Send this protocol message using legacy MessageV2 format (for bootstrap messages)
+    /// Always uses signature-based MessageV2 regardless of ANR availability
+    async fn send_to_legacy_with_metrics(
+        &self,
+        ctx: &Context,
+        dst: Ipv4Addr,
+    ) -> Result<(), Error> {
+        let dst_addr = SocketAddr::new(std::net::IpAddr::V4(dst), ctx.config.udp_port);
+        let payload = self.to_etf_bin().inspect_err(|e| ctx.metrics.add_error(e))?;
+
+        // Always use MessageV2 signature-based format for bootstrap
+        // Order: ETF -> Compress -> Sign -> Shard -> Headers (same as Elixir)
+        tracing::debug!("Sending {} to {} using legacy MessageV2 format", self.typename(), dst);
+        let shards = ReedSolomonReassembler::build_shards(&ctx.config, &payload)?;
         for shard in &shards {
-            socket.send_to(shard, dst).await?;
+            ctx.socket.send_to_with_metrics(shard, dst_addr, &ctx.metrics).await?;
         }
+
+        ctx.metrics.add_outgoing_proto(self.typename());
+        Ok(())
+    }
+
+    async fn send_to(&self, ctx: &Context, dst: Ipv4Addr) -> Result<(), Error> {
+        use crate::node::msg_encrypted::EncryptedMessage;
+        use miniz_oxide::deflate::{CompressionLevel, compress_to_vec};
+
+        let dst_addr = SocketAddr::new(std::net::IpAddr::V4(dst), ctx.config.udp_port);
+        let payload = self.to_etf_bin()?;
+
+        // Look up ANR for destination to get public key
+        let dst_anr = ctx.node_anrs.get_by_ip4(dst).await;
+
+        match dst_anr {
+            Some(anr) => {
+                // Have ANR - use encrypted format (v1.1.7+)
+                // Order: ETF -> Compress -> Encrypt -> Shard -> Headers
+                let compressed = compress_to_vec(&payload, CompressionLevel::DefaultLevel as u8);
+                let shared_secret = crate::utils::bls12_381::get_shared_secret(&anr.pk, &ctx.config.get_sk())?;
+
+                // Get version from config
+                let version_str = ctx.config.get_ver();
+                let parts: Vec<&str> = version_str.split('.').collect();
+                let version = if parts.len() == 3 {
+                    (
+                        parts[0].parse().unwrap_or(1),
+                        parts[1].parse().unwrap_or(1),
+                        parts[2].parse().unwrap_or(8),
+                    )
+                } else {
+                    (1, 1, 8)
+                };
+
+                // Encrypt message using v1.1.7+ protocol
+                let messages = EncryptedMessage::encrypt(
+                    &ctx.config.get_pk(),
+                    &shared_secret,
+                    &compressed,
+                    version,
+                ).map_err(Error::MsgEncrypted)?;
+
+                // Send all shards
+                for msg in messages {
+                    let packet = msg.to_bytes();
+                    ctx.socket.send_to(&packet, dst_addr).await?;
+                }
+            }
+            None => {
+                // No ANR - fallback to MessageV2 signature-based format for bootstrap
+                // Order: ETF -> Compress -> Sign -> Shard -> Headers (same as Elixir)
+                let shards = ReedSolomonReassembler::build_shards(&ctx.config, &payload)?;
+                for shard in &shards {
+                    ctx.socket.send_to(shard, dst_addr).await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Send this protocol message using legacy MessageV2 format (for bootstrap messages)
+    /// Always uses signature-based MessageV2 regardless of ANR availability
+    async fn send_to_legacy(
+        &self,
+        ctx: &Context,
+        dst: Ipv4Addr,
+    ) -> Result<(), Error> {
+        let dst_addr = SocketAddr::new(std::net::IpAddr::V4(dst), ctx.config.udp_port);
+        let payload = self.to_etf_bin()?;
+
+        // Always use MessageV2 signature-based format for bootstrap
+        // Order: ETF -> Compress -> Sign -> Shard -> Headers (same as Elixir)
+        tracing::debug!("Sending {} to {} using legacy MessageV2 format", self.typename(), dst);
+        let shards = ReedSolomonReassembler::build_shards(&ctx.config, &payload)?;
+        for shard in &shards {
+            ctx.socket.send_to(shard, dst_addr).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Send encrypted message to a destination using a known public key
+    async fn send_to_pk(
+        &self,
+        ctx: &Context,
+        dst: Ipv4Addr,
+        dst_pk: &[u8],
+    ) -> Result<(), Error> {
+        use crate::node::msg_encrypted::EncryptedMessage;
+        use miniz_oxide::deflate::{CompressionLevel, compress_to_vec};
+
+        let dst_addr = SocketAddr::new(std::net::IpAddr::V4(dst), ctx.config.udp_port);
+        let payload = self.to_etf_bin()?;
+
+        // Compress payload
+        let compressed = compress_to_vec(&payload, CompressionLevel::DefaultLevel as u8);
+
+        // Get shared secret using BLS ECDH
+        let shared_secret = crate::utils::bls12_381::get_shared_secret(dst_pk, &ctx.config.get_sk())?;
+
+        // Get version
+        let version_str = ctx.config.get_ver();
+        let parts: Vec<&str> = version_str.split('.').collect();
+        let version = if parts.len() == 3 {
+            (
+                parts[0].parse().unwrap_or(1),
+                parts[1].parse().unwrap_or(1),
+                parts[2].parse().unwrap_or(8),
+            )
+        } else {
+            (1, 1, 8)
+        };
+
+        // Encrypt message using v1.1.7+ protocol
+        let messages = EncryptedMessage::encrypt(
+            &ctx.config.get_pk(),
+            &shared_secret,
+            &compressed,
+            version,
+        ).map_err(Error::MsgEncrypted)?;
+
+        // Send all shards
+        for msg in messages {
+            let packet = msg.to_bytes();
+            ctx.socket.send_to(&packet, dst_addr).await?;
+        }
+
         Ok(())
     }
 }
@@ -92,9 +280,13 @@ pub enum Error {
     #[error(transparent)]
     MsgV2(#[from] msg_v2::Error),
     #[error(transparent)]
+    MsgEncrypted(#[from] crate::node::msg_encrypted::Error),
+    #[error(transparent)]
     Anr(#[from] anr::Error),
     #[error("bad etf: {0}")]
     BadEtf(&'static str),
+    #[error("No ANR found for destination IP: {0}")]
+    NoAnrForDestination(Ipv4Addr),
 }
 
 impl Typename for Error {
@@ -1009,7 +1201,7 @@ mod tests {
                 let sent_before = metrics_json_before.get("outgoing_protos");
 
                 // Test Protocol::send_to method - should return error with MockSocket but not panic
-                match pong.send_to_with_metrics(&ctx.config, ctx.socket.clone(), target, &ctx.metrics).await {
+                match pong.send_to_with_metrics(&ctx, target).await {
                     Ok(_) => {
                         // unexpected success with MockSocket
                     }

@@ -153,7 +153,7 @@ impl Context {
         let new_phone_who_dis = NewPhoneWhoDis { anr, challenge };
 
         for ip in &self.config.seed_ips {
-            new_phone_who_dis.send_to_with_metrics(&self.config, self.socket.clone(), *ip, &self.metrics).await?;
+            new_phone_who_dis.send_to_legacy_with_metrics(self, *ip).await?;
             self.node_peers.set_handshake_status(*ip, HandshakeStatus::Initiated).await?;
         }
 
@@ -180,7 +180,7 @@ impl Context {
 
             let nodes_count = unverified_anrs.len();
             for ip in &unverified_anrs {
-                new_phone_who_dis.send_to_with_metrics(&self.config, self.socket.clone(), *ip, &self.metrics).await?;
+                new_phone_who_dis.send_to_legacy_with_metrics(self, *ip).await?;
                 self.node_peers.set_handshake_status(*ip, HandshakeStatus::Initiated).await?;
             }
 
@@ -235,7 +235,12 @@ impl Context {
 
     /// Convenience function to send UDP data with metrics tracking
     pub async fn send_message_to(&self, message: &impl Protocol, dst: Ipv4Addr) -> Result<(), Error> {
-        message.send_to_with_metrics(&self.config, self.socket.clone(), dst, &self.metrics).await.map_err(Into::into)
+        message.send_to_with_metrics(self, dst).await.map_err(Into::into)
+    }
+
+    /// Convenience function to send legacy MessageV2 format (for bootstrap messages)
+    pub async fn send_legacy_message_to(&self, message: &impl Protocol, dst: Ipv4Addr) -> Result<(), Error> {
+        message.send_to_legacy_with_metrics(self, dst).await.map_err(Into::into)
     }
 
     /// Convenience function to receive UDP data with metrics tracking
@@ -411,18 +416,72 @@ impl Context {
     /// Reads UDP datagram and silently does parsing, validation and reassembly
     /// If the protocol message is complete, returns Some(Protocol)
     pub async fn parse_udp(&self, buf: &[u8], src: Ipv4Addr) -> Option<Box<dyn Protocol>> {
+        use crate::node::msg_encrypted::EncryptedMessage;
+
         self.metrics.add_incoming_udp_packet(buf.len());
-        match self.reassembler.add_shard(buf).await {
-            Ok(Some(packet)) => match parse_etf_bin(&packet) {
-                Ok(proto) => {
-                    self.node_peers.update_peer_from_proto(src, proto.typename()).await;
-                    self.metrics.add_incoming_proto(proto.typename());
-                    return Some(proto);
+
+        // Try to parse as encrypted message first (v1.1.7+)
+        match EncryptedMessage::try_from(buf) {
+            Ok(encrypted_msg) => {
+                // Check if message is to self
+                if encrypted_msg.pk == self.config.get_pk() {
+                    return None;
                 }
-                Err(e) => self.metrics.add_error(&e),
-            },
-            Ok(None) => {} // waiting for more shards, not an error
-            Err(e) => self.metrics.add_error(&e),
+
+                // Check version requirement (minimum 1.1.7)
+                if encrypted_msg.version.0 < 1 ||
+                   (encrypted_msg.version.0 == 1 && encrypted_msg.version.1 < 1) ||
+                   (encrypted_msg.version.0 == 1 && encrypted_msg.version.1 == 1 && encrypted_msg.version.2 < 7) {
+                    return None;
+                }
+
+                // Get shared secret using BLS ECDH
+                let shared_secret = match crate::utils::bls12_381::get_shared_secret(
+                    &encrypted_msg.pk,
+                    &self.config.get_sk()
+                ) {
+                    Ok(secret) => secret.to_vec(),
+                    Err(_) => {
+                        // Invalid public key, ignore message
+                        return None;
+                    }
+                };
+
+                // Decrypt and decompress
+                match encrypted_msg.decrypt(&shared_secret) {
+                    Ok(decrypted) => {
+                        match miniz_oxide::inflate::decompress_to_vec(&decrypted) {
+                            Ok(decompressed) => {
+                                match parse_etf_bin(&decompressed) {
+                                    Ok(proto) => {
+                                        self.node_peers.update_peer_from_proto(src, proto.typename()).await;
+                                        self.metrics.add_incoming_proto(proto.typename());
+                                        return Some(proto);
+                                    }
+                                    Err(e) => self.metrics.add_error(&e),
+                                }
+                            }
+                            Err(e) => self.metrics.add_error(&Error::String(e.to_string())),
+                        }
+                    }
+                    Err(e) => self.metrics.add_error(&Error::String(e.to_string())),
+                }
+            }
+            Err(_) => {
+                // Fall back to old MessageV2 format for backward compatibility
+                match self.reassembler.add_shard(buf).await {
+                    Ok(Some(packet)) => match parse_etf_bin(&packet) {
+                        Ok(proto) => {
+                            self.node_peers.update_peer_from_proto(src, proto.typename()).await;
+                            self.metrics.add_incoming_proto(proto.typename());
+                            return Some(proto);
+                        }
+                        Err(e) => self.metrics.add_error(&e),
+                    },
+                    Ok(None) => {} // waiting for more shards, not an error
+                    Err(e) => self.metrics.add_error(&e),
+                }
+            }
         }
 
         None
@@ -454,7 +513,7 @@ impl Context {
                 let data = pk_challenge_into_bin(&self.config.trainer_pk, challenge);
                 let signature = bls12_381::sign(&self.config.trainer_sk, &data, DST_ANR_CHALLENGE)?.to_vec();
                 let what = What { anr, challenge, signature };
-                self.send_message_to(&what, dst).await?;
+                self.send_legacy_message_to(&what, dst).await?;
             }
 
             Instruction::SendPong { ts_m, dst } => {

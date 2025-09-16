@@ -449,6 +449,12 @@ impl NodeAnrs {
         map.get(pk).cloned()
     }
 
+    /// Get anr by IP address
+    pub async fn get_by_ip4(&self, ip4: Ipv4Addr) -> Option<Anr> {
+        let map = self.store.read().await;
+        map.values().find(|anr| anr.ip4 == ip4).cloned()
+    }
+
     /// Get all anrs
     pub async fn get_all(&self) -> Vec<Anr> {
         let map = self.store.read().await;
