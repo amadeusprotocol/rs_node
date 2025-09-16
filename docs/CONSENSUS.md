@@ -9,7 +9,19 @@ Amadeus network.
 
 The epoch is a period of 100,000 entries (blocks). The epoch is maintained
 inside of the contractstate (see next), and is incremented every height %
-100,000 == 0.
+100,000 == 0. Changes in logic usually happen at the edge between epochs.
+Notable epochs:
+
+- Pre-103: Base emission only (1,000,000 AMA decreasing by 33.3% each epoch)
+- 103-281: Base emission + 200,000 AMA fixed bonus
+- 282-419: Base emission + 100,000 AMA fixed bonus
+- 295+: New epoch transition logic (but still old emission until 420)
+- 420+:
+  - New power-law emission model
+  - Automatic difficulty adjustment based on solution count
+  - Community fund allocation system
+  - Enhanced validator selection with early adopter protections
+
 
 ## Contractstate
 
@@ -17,20 +29,21 @@ The contractstate is a key-value store that holds the state of the chain. It is
 the main source of truth for the current state of the blockchain. The
 contractstate is updated every time a new block is applied. The contractstate
 is stored in a dedicated column family in the RocksDB database, aka Fabric.
-When the blockchain starts, the special genesis entry is applied to form the
-initial contractstate.
+The special genesis entry is applied to form the initial contractstate to
+kickstart the blockchain.
 
 ## Entries
 
 Entries are blocks in the Amadeus blockchain. Every entry has the parent hash,
 height and slot number. The height indicates the position of the entry from the
 bottom, while the slot number indicates which trainer is responsible for this
-entry. Entries contain transactions that alter the contractstate. Each
+entry. Entries contain transactions that modify the contractstate. Each
 transaction is transformed into a mutation and a reverse mutation. The mutations
 are applied to the contractstate when entries are applied, and the reverse
 mutations are applied when entries are rewound.
 
-The chain of entries forms a continuous ledger that consists of 2 main parts:
+The chain of entries forms a continuous immutable ledger that has a short mutable
+continuation at the top, as follows:
 
 - rooted part: the immutable chain that appends entries upon reaching consensus
   (BFT >=67%)
@@ -56,9 +69,14 @@ store them separately, while individually optimizing the storage for each:
   (can be easily rebuilt from scratch when starting a node from the
   contractstate, seed config, handshakes etc.)
 
+> Note: target is to have the temporal part no longer than 1 entry, but longer
+> temporal chains can exist in the current implementation, thus to avoid the
+> avalanche, after the temporal part exceeds 1000 entries, entries are starting
+> to get processed in batches.
+
 ## Transactions
 
-Transactions are the operations that alter the contractstate. There are two
+Transactions are the operations that modify the contractstate. There are two
 types of transactions:
 
 - contract alteration transactions: modify smart contract data in the
@@ -67,7 +85,7 @@ types of transactions:
   contractstate
 
 > It is important to note that submitting solutions (PoW), electing and slashing
-> trainers are also transactions and are stored within the contractstate.
+> trainers are also transactions that are applied to contractstate.
 
 ## Solutions
 

@@ -1,5 +1,5 @@
 use crate::consensus::agg_sig::DST_ATT;
-use crate::consensus::entry::Entry;
+use crate::consensus::doms::entry::Entry;
 use crate::consensus::{self, fabric};
 use crate::utils::misc::{TermExt, bitvec_to_bools, bools_to_bitvec};
 use crate::utils::{bls12_381 as bls, rocksdb};

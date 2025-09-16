@@ -439,7 +439,7 @@ pub fn chain_valid_txu(txu: &TxU) -> bool {
     };
 
     // hasBalance = BIC.Base.exec_cost(txu) <= Consensus.chain_balance(txu.tx.signer)
-    let has_balance = crate::bic::base::exec_cost(txu) <= crate::consensus::chain_balance(&txu.tx.signer);
+    let has_balance = crate::bic::base::exec_cost(crate::consensus::chain_epoch(), txu) <= crate::consensus::chain_balance(&txu.tx.signer);
 
     // hasSol / epochSolValid
     let mut epoch_sol_valid = true;

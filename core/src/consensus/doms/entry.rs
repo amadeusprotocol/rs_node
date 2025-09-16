@@ -1,9 +1,9 @@
 /// Entry is a consensus block in Amadeus
-use super::agg_sig::{DST_ENTRY, DST_VRF};
+use crate::consensus::agg_sig::{DST_ENTRY, DST_VRF};
 use crate::Context;
 use crate::config::ENTRY_SIZE;
-use crate::consensus::tx::TxU;
-use crate::consensus::{fabric, tx};
+use crate::consensus::doms::tx::TxU;
+use crate::consensus::fabric;
 use crate::node::protocol;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381;
@@ -40,7 +40,7 @@ pub enum Error {
     #[error("txs_hash invalid")]
     BadTxsHash,
     #[error(transparent)]
-    Tx(#[from] tx::Error),
+    Tx(#[from] super::tx::Error),
     #[error(transparent)]
     Bls(#[from] bls12_381::Error),
     #[error(transparent)]
@@ -372,7 +372,7 @@ impl Entry {
         }
 
         for txp in &self.txs {
-            tx::validate(txp, is_special_meeting_block)?;
+            super::tx::validate(txp, is_special_meeting_block)?;
         }
 
         Ok(())

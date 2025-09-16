@@ -1,4 +1,4 @@
-use ama_core::consensus::entry::Entry;
+use ama_core::consensus::doms::entry::Entry;
 use ama_core::node::protocol::Instruction;
 use ama_core::{Config, Context};
 use client::{UdpSocketWrapper, get_http_port, init_tracing};

@@ -1,6 +1,6 @@
 use crate::consensus::kv;
 use crate::consensus::kv::Mutation;
-use crate::consensus::tx::TxU;
+use crate::consensus::doms::tx::{TxU, TxAction};
 use crate::utils::misc::pk_hex;
 use blake3;
 use std::cell::RefCell;
@@ -38,13 +38,13 @@ pub fn seed_to_f64(seed: &[u8; 32]) -> f64 {
     f64::from_le_bytes(first8)
 }
 
-pub fn exec_cost(txu: &crate::consensus::tx::TxU) -> u64 {
+pub fn exec_cost(_epoch: u64, txu: &TxU) -> u64 {
     exec_cost_from_len(txu.tx_encoded.len())
 }
 
 /// KV mutations are not implemented yet
 pub fn call_txs_pre_parallel_build_sol_cache(
-    txus: &[crate::consensus::tx::TxU],
+    txus: &[TxU],
 ) -> std::collections::HashMap<[u8; 32], bool> {
     use crate::bic::sol;
     use std::collections::HashMap;
@@ -100,7 +100,7 @@ pub fn call_txs_pre_parallel(entry_signer: &[u8; 48], txus: &[TxU]) -> (Vec<Muta
         kv::kv_put(&key_nonce, txu.tx.nonce.to_string().as_bytes());
 
         // exec cost in cents
-        let exec_cost = exec_cost(txu) as i64;
+        let exec_cost = exec_cost(crate::consensus::chain_epoch(), txu) as i64;
         // charge signer
         let key_signer = key_balance(&txu.tx.signer, "AMA");
         kv::kv_increment(&key_signer, -exec_cost);
@@ -229,7 +229,7 @@ fn execute_action_safe(env: &crate::bic::epoch::CallEnv, txu: &TxU) -> ActionRes
 fn execute_wasm_contract(
     env: &crate::bic::epoch::CallEnv,
     txu: &TxU,
-    action: &crate::consensus::tx::TxAction,
+    action: &TxAction,
 ) -> ActionResult {
     // Check if contract has bytecode
     let contract_key: [u8; 48] = match action.contract.as_slice().try_into() {
@@ -318,7 +318,7 @@ fn execute_wasm_contract(
     ActionResult { error: "ok".to_string(), logs: None, exec_used: wasm_result.exec_used, result: None, reason: None }
 }
 
-fn execute_builtin_module(env: &crate::bic::epoch::CallEnv, action: &crate::consensus::tx::TxAction) -> ActionResult {
+fn execute_builtin_module(env: &crate::bic::epoch::CallEnv, action: &TxAction) -> ActionResult {
     // Generate seed for randomness
     let _seed = seed_random(&env.entry_vr, &env.tx_hash, b"0", b"");
 

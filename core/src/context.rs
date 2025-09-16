@@ -351,7 +351,7 @@ impl Context {
         // Try to get real archived entries, fallback to sample data if it fails
         tokio::task::spawn_blocking(|| {
             tokio::runtime::Handle::current().block_on(async {
-                consensus::entry::get_archived_entries().await.unwrap_or_else(|_| {
+                consensus::doms::entry::get_archived_entries().await.unwrap_or_else(|_| {
                     // Fallback to sample data if archiver fails
                     vec![
                         (201, 20100123, 1024), // (epoch, height, size_bytes)

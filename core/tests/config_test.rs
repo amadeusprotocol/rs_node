@@ -85,7 +85,7 @@ async fn test_config_from_sk() {
     assert_eq!(config.trainer_pk.len(), 48);
     assert!(!config.trainer_pk_b58.is_empty());
     assert_eq!(config.trainer_pop.len(), 96);
-    assert_eq!(config.get_ver(), "1.1.6");
+    assert_eq!(config.get_ver(), "1.1.8");
     assert_eq!(config.udp_port, 36969);
     // verify that seed nodes list includes the essential nodes
     assert!(config.seed_ips.contains(&"104.218.45.23".parse().unwrap()));

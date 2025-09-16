@@ -1,12 +1,11 @@
 #![allow(clippy::module_inception)]
 pub mod agg_sig;
-pub mod attestation;
 pub mod consensus;
-pub mod entry;
+pub mod doms;
 pub mod fabric;
+pub mod fabric_cleaner;
 pub mod genesis;
 pub mod kv;
-pub mod tx;
 
 pub use agg_sig::{
     AggSig, DST, DST_ANR, DST_ANR_CHALLENGE, DST_ATT, DST_ENTRY, DST_MOTION, DST_NODE, DST_POP, DST_TX, DST_VRF,
@@ -106,4 +105,18 @@ pub fn chain_balance_symbol(signer: &[u8], symbol: &str) -> u64 {
         }
         _ => 0, // default to 0 if no balance found
     }
+}
+
+/// Get current segment VRF hash for validation
+/// TODO: Implement proper segment VRF hash retrieval
+pub fn chain_segment_vr_hash() -> [u8; 32] {
+    // Stub implementation - returns zeros for now
+    [0u8; 32]
+}
+
+/// Get current difficulty bits
+/// TODO: Implement proper difficulty bits retrieval
+pub fn chain_diff_bits() -> u32 {
+    // Stub implementation - returns default difficulty
+    30
 }

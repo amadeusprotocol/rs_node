@@ -1,6 +1,6 @@
-use crate::consensus::attestation::Attestation;
+use crate::consensus::doms::attestation::Attestation;
 
-use crate::consensus::entry::{Entry, EntryHeader};
+use crate::consensus::doms::entry::{Entry, EntryHeader};
 /// Translation of the Elixir EntryGenesis module.
 /// This module exposes static genesis values (signer, PoP, attestation, entry)
 /// and provides a deterministic builder + signer for the genesis entry.

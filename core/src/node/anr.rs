@@ -1,6 +1,7 @@
 use crate::config::{Config, SeedANR};
 use crate::utils::bls12_381::{sign, verify};
 use crate::utils::misc::{TermExt, TermMap, get_unix_secs_now};
+use crate::utils::blake3;
 use eetf::{Atom, Binary, FixInteger, Term};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -66,10 +67,20 @@ pub struct Anr {
     pub error_tries: u32,
     #[serde(skip)]
     pub next_check: u32,
+    // Blake3 indexing fields (added in v1.1.8)
+    #[serde(skip)]
+    pub pk_b3: [u8; 32],
+    #[serde(skip)]
+    pub pk_b3_f4: [u8; 4],
 }
 
 impl From<SeedANR> for Anr {
     fn from(seed: SeedANR) -> Self {
+        // Compute Blake3 hash fields for indexing
+        let pk_b3 = blake3::hash(&seed.pk);
+        let mut pk_b3_f4 = [0u8; 4];
+        pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+
         Anr {
             ip4: seed.ip4.parse().unwrap_or(Ipv4Addr::new(0, 0, 0, 0)),
             pk: seed.pk,
@@ -85,6 +96,8 @@ impl From<SeedANR> for Anr {
             error: None,
             error_tries: 0,
             next_check: seed.ts + 3,
+            pk_b3,
+            pk_b3_f4,
         }
     }
 }
@@ -117,6 +130,12 @@ impl Anr {
         anr_desc: Option<String>,
     ) -> Result<Self, Error> {
         let ts = get_unix_secs_now();
+
+        // Compute Blake3 hash fields for indexing (v1.1.8 compatibility)
+        let pk_b3 = blake3::hash(pk);
+        let mut pk_b3_f4 = [0u8; 4];
+        pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+
         let mut anr = Anr {
             ip4,
             pk: pk.to_vec(),
@@ -132,6 +151,8 @@ impl Anr {
             error: None,
             error_tries: 0,
             next_check: ts + 3,
+            pk_b3,
+            pk_b3_f4,
         };
 
         // create signature over erlang term format like elixir
@@ -180,6 +201,11 @@ impl Anr {
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .filter(|s| !s.is_empty());
 
+        // Compute Blake3 hash fields for indexing (v1.1.8 compatibility)
+        let pk_b3 = blake3::hash(&pk);
+        let mut pk_b3_f4 = [0u8; 4];
+        pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+
         Ok(Self {
             ip4,
             pk,
@@ -195,6 +221,8 @@ impl Anr {
             error: None,
             error_tries: 0,
             next_check: ts + 3,
+            pk_b3,
+            pk_b3_f4,
         })
     }
 
@@ -213,9 +241,9 @@ impl Anr {
 
     // verify and unpack anr from untrusted source
     pub fn verify_and_unpack(anr: Anr) -> Result<Anr, Error> {
-        // check not wound into future (10 min tolerance)
+        // check not wound into future (60 min tolerance)
         let now_ts = get_unix_secs_now();
-        if now_ts - anr.ts < 60 * 10 {
+        if (anr.ts as i64) - (now_ts as i64) > 3600 {
             return Err(Error::InvalidTimestamp);
         }
 
@@ -232,6 +260,27 @@ impl Anr {
         }
 
         Ok(packed_anr)
+    }
+
+    /// Get Blake3 hash of public key (v1.1.8 compatibility)
+    pub fn get_pk_b3(&self) -> &[u8; 32] {
+        &self.pk_b3
+    }
+
+    /// Get first 4 bytes of Blake3 hash for fast lookup (v1.1.8 compatibility)
+    pub fn get_pk_b3_f4(&self) -> &[u8; 4] {
+        &self.pk_b3_f4
+    }
+
+    /// Check if ANR matches Blake3 prefix for fast filtering
+    pub fn matches_b3_prefix(&self, prefix: &[u8; 4]) -> bool {
+        &self.pk_b3_f4 == prefix
+    }
+
+    /// Recompute Blake3 fields (in case public key changed)
+    pub fn recompute_blake3_fields(&mut self) {
+        self.pk_b3 = blake3::hash(&self.pk);
+        self.pk_b3_f4.copy_from_slice(&self.pk_b3[0..4]);
     }
 
     pub fn to_etf_bin_for_signing(&self) -> Vec<u8> {
@@ -286,6 +335,11 @@ impl Anr {
     // unpack anr with port validation like elixir
     pub fn unpack(anr: Anr) -> Result<Anr, Error> {
         if anr.port == 36969 {
+            // Compute Blake3 hash fields for compatibility
+            let pk_b3 = blake3::hash(&anr.pk);
+            let mut pk_b3_f4 = [0u8; 4];
+            pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+
             Ok(Anr {
                 ip4: anr.ip4,
                 pk: anr.pk,
@@ -298,6 +352,8 @@ impl Anr {
                 anr_desc: anr.anr_desc,
                 handshaked: false,
                 hasChainPop: false,
+                pk_b3,
+                pk_b3_f4,
                 error: None,
                 error_tries: 0,
                 next_check: 0,
@@ -321,6 +377,8 @@ impl Anr {
             anr_desc: self.anr_desc.clone(),
             handshaked: false,
             hasChainPop: false,
+            pk_b3: self.pk_b3,
+            pk_b3_f4: self.pk_b3_f4,
             error: None,
             error_tries: 0,
             next_check: 0,
@@ -601,6 +659,10 @@ mod tests {
         let version = "1.0.0".to_string();
 
         // manually create ANR without signature verification for testing
+        let pk_b3 = blake3::hash(&pk);
+        let mut pk_b3_f4 = [0u8; 4];
+        pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+
         let anr = Anr {
             ip4,
             pk: pk.clone(),
@@ -616,6 +678,8 @@ mod tests {
             error: None,
             error_tries: 0,
             next_check: 1234567893,
+            pk_b3,
+            pk_b3_f4,
         };
 
         // test insert
@@ -669,6 +733,11 @@ mod tests {
         let ip4 = Ipv4Addr::new(192, 168, 1, 1);
         let version = "1.0.0".to_string();
 
+        // compute Blake3 fields for testing
+        let pk_b3 = blake3::hash(&pk);
+        let mut pk_b3_f4 = [0u8; 4];
+        pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+
         // insert initial anr
         let anr1 = Anr {
             ip4,
@@ -685,6 +754,8 @@ mod tests {
             error: None,
             error_tries: 0,
             next_check: 1003,
+            pk_b3,
+            pk_b3_f4,
         };
         registry.insert(anr1).await;
         registry.set_handshaked(&pk).await;
@@ -705,6 +776,8 @@ mod tests {
             error: None,
             error_tries: 0,
             next_check: 1002,
+            pk_b3,
+            pk_b3_f4,
         };
         registry.insert(anr2).await;
 
@@ -730,6 +803,8 @@ mod tests {
             error: None,
             error_tries: 0,
             next_check: 2003,
+            pk_b3,
+            pk_b3_f4,
         };
         registry.insert(anr3).await;
 
@@ -754,6 +829,8 @@ mod tests {
             error: Some("old error".to_string()),
             error_tries: 5,
             next_check: 3003,
+            pk_b3,
+            pk_b3_f4,
         };
         registry.insert(anr4).await;
 
@@ -780,6 +857,11 @@ mod tests {
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos().to_le_bytes();
             pk[40..48].copy_from_slice(&time_bytes[..8]);
 
+            // compute Blake3 fields for this pk
+            let pk_b3 = blake3::hash(&pk);
+            let mut pk_b3_f4 = [0u8; 4];
+            pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+
             let anr = Anr {
                 ip4: Ipv4Addr::new(192, 168, 1, i), // different IPs
                 pk: pk.clone(),
@@ -795,6 +877,8 @@ mod tests {
                 error: None,
                 error_tries: 0,
                 next_check: 2000,
+                pk_b3,
+                pk_b3_f4,
             };
 
             registry.insert(anr).await;
@@ -827,9 +911,14 @@ mod tests {
     #[test]
     fn test_to_etf_bin_ordered_validity() {
         // Test ANR with optional fields to expose the issues
+        let pk = vec![1, 2, 3];
+        let pk_b3 = blake3::hash(&pk);
+        let mut pk_b3_f4 = [0u8; 4];
+        pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+
         let anr_with_optionals = Anr {
             ip4: Ipv4Addr::new(10, 0, 0, 1),
-            pk: vec![1, 2, 3],
+            pk,
             pop: vec![4, 5, 6],
             port: 36969,
             signature: vec![7, 8, 9],
@@ -842,6 +931,8 @@ mod tests {
             error: None,
             error_tries: 0,
             next_check: 0,
+            pk_b3,
+            pk_b3_f4,
         };
 
         let encoded = anr_with_optionals.to_etf_bin_for_signing();
@@ -884,4 +975,42 @@ mod tests {
             }
         }
     }
+}
+
+/// Collection of Blake3-based ANR lookup functions (v1.1.8 compatibility)
+/// These functions replicate the Elixir NodeANR module's Blake3 indexing
+
+/// Get all Blake3 first-4-bytes hashes from a collection of ANRs
+pub fn extract_b3_f4_from_anrs(anrs: &[Anr]) -> Vec<[u8; 4]> {
+    anrs.iter().map(|anr| anr.pk_b3_f4).collect()
+}
+
+/// Filter ANRs by Blake3 first-4-bytes prefix for fast lookup
+pub fn filter_anrs_by_b3_f4(anrs: &[Anr], target_prefixes: &[[u8; 4]]) -> Vec<Anr> {
+    anrs.iter()
+        .filter(|anr| target_prefixes.contains(&anr.pk_b3_f4))
+        .cloned()
+        .collect()
+}
+
+/// Find ANR by Blake3 prefix (first match)
+pub fn find_anr_by_b3_f4<'a>(anrs: &'a [Anr], prefix: &[u8; 4]) -> Option<&'a Anr> {
+    anrs.iter().find(|anr| &anr.pk_b3_f4 == prefix)
+}
+
+/// Group ANRs by Blake3 first-4-bytes for efficient lookup
+pub fn group_anrs_by_b3_f4(anrs: &[Anr]) -> HashMap<[u8; 4], Vec<Anr>> {
+    let mut groups = HashMap::new();
+    for anr in anrs {
+        groups.entry(anr.pk_b3_f4).or_insert_with(Vec::new).push(anr.clone());
+    }
+    groups
+}
+
+/// Compute Blake3 hash for any public key (utility function)
+pub fn compute_pk_blake3(pk: &[u8]) -> ([u8; 32], [u8; 4]) {
+    let pk_b3 = blake3::hash(pk);
+    let mut pk_b3_f4 = [0u8; 4];
+    pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+    (pk_b3, pk_b3_f4)
 }

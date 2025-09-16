@@ -1,6 +1,6 @@
 use crate::consensus;
-use crate::consensus::attestation::Attestation;
-use crate::consensus::entry::Entry;
+use crate::consensus::doms::attestation::Attestation;
+use crate::consensus::doms::entry::Entry;
 use crate::utils::misc::{TermExt, bitvec_to_bools, bools_to_bitvec};
 use crate::utils::rocksdb;
 use crate::utils::safe_etf::encode_safe_deterministic;
@@ -23,7 +23,7 @@ pub enum Error {
     // #[error(transparent)]
     // Entry(#[from] consensus::entry::Error),
     #[error(transparent)]
-    Att(#[from] consensus::attestation::Error),
+    Att(#[from] crate::consensus::doms::attestation::Error),
     #[error("invalid kv cell: {0}")]
     KvCell(&'static str),
     #[error("invalid etf: {0}")]

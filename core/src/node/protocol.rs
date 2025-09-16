@@ -2,11 +2,10 @@ use crate::Context;
 use crate::bic::sol;
 use crate::bic::sol::Solution;
 use crate::config::Config;
-use crate::consensus::attestation::AttestationBulk;
+use crate::consensus::doms::attestation::AttestationBulk;
 use crate::consensus::consensus::{get_chain_tip_entry, get_rooted_tip_entry};
-use crate::consensus::entry::{Entry, EntrySummary};
-use crate::consensus::{attestation, entry};
-use crate::consensus::{consensus, tx};
+use crate::consensus::doms::entry::{Entry, EntrySummary};
+use crate::consensus::consensus;
 use crate::metrics::Metrics;
 use crate::node::anr::Anr;
 use crate::node::peers::HandshakeStatus;
@@ -73,9 +72,9 @@ pub enum Error {
     #[error(transparent)]
     Bls(#[from] bls12_381::Error),
     #[error(transparent)]
-    Tx(#[from] tx::Error),
+    Tx(#[from] crate::consensus::doms::tx::Error),
     #[error(transparent)]
-    Entry(#[from] entry::Error),
+    Entry(#[from] crate::consensus::doms::entry::Error),
     #[error(transparent)]
     Archiver(#[from] crate::utils::archiver::Error),
     #[error(transparent)]
@@ -87,7 +86,7 @@ pub enum Error {
     #[error(transparent)]
     Sol(#[from] sol::Error),
     #[error(transparent)]
-    Att(#[from] attestation::Error),
+    Att(#[from] crate::consensus::doms::attestation::Error),
     #[error(transparent)]
     ReedSolomon(#[from] reassembler::Error),
     #[error(transparent)]
@@ -414,7 +413,7 @@ impl TxPool {
             };
 
             // validate basic tx rules, special-meeting context is false in gossip path
-            if tx::validate(bin, false).is_ok() {
+            if crate::consensus::doms::tx::validate(bin, false).is_ok() {
                 good.push(bin.to_vec());
             }
         }
@@ -712,7 +711,7 @@ impl SpecialBusinessReply {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consensus::entry::{EntryHeader, EntrySummary};
+    use crate::consensus::doms::entry::{EntryHeader, EntrySummary};
     use crate::utils::bls12_381::sign as bls_sign;
     use crate::utils::misc::get_unix_secs_now;
 

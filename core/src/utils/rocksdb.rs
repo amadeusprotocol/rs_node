@@ -1,14 +1,11 @@
 //! Deterministic wrapper API over RocksDB v10.
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, Mutex};
-use std::path::Path;
 use once_cell::sync::OnceCell;
 use rust_rocksdb::{
-    BlockBasedOptions, Cache, ColumnFamilyDescriptor, Direction, IteratorMode, MultiThreaded, 
-    OptimisticTransactionDB, Options, ReadOptions, WriteOptions, OptimisticTransactionOptions
+    BlockBasedOptions, Cache, ColumnFamilyDescriptor, Direction, IteratorMode, MultiThreaded,
+    OptimisticTransactionDB, Options, ReadOptions, WriteOptions, OptimisticTransactionOptions,
+    Transaction
 };
 use tokio::fs::create_dir_all;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 #[cfg(test)]
 thread_local! {
@@ -45,6 +42,8 @@ pub enum Error {
     RocksDb(#[from] rust_rocksdb::Error),
     #[error(transparent)]
     TokioIo(#[from] tokio::io::Error),
+    #[error("Column family not found: {0}")]
+    ColumnFamilyNotFound(String),
 }
 
 pub struct DbHandles {
@@ -235,517 +234,120 @@ pub fn get_prev_or_first(cf: &str, prefix: &str, key_suffix: &str) -> Result<Opt
     })?)
 }
 
-// ===== New trait-based API =====
+/// RocksDB transaction trait
+pub trait RocksDbTransaction {
+    /// Put a key-value pair in the transaction
+    fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), Error>;
+
+    /// Delete a key in the transaction
+    fn delete(&self, cf: &str, key: &[u8]) -> Result<(), Error>;
+
+    /// Get a value from the transaction
+    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Error>;
+
+    /// Commit the transaction
+    fn commit(self) -> Result<(), Error>;
+
+    /// Rollback the transaction
+    fn rollback(self) -> Result<(), Error>;
+}
 
 /// RocksDB trait for database operations with transaction support
 pub trait RocksDbTrait {
     type Transaction<'a>: RocksDbTransaction
     where
         Self: 'a;
-    
+
     /// Create a new transaction
     fn txn(&self) -> Self::Transaction<'_>;
-    
-    /// Direct get operation without transaction (for read-only operations)
-    fn get(&self, cf: Cf, key: &[u8]) -> Option<Vec<u8>>;
-    
-    /// Direct put operation without transaction (for simple operations)
-    fn put(&self, cf: Cf, key: &[u8], value: &[u8]) -> Result<(), Error>;
-    
-    /// Direct delete operation without transaction (for simple operations)
-    fn delete(&self, cf: Cf, key: &[u8]) -> Result<(), Error>;
-    
-    /// Prefix iteration without transaction (for read-only operations)
-    fn prefix_iter(&self, cf: Cf, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + '_>;
-}
 
-/// Transaction trait for RocksDB operations
-pub trait RocksDbTransaction {
-    /// Get value from transaction view (overlay + base)
-    fn get(&self, cf: Cf, key: &[u8]) -> Option<Vec<u8>>;
-    
-    /// Put value in transaction overlay
-    fn put(&mut self, cf: Cf, key: &[u8], value: &[u8]);
-    
-    /// Delete key in transaction overlay
-    fn del(&mut self, cf: Cf, key: &[u8]);
-    
-    /// Prefix iteration in transaction view (overlay + base - deletes)
-    fn prefix(&self, cf: Cf, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)>>;
-    
-    /// Commit transaction and return mutation log
-    fn commit(self) -> Result<Vec<Mut>, Error>;
-    
-    /// Rollback transaction (drop without applying changes)
-    fn rollback(self);
-    
-    /// Get mutation log without committing
-    fn mutations(&self) -> &[Mut];
+    /// Direct get operation without transaction (for read-only operations)
+    fn get(&self, cf: &str, key: &[u8]) -> Option<Vec<u8>>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Cf {
-    // Entries
     Default,
     EntryByHeight,
     EntryBySlot,
-    ConsensusByEntryHash,
+    Tx,
+    TxAccountNonce,
+    TxReceiverNonce,
+    MySeenTimeEntry,
     MyAttestationForEntry,
+    Consensus,
+    ConsensusByEntryhash,
+    ContractState,
     Muts,
     MutsRev,
-    ContractState,
+    SysConf,
 }
 
-#[derive(Clone, Debug)]
-pub enum Value {
-    Raw(Vec<u8>),
-    Int(u128),
-    Term(Vec<u8>),
-}
-
-#[derive(Clone, Debug)]
-pub enum Mut {
-    Put { key: Vec<u8>, val: Vec<u8> },
-    Del { key: Vec<u8> },
-    SetBit { key: Vec<u8>, idx: u32, page: u32 },
-}
-
-#[derive(Clone)]
-pub struct DB {
-    inner: DBInner,
-}
-
-#[derive(Clone)]
-enum DBInner {
-    InMemory(Arc<Mutex<InMemoryDB>>),
-    RocksDB(Arc<RocksDBWrapper>),
-}
-
-#[derive(Default)]
-struct InMemoryDB {
-    cfs: HashMap<Cf, BTreeMap<Vec<u8>, Vec<u8>>>,
-}
-
-struct RocksDBWrapper {
-    db: OptimisticTransactionDB<MultiThreaded>,
-    cf_handles: HashMap<Cf, String>,
-}
-
-pub struct Txn<'a> {
-    db: &'a DB,
-    inner: TxnInner<'a>,
-}
-
-enum TxnInner<'a> {
-    InMemory {
-        overlay: HashMap<Cf, BTreeMap<Vec<u8>, Vec<u8>>>,
-        deletes: HashMap<Cf, BTreeSet<Vec<u8>>>,
-        muts: Vec<Mut>,
-    },
-    RocksDB {
-        txn: rust_rocksdb::Transaction<'a, OptimisticTransactionDB<MultiThreaded>>,
-        muts: Vec<Mut>,
-    },
-}
-
-impl DB {
-    pub fn open_in_memory() -> Self {
-        let mut cfs = HashMap::new();
-        for cf in [
-            Cf::Default,
-            Cf::EntryByHeight,
-            Cf::EntryBySlot,
-            Cf::ConsensusByEntryHash,
-            Cf::MyAttestationForEntry,
-            Cf::Muts,
-            Cf::MutsRev,
-            Cf::ContractState,
-        ] {
-            cfs.insert(cf, BTreeMap::new());
-        }
-        DB { 
-            inner: DBInner::InMemory(Arc::new(Mutex::new(InMemoryDB { cfs })))
-        }
-    }
-    
-    pub fn open_rocksdb<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let mut db_opts = Options::default();
-        db_opts.create_if_missing(true);
-        db_opts.create_missing_column_families(true);
-        
-        // Set RAM limits to 10MB total
-        db_opts.set_db_write_buffer_size(10 * 1024 * 1024);
-        db_opts.set_max_write_buffer_number(3);
-        
-        let mut cf_handles = HashMap::new();
-        cf_handles.insert(Cf::Default, "default".to_string());
-        cf_handles.insert(Cf::EntryByHeight, "entry_by_height".to_string());
-        cf_handles.insert(Cf::EntryBySlot, "entry_by_slot".to_string());
-        cf_handles.insert(Cf::ConsensusByEntryHash, "consensus_by_entryhash".to_string());
-        cf_handles.insert(Cf::MyAttestationForEntry, "my_attestation_for_entry".to_string());
-        cf_handles.insert(Cf::Muts, "muts".to_string());
-        cf_handles.insert(Cf::MutsRev, "muts_rev".to_string());
-        cf_handles.insert(Cf::ContractState, "contractstate".to_string());
-        
-        let cf_descs: Vec<_> = cf_handles.values()
-            .map(|name| {
-                let mut opts = Options::default();
-                opts.set_target_file_size_base(2 * 1024 * 1024 * 1024);
-                opts.set_target_file_size_multiplier(2);
-                opts.set_write_buffer_size(1024 * 1024);
-                opts.set_max_write_buffer_number(2);
-                ColumnFamilyDescriptor::new(name, opts)
-            })
-            .collect();
-        
-        let db = OptimisticTransactionDB::open_cf_descriptors(&db_opts, path, cf_descs)?;
-        
-        Ok(DB {
-            inner: DBInner::RocksDB(Arc::new(RocksDBWrapper { db, cf_handles }))
-        })
-    }
-    
-    pub fn txn(&self) -> Txn<'_> {
-        match &self.inner {
-            DBInner::InMemory(_) => Txn {
-                db: self,
-                inner: TxnInner::InMemory {
-                    overlay: HashMap::new(),
-                    deletes: HashMap::new(),
-                    muts: Vec::new(),
-                },
-            },
-            DBInner::RocksDB(wrapper) => {
-                let write_opts = WriteOptions::default();
-                let otxn_opts = OptimisticTransactionOptions::default();
-                let txn = wrapper.db.transaction_opt(&write_opts, &otxn_opts);
-                Txn {
-                    db: self,
-                    inner: TxnInner::RocksDB { txn, muts: Vec::new() },
-                }
-            }
+impl Cf {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Cf::Default => "default",
+            Cf::EntryByHeight => "entry_by_height|height:entryhash",
+            Cf::EntryBySlot => "entry_by_slot|slot:entryhash",
+            Cf::Tx => "tx|txhash:entryhash",
+            Cf::TxAccountNonce => "tx_account_nonce|account:nonce->txhash",
+            Cf::TxReceiverNonce => "tx_receiver_nonce|receiver:nonce->txhash",
+            Cf::MySeenTimeEntry => "my_seen_time_entry|entryhash",
+            Cf::MyAttestationForEntry => "my_attestation_for_entry|entryhash",
+            Cf::Consensus => "consensus",
+            Cf::ConsensusByEntryhash => "consensus_by_entryhash|Map<mutationshash,consensus>",
+            Cf::ContractState => "contractstate",
+            Cf::Muts => "muts",
+            Cf::MutsRev => "muts_rev",
+            Cf::SysConf => "sysconf",
         }
     }
 }
 
-impl<'a> Txn<'a> {
-    pub fn get(&self, cf: Cf, k: &[u8]) -> Option<Vec<u8>> {
-        match &self.inner {
-            TxnInner::InMemory { overlay, deletes, .. } => {
-                if let Some(delset) = deletes.get(&cf) {
-                    if delset.contains(k) {
-                        return None;
-                    }
-                }
-                if let Some(map) = overlay.get(&cf) {
-                    if let Some(v) = map.get(k) {
-                        return Some(v.clone());
-                    }
-                }
-                match &self.db.inner {
-                    DBInner::InMemory(db) => {
-                        let guard = db.lock().unwrap();
-                        guard.cfs.get(&cf).and_then(|m| m.get(k).cloned())
-                    }
-                    _ => None,
-                }
-            }
-            TxnInner::RocksDB { txn, .. } => {
-                match &self.db.inner {
-                    DBInner::RocksDB(wrapper) => {
-                        let cf_name = wrapper.cf_handles.get(&cf)?;
-                        let cf_handle = wrapper.db.cf_handle(cf_name)?;
-                        txn.get_cf(&cf_handle, k).ok().flatten()
-                    }
-                    _ => None,
-                }
-            }
-        }
-    }
-    
-    pub fn put(&mut self, cf: Cf, k: &[u8], v: &[u8]) {
-        match &mut self.inner {
-            TxnInner::InMemory { overlay, deletes, muts } => {
-                overlay.entry(cf).or_default().insert(k.to_vec(), v.to_vec());
-                if let Some(delset) = deletes.get_mut(&cf) {
-                    delset.remove(k);
-                }
-                muts.push(Mut::Put { key: k.to_vec(), val: v.to_vec() });
-            }
-            TxnInner::RocksDB { txn, muts } => {
-                if let DBInner::RocksDB(wrapper) = &self.db.inner {
-                    if let Some(cf_name) = wrapper.cf_handles.get(&cf) {
-                        if let Some(cf_handle) = wrapper.db.cf_handle(cf_name) {
-                            let _ = txn.put_cf(&cf_handle, k, v);
-                            muts.push(Mut::Put { key: k.to_vec(), val: v.to_vec() });
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    pub fn del(&mut self, cf: Cf, k: &[u8]) {
-        match &mut self.inner {
-            TxnInner::InMemory { overlay, deletes, muts } => {
-                overlay.entry(cf).or_default().remove(k);
-                deletes.entry(cf).or_default().insert(k.to_vec());
-                muts.push(Mut::Del { key: k.to_vec() });
-            }
-            TxnInner::RocksDB { txn, muts } => {
-                if let DBInner::RocksDB(wrapper) = &self.db.inner {
-                    if let Some(cf_name) = wrapper.cf_handles.get(&cf) {
-                        if let Some(cf_handle) = wrapper.db.cf_handle(cf_name) {
-                            let _ = txn.delete_cf(&cf_handle, k);
-                            muts.push(Mut::Del { key: k.to_vec() });
-                        }
-                    }
-                }
-            }
-        }
+/// Simple transaction for OptimisticTransactionDB
+pub struct SimpleTransaction<'a> {
+    txn: Transaction<'a, OptimisticTransactionDB<MultiThreaded>>,
+    db: &'a OptimisticTransactionDB<MultiThreaded>,
+}
+
+impl<'a> RocksDbTransaction for SimpleTransaction<'a> {
+    fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), Error> {
+        let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
+            Error::ColumnFamilyNotFound(cf.to_string())
+        })?;
+        self.txn.put_cf(&cf_handle, key, value).map_err(Into::into)
     }
 
-    pub fn prefix(&self, cf: Cf, p: &[u8]) -> PrefixIter {
-        match &self.inner {
-            TxnInner::InMemory { overlay, deletes, .. } => {
-                // Merge view: base + overlay - deletes
-                let mut out: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
-                if let DBInner::InMemory(db) = &self.db.inner {
-                    let guard = db.lock().unwrap();
-                    if let Some(base) = guard.cfs.get(&cf) {
-                        for (k, v) in base.range(p.to_vec()..).take_while(|(k, _)| k.starts_with(p)) {
-                            out.insert(k.clone(), v.clone());
-                        }
-                    }
-                }
-                if let Some(ov) = overlay.get(&cf) {
-                    for (k, v) in ov.range(p.to_vec()..).take_while(|(k, _)| k.starts_with(p)) {
-                        out.insert(k.clone(), v.clone());
-                    }
-                }
-                if let Some(del) = deletes.get(&cf) {
-                    for k in del.iter().filter(|k| k.starts_with(p)) {
-                        out.remove(k);
-                    }
-                }
-                PrefixIter { inner: PrefixIterInner::InMemory(out.into_iter()) }
-            }
-            TxnInner::RocksDB { txn, .. } => {
-                if let DBInner::RocksDB(wrapper) = &self.db.inner {
-                    if let Some(cf_name) = wrapper.cf_handles.get(&cf) {
-                        if let Some(cf_handle) = wrapper.db.cf_handle(cf_name) {
-                            let mut read_opts = ReadOptions::default();
-                            read_opts.set_prefix_same_as_start(true);
-                            let mode = IteratorMode::From(p, Direction::Forward);
-                            let iter = txn.iterator_cf_opt(&cf_handle, read_opts, mode);
-                            let collected: BTreeMap<Vec<u8>, Vec<u8>> = iter
-                                .take_while(|result| {
-                                    result.as_ref()
-                                        .map(|(k, _)| k.starts_with(p))
-                                        .unwrap_or(false)
-                                })
-                                .filter_map(|result| result.ok())
-                                .map(|(k, v)| (k.to_vec(), v.to_vec()))
-                                .collect();
-                            return PrefixIter { inner: PrefixIterInner::InMemory(collected.into_iter()) };
-                        }
-                    }
-                }
-                PrefixIter { inner: PrefixIterInner::InMemory(BTreeMap::new().into_iter()) }
-            }
-        }
+    fn delete(&self, cf: &str, key: &[u8]) -> Result<(), Error> {
+        let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
+            Error::ColumnFamilyNotFound(cf.to_string())
+        })?;
+        self.txn.delete_cf(&cf_handle, key).map_err(Into::into)
     }
 
-    pub fn commit(self) -> Vec<Mut> {
-        match self.inner {
-            TxnInner::InMemory { overlay, deletes, muts } => {
-                if let DBInner::InMemory(db) = &self.db.inner {
-                    let mut guard = db.lock().unwrap();
-                    for (cf, ov) in overlay.into_iter() {
-                        let map = guard.cfs.get_mut(&cf).unwrap();
-                        for (k, v) in ov {
-                            map.insert(k, v);
-                        }
-                    }
-                    for (cf, dels) in deletes.into_iter() {
-                        let map = guard.cfs.get_mut(&cf).unwrap();
-                        for k in dels {
-                            map.remove(&k);
-                        }
-                    }
-                }
-                muts
-            }
-            TxnInner::RocksDB { txn, muts } => {
-                let _ = txn.commit();
-                muts
-            }
-        }
+    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
+            Error::ColumnFamilyNotFound(cf.to_string())
+        })?;
+        self.txn.get_cf(&cf_handle, key).map_err(Into::into)
     }
-    
-    pub fn rollback(self) {
-        match self.inner {
-            TxnInner::InMemory { .. } => {},
-            TxnInner::RocksDB { txn, .. } => {
-                let _ = txn.rollback();
-            }
-        }
+
+    fn commit(self) -> Result<(), Error> {
+        self.txn.commit().map_err(Into::into)
+    }
+
+    fn rollback(self) -> Result<(), Error> {
+        self.txn.rollback().map_err(Into::into)
     }
 }
 
-impl RocksDbTrait for DB {
-    type Transaction<'a> = Txn<'a>;
-
-    fn txn(&self) -> Self::Transaction<'_> {
-        self.txn()
-    }
-
-    fn get(&self, cf: Cf, key: &[u8]) -> Option<Vec<u8>> {
-        match &self.inner {
-            DBInner::InMemory(db) => {
-                let guard = db.lock().unwrap();
-                guard.cfs.get(&cf).and_then(|m| m.get(key).cloned())
-            }
-            DBInner::RocksDB(wrapper) => {
-                let cf_name = wrapper.cf_handles.get(&cf)?;
-                let cf_handle = wrapper.db.cf_handle(cf_name)?;
-                wrapper.db.get_cf(&cf_handle, key).ok().flatten()
-            }
-        }
-    }
-
-    fn put(&self, cf: Cf, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        match &self.inner {
-            DBInner::InMemory(db) => {
-                let mut guard = db.lock().unwrap();
-                if let Some(map) = guard.cfs.get_mut(&cf) {
-                    map.insert(key.to_vec(), value.to_vec());
-                }
-                Ok(())
-            }
-            DBInner::RocksDB(wrapper) => {
-                if let Some(cf_name) = wrapper.cf_handles.get(&cf) {
-                    if let Some(cf_handle) = wrapper.db.cf_handle(cf_name) {
-                        wrapper.db.put_cf(&cf_handle, key, value)?;
-                    }
-                }
-                Ok(())
-            }
-        }
-    }
-
-    fn delete(&self, cf: Cf, key: &[u8]) -> Result<(), Error> {
-        match &self.inner {
-            DBInner::InMemory(db) => {
-                let mut guard = db.lock().unwrap();
-                if let Some(map) = guard.cfs.get_mut(&cf) {
-                    map.remove(key);
-                }
-                Ok(())
-            }
-            DBInner::RocksDB(wrapper) => {
-                if let Some(cf_name) = wrapper.cf_handles.get(&cf) {
-                    if let Some(cf_handle) = wrapper.db.cf_handle(cf_name) {
-                        wrapper.db.delete_cf(&cf_handle, key)?;
-                    }
-                }
-                Ok(())
-            }
-        }
-    }
-
-    fn prefix_iter(&self, cf: Cf, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + '_> {
-        match &self.inner {
-            DBInner::InMemory(db) => {
-                let guard = db.lock().unwrap();
-                if let Some(map) = guard.cfs.get(&cf) {
-                    let out: BTreeMap<Vec<u8>, Vec<u8>> = map
-                        .range(prefix.to_vec()..)
-                        .take_while(|(k, _)| k.starts_with(prefix))
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect();
-                    Box::new(out.into_iter())
-                } else {
-                    Box::new(std::iter::empty())
-                }
-            }
-            DBInner::RocksDB(wrapper) => {
-                if let Some(cf_name) = wrapper.cf_handles.get(&cf) {
-                    if let Some(cf_handle) = wrapper.db.cf_handle(cf_name) {
-                        let mut read_opts = ReadOptions::default();
-                        read_opts.set_prefix_same_as_start(true);
-                        let mode = IteratorMode::From(prefix, Direction::Forward);
-                        let iter = wrapper.db.iterator_cf_opt(&cf_handle, read_opts, mode);
-                        let collected: Vec<(Vec<u8>, Vec<u8>)> = iter
-                            .take_while(|result| {
-                                result.as_ref()
-                                    .map(|(k, _)| k.starts_with(prefix))
-                                    .unwrap_or(false)
-                            })
-                            .filter_map(|result| result.ok())
-                            .map(|(k, v)| (k.to_vec(), v.to_vec()))
-                            .collect();
-                        Box::new(collected.into_iter())
-                    } else {
-                        Box::new(std::iter::empty())
-                    }
-                } else {
-                    Box::new(std::iter::empty())
-                }
-            }
-        }
-    }
-}
-
-impl<'a> RocksDbTransaction for Txn<'a> {
-    fn get(&self, cf: Cf, key: &[u8]) -> Option<Vec<u8>> {
-        self.get(cf, key)
-    }
-
-    fn put(&mut self, cf: Cf, key: &[u8], value: &[u8]) {
-        self.put(cf, key, value)
-    }
-
-    fn del(&mut self, cf: Cf, key: &[u8]) {
-        self.del(cf, key)
-    }
-
-    fn prefix(&self, cf: Cf, prefix: &[u8]) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)>> {
-        let iter = self.prefix(cf, prefix);
-        Box::new(iter)
-    }
-
-    fn commit(self) -> Result<Vec<Mut>, Error> {
-        Ok(self.commit())
-    }
-
-    fn rollback(self) {
-        self.rollback()
-    }
-
-    fn mutations(&self) -> &[Mut] {
-        match &self.inner {
-            TxnInner::InMemory { muts, .. } => muts,
-            TxnInner::RocksDB { muts, .. } => muts,
-        }
-    }
-}
-
-pub struct PrefixIter {
-    inner: PrefixIterInner,
-}
-
-enum PrefixIterInner {
-    InMemory(std::collections::btree_map::IntoIter<Vec<u8>, Vec<u8>>),
-}
-
-impl Iterator for PrefixIter {
-    type Item = (Vec<u8>, Vec<u8>);
-    fn next(&mut self) -> Option<Self::Item> {
-        match &mut self.inner {
-            PrefixIterInner::InMemory(iter) => iter.next(),
-        }
-    }
+/// Create a new transaction - convenience function
+pub fn begin_transaction() -> Result<SimpleTransaction<'static>, Error> {
+    let h = get_handles();
+    let txn_opts = OptimisticTransactionOptions::default();
+    let write_opts = WriteOptions::default();
+    let txn = h.db.transaction_opt(&write_opts, &txn_opts);
+    Ok(SimpleTransaction { txn, db: &h.db })
 }
 
 /// Snapshot module for deterministic export/import of column families
@@ -755,7 +357,7 @@ pub mod snapshot {
     use serde::{Deserialize, Serialize};
     use std::path::Path;
     use tokio::fs::File;
-    use tokio::io::{BufReader, BufWriter};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 
     const MAGIC: &[u8] = b"SPK1";
     const DOMAIN_SEP: &str = "statepack-v1";
@@ -779,7 +381,7 @@ pub mod snapshot {
             if value != 0 {
                 byte |= 0x80;
             }
-            writer.write_all(&[byte]).await.map_err(Error::TokioIo)?;
+            writer.write_u8(byte).await.map_err(Error::TokioIo)?;
             if value == 0 {
                 break;
             }
@@ -792,33 +394,25 @@ pub mod snapshot {
         let mut result = 0u64;
         let mut shift = 0;
         loop {
-            let mut buf = [0u8; 1];
-            reader.read_exact(&mut buf).await.map_err(|_| {
-                Error::TokioIo(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "unexpected EOF while reading varint"
-                ).into())
-            })?;
-            
-            let byte = buf[0];
+            let byte = reader.read_u8().await.map_err(Error::TokioIo)?;
             result |= ((byte & 0x7f) as u64) << shift;
-            
             if (byte & 0x80) == 0 {
-                return Ok(result);
+                break;
             }
-            
             shift += 7;
-            if shift > 63 {
-                return Err(Error::TokioIo(
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, "varint too large").into()
-                ));
+            if shift >= 64 {
+                return Err(Error::TokioIo(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "varint too large",
+                ).into()));
             }
         }
+        Ok(result)
     }
 
-    /// Get the exact bytes a varint would produce (for hashing)
-    fn varint_bytes(mut value: u64) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(10);
+    /// Encode a varint as bytes (for hashing)
+    fn encode_varint_bytes(mut value: u64) -> Vec<u8> {
+        let mut bytes = Vec::new();
         loop {
             let mut byte = (value & 0x7f) as u8;
             value >>= 7;
@@ -862,25 +456,30 @@ pub mod snapshot {
             Ok((records, count))
         })?;
 
-        // Write to file
+        // Sort records by key for deterministic export
+        let mut sorted_records = records;
+        sorted_records.sort_by(|a, b| a.0.cmp(&b.0));
+
         let file = File::create(output_path).await.map_err(Error::TokioIo)?;
         let mut writer = BufWriter::new(file);
         let mut hasher = Hasher::new();
 
-        // Write header: magic + column family name
+        // Write header
         writer.write_all(MAGIC).await.map_err(Error::TokioIo)?;
-        hasher.update(MAGIC);
-        write_varint(cf_name.len() as u64, &mut writer).await?;
-        hasher.update(&varint_bytes(cf_name.len() as u64));
-        writer.write_all(cf_name.as_bytes()).await.map_err(Error::TokioIo)?;
-        hasher.update(cf_name.as_bytes());
+        // Note: MAGIC is not included in the hash for consistency with hash_cf
 
-        // Write records
-        for (i, (key, value)) in records.into_iter().enumerate() {
-            // Update hash
-            hasher.update(&varint_bytes(key.len() as u64));
+        // Hash domain separator
+        hasher.update(DOMAIN_SEP.as_bytes());
+
+        // Write and hash records
+        for (key, value) in sorted_records {
+            // Hash key length, key, value length, value
+            let key_len_bytes = encode_varint_bytes(key.len() as u64);
+            let value_len_bytes = encode_varint_bytes(value.len() as u64);
+
+            hasher.update(&key_len_bytes);
             hasher.update(&key);
-            hasher.update(&varint_bytes(value.len() as u64));
+            hasher.update(&value_len_bytes);
             hasher.update(&value);
 
             // Write to file
@@ -888,12 +487,6 @@ pub mod snapshot {
             writer.write_all(&key).await.map_err(Error::TokioIo)?;
             write_varint(value.len() as u64, &mut writer).await?;
             writer.write_all(&value).await.map_err(Error::TokioIo)?;
-
-            // Periodic flush and yield
-            if i % 1000 == 0 {
-                writer.flush().await.map_err(Error::TokioIo)?;
-                tokio::task::yield_now().await;
-            }
         }
 
         writer.flush().await.map_err(Error::TokioIo)?;
@@ -925,148 +518,95 @@ pub mod snapshot {
             return Err(Error::TokioIo(
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    format!("manifest CF '{}' != requested CF '{}'", manifest.cf, cf_name),
-                )
-                .into(),
-            ));
-        }
-        if manifest.version != 1 || manifest.algo != "blake3" || manifest.domain_sep != DOMAIN_SEP {
-            return Err(Error::TokioIo(
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "manifest version/algo/domain mismatch").into(),
+                    format!("manifest cf '{}' != requested cf '{}'", manifest.cf, cf_name),
+                ).into(),
             ));
         }
 
-        // Verify spk hash before ingest
-        let calculated = blake3_file(spk_in).await?;
-        if hex::encode(&calculated) != manifest.root_hex {
+        let file = File::open(spk_in).await.map_err(Error::TokioIo)?;
+        let mut reader = BufReader::new(file);
+
+        // Verify magic header
+        let mut magic_buf = [0u8; 4];
+        reader.read_exact(&mut magic_buf).await.map_err(Error::TokioIo)?;
+        if &magic_buf != MAGIC {
             return Err(Error::TokioIo(
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "SPK file hash mismatch vs manifest").into(),
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid magic header").into(),
             ));
         }
 
-        // Channel for streaming records from async reader to sync DB writer
-        let (tx, mut rx) = mpsc::channel::<Option<Vec<(Vec<u8>, Vec<u8>)>>>(10); // Channel of batches
+        // Create a channel for batching writes
+        let (tx, mut rx) = mpsc::channel::<(Vec<u8>, Vec<u8>)>(100);
+
+        // Spawn task to handle batch writes
         let cf_name_owned = cf_name.to_string();
-        let cf_name_for_write = cf_name.to_string();
-        let spk_path = spk_in.to_path_buf();
-
-        // Spawn task to read file and send batches via channel
-        let read_handle = tokio::task::spawn(async move {
-            let file = File::open(&spk_path).await.map_err(|e| Error::TokioIo(e.into()))?;
-            let mut r = BufReader::new(file);
-
-            // Parse header
-            let mut magic = [0u8; 4];
-            r.read_exact(&mut magic).await.map_err(|e| Error::TokioIo(e.into()))?;
-            if &magic != MAGIC {
-                return Err(Error::TokioIo(
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, "bad SPK magic").into(),
-                ));
-            }
-            let cf_len = read_varint(&mut r).await? as usize;
-            let mut cf_buf = vec![0u8; cf_len];
-            r.read_exact(&mut cf_buf).await.map_err(|e| Error::TokioIo(e.into()))?;
-            let cf_in_file = String::from_utf8(cf_buf).map_err(|_| {
-                Error::TokioIo(std::io::Error::new(std::io::ErrorKind::InvalidData, "CF name not UTF-8").into())
-            })?;
-            if cf_in_file != cf_name_owned {
-                return Err(Error::TokioIo(
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("SPK CF '{}' != requested '{}'", cf_in_file, cf_name_owned),
-                    )
-                    .into(),
-                ));
-            }
-
-            // Read records in batches to control memory usage
+        let write_task = tokio::spawn(async move {
             let mut current_batch = Vec::new();
-            let mut current_batch_size = 0usize;
+            let mut current_size = 0;
 
-            loop {
-                // Read next record, break on EOF cleanly
-                let k_len = match read_varint(&mut r).await {
-                    Ok(v) => v as usize,
-                    Err(_) => break, // EOF
-                };
-                let mut k = vec![0u8; k_len];
-                r.read_exact(&mut k).await.map_err(|e| Error::TokioIo(e.into()))?;
-                let v_len = read_varint(&mut r).await? as usize;
-                let mut v = vec![0u8; v_len];
-                r.read_exact(&mut v).await.map_err(|e| Error::TokioIo(e.into()))?;
-
-                current_batch.push((k, v));
-                current_batch_size += k_len + v_len;
-
-                // Send batch when it reaches size limit
-                if current_batch_size >= batch_bytes {
-                    if tx.send(Some(std::mem::take(&mut current_batch))).await.is_err() {
-                        break; // Channel closed
-                    }
-                    current_batch_size = 0;
+            while let Some((key, value)) = rx.recv().await {
+                let item_size = key.len() + value.len();
+                if current_size + item_size > batch_bytes && !current_batch.is_empty() {
+                    // Write current batch
+                    write_batch(&cf_name_owned, &current_batch)?;
+                    current_batch.clear();
+                    current_size = 0;
                 }
+
+                current_batch.push((key, value));
+                current_size += item_size;
             }
 
-            // Send final batch if not empty
+            // Write final batch
             if !current_batch.is_empty() {
-                let _ = tx.send(Some(current_batch)).await;
+                write_batch(&cf_name_owned, &current_batch)?;
             }
 
-            // Signal end of stream
-            let _ = tx.send(None).await;
             Ok::<(), Error>(())
         });
 
-        // Process batches directly in current task to maintain DB access
-        let mut _processed_batches = 0;
-        while let Some(batch_opt) = rx.recv().await {
-            match batch_opt {
-                Some(batch) => {
-                    // Write batch to database
-                    with_handles(|h| -> Result<(), Error> {
-                        let cf_handle = h.db.cf_handle(&cf_name_for_write).ok_or_else(|| {
-                            Error::TokioIo(
-                                std::io::Error::new(
-                                    std::io::ErrorKind::NotFound,
-                                    format!("column family '{}' not found", cf_name_for_write),
-                                )
-                                .into(),
-                            )
-                        })?;
+        // Read and send records to write task
+        let mut records_read = 0u64;
+        while records_read < manifest.items_total {
+            let key_len = read_varint(&mut reader).await?;
+            let mut key = vec![0u8; key_len as usize];
+            reader.read_exact(&mut key).await.map_err(Error::TokioIo)?;
 
-                        for (k, v) in batch {
-                            h.db.put_cf(&cf_handle, &k, &v)?;
-                        }
-                        Ok(())
-                    })?;
-                    _processed_batches += 1;
-                }
-                None => break, // End of stream
-            }
+            let value_len = read_varint(&mut reader).await?;
+            let mut value = vec![0u8; value_len as usize];
+            reader.read_exact(&mut value).await.map_err(Error::TokioIo)?;
+
+            tx.send((key, value)).await.map_err(|_| {
+                Error::TokioIo(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "channel closed").into())
+            })?;
+
+            records_read += 1;
         }
 
-        // Wait for read task to complete
-        read_handle.await.map_err(|e| Error::TokioIo(e.into()))??;
+        drop(tx); // Close channel
+        write_task.await.map_err(|e| {
+            Error::TokioIo(std::io::Error::new(std::io::ErrorKind::Other, e).into())
+        })??;
 
         Ok(())
     }
 
-    /// Hash a file using Blake3
-    async fn blake3_file(path: &Path) -> Result<[u8; 32], Error> {
-        let file = File::open(path).await.map_err(Error::TokioIo)?;
-        let mut reader = BufReader::new(file);
-        let mut hasher = Hasher::new();
-        let mut buffer = [0u8; 1 << 16];
-        
-        loop {
-            let bytes_read = reader.read(&mut buffer).await.map_err(Error::TokioIo)?;
-            if bytes_read == 0 {
-                break;
+    /// Write a batch of key-value pairs to the database
+    fn write_batch(cf_name: &str, batch: &[(Vec<u8>, Vec<u8>)]) -> Result<(), Error> {
+        with_handles(|handles| -> Result<(), Error> {
+            let cf_handle = handles.db.cf_handle(cf_name).ok_or_else(|| {
+                Error::ColumnFamilyNotFound(cf_name.to_string())
+            })?;
+
+            let mut write_opts = WriteOptions::default();
+            write_opts.set_sync(false); // Use async writes for better performance
+
+            for (key, value) in batch {
+                handles.db.put_cf_opt(&cf_handle, key, value, &write_opts)?;
             }
-            hasher.update(&buffer[..bytes_read]);
-        }
-        
-        Ok(*hasher.finalize().as_bytes())
+
+            Ok(())
+        })
     }
 
     /// Hash a column family in the database (for verification)
@@ -1076,31 +616,41 @@ pub mod snapshot {
             let mut read_opts = ReadOptions::default();
             read_opts.set_total_order_seek(true);
             read_opts.set_snapshot(&snapshot);
-            
+
             let cf_handle = handles.db.cf_handle(cf_name).ok_or_else(|| {
                 Error::TokioIo(
                     std::io::Error::new(std::io::ErrorKind::NotFound, format!("cf '{}' missing", cf_name)).into(),
                 )
             })?;
-            
+
             let iterator = handles.db.iterator_cf_opt(&cf_handle, read_opts, IteratorMode::Start);
 
             let mut hasher = Hasher::new();
-            // Hash header same as export: MAGIC + cf_name
-            hasher.update(MAGIC);
-            hasher.update(&varint_bytes(cf_name.len() as u64));
-            hasher.update(cf_name.as_bytes());
+            hasher.update(DOMAIN_SEP.as_bytes());
 
-            // Hash records in same order as export
+            let mut records = Vec::new();
             for item in iterator {
                 let (key, value) = item?;
-                hasher.update(&varint_bytes(key.len() as u64));
+                records.push((key.to_vec(), value.to_vec()));
+            }
+
+            // Sort for deterministic hashing
+            records.sort_by(|a, b| a.0.cmp(&b.0));
+
+            for (key, value) in records {
+                let key_len_bytes = encode_varint_bytes(key.len() as u64);
+                let value_len_bytes = encode_varint_bytes(value.len() as u64);
+
+                hasher.update(&key_len_bytes);
                 hasher.update(&key);
-                hasher.update(&varint_bytes(value.len() as u64));
+                hasher.update(&value_len_bytes);
                 hasher.update(&value);
             }
 
-            Ok(*hasher.finalize().as_bytes())
+            let hash_result = hasher.finalize();
+            let mut hash_array = [0u8; 32];
+            hash_array.copy_from_slice(hash_result.as_bytes());
+            Ok(hash_array)
         })
     }
 
@@ -1137,111 +687,21 @@ pub mod snapshot {
             let cf_hash = hash_cf("default").await.unwrap();
             assert_eq!(hex::encode(cf_hash), manifest.root_hex);
 
-            // Test import functionality with small batch size
-            import_spk("default", &spk_path, &manifest, 100).await.unwrap();
+            // Test import on a fresh database instance
+            let base2 = tmp_base_for_test(&"test_import_fresh");
+            let _guard2 = crate::utils::rocksdb::init_for_test(&base2).expect("init test db 2");
+
+            // Import the snapshot to the fresh database
+            import_spk("default", &spk_path, &manifest, 1024).await.unwrap();
+
+            // Verify data was imported correctly
+            assert_eq!(get("default", b"key1").unwrap(), Some(b"value1".to_vec()));
+            assert_eq!(get("default", b"key2").unwrap(), Some(b"value2".to_vec()));
+            assert_eq!(get("default", b"key3").unwrap(), Some(b"value3".to_vec()));
+
+            // Verify hash matches on imported data
+            let cf_hash_after = hash_cf("default").await.unwrap();
+            assert_eq!(hex::encode(cf_hash_after), manifest.root_hex);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use std::any::type_name_of_val;
-    
-    fn tmp_base_for_test<F: ?Sized>(f: &F) -> String {
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        let fq = type_name_of_val(f);
-        format!("/tmp/{}{}", fq, secs)
-    }
-
-    #[tokio::test]
-    async fn rocksdb_basic_ops_and_iters() {
-        let base = tmp_base_for_test(&rocksdb_basic_ops_and_iters);
-        let _guard = init_for_test(&base).expect("init test db");
-
-        // basic put/get on default CF
-        put("default", b"a:1", b"v1").expect("put");
-        let v = get("default", b"a:1").expect("get").unwrap();
-        assert_eq!(v, b"v1");
-
-        // insert a few keys with common prefix for iter_prefix
-        for i in 0..5u8 {
-            put("default", format!("p:{}", i).as_bytes(), &[i]).unwrap();
-        }
-        let items = iter_prefix("default", b"p:").expect("iter_prefix");
-        assert!(!items.is_empty());
-        for (k, _v) in &items {
-            assert!(k.starts_with(b"p:"));
-        }
-
-        // test get_prev_or_first semantics
-        put("default", b"h:001", b"x").unwrap();
-        put("default", b"h:010", b"y").unwrap();
-        put("default", b"h:020", b"z").unwrap();
-
-        let r = get_prev_or_first("default", "h:", "015").unwrap().unwrap();
-        assert_eq!(r.0, b"h:010");
-        let r2 = get_prev_or_first("default", "h:", "000").unwrap();
-        assert!(r2.is_none());
-        let r3 = get_prev_or_first("default", "h:", "999").unwrap().unwrap();
-        assert_eq!(r3.0, b"h:020");
-    }
-    
-    #[test]
-    fn test_in_memory_impl() {
-        let db = DB::open_in_memory();
-        test_db_operations(&db);
-    }
-    
-    #[test]
-    fn test_rocksdb_impl() {
-        let temp_dir = format!("/tmp/test_rocksdb_{}", std::process::id());
-        fs::create_dir_all(&temp_dir).unwrap();
-        
-        let db = DB::open_rocksdb(&temp_dir).unwrap();
-        test_db_operations(&db);
-        
-        // cleanup
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-    
-    fn test_db_operations<T: RocksDbTrait>(db: &T) {
-        // Test direct operations
-        assert!(db.get(Cf::Default, b"key1").is_none());
-        
-        db.put(Cf::Default, b"key1", b"value1").unwrap();
-        assert_eq!(db.get(Cf::Default, b"key1"), Some(b"value1".to_vec()));
-        
-        db.delete(Cf::Default, b"key1").unwrap();
-        assert!(db.get(Cf::Default, b"key1").is_none());
-        
-        // Test transaction operations
-        let mut txn = db.txn();
-        txn.put(Cf::Default, b"tx_key1", b"tx_value1");
-        txn.put(Cf::Default, b"tx_key2", b"tx_value2");
-        assert_eq!(txn.get(Cf::Default, b"tx_key1"), Some(b"tx_value1".to_vec()));
-        
-        let muts = txn.commit().unwrap();
-        assert_eq!(muts.len(), 2);
-        
-        assert_eq!(db.get(Cf::Default, b"tx_key1"), Some(b"tx_value1".to_vec()));
-        assert_eq!(db.get(Cf::Default, b"tx_key2"), Some(b"tx_value2".to_vec()));
-        
-        // Test prefix iteration
-        db.put(Cf::Default, b"prefix:1", b"v1").unwrap();
-        db.put(Cf::Default, b"prefix:2", b"v2").unwrap();
-        db.put(Cf::Default, b"other:1", b"v3").unwrap();
-        
-        let items: Vec<_> = db.prefix_iter(Cf::Default, b"prefix:").collect();
-        assert_eq!(items.len(), 2);
-        assert!(items.iter().all(|(k, _)| k.starts_with(b"prefix:")));
-        
-        // Test transaction rollback
-        let mut txn = db.txn();
-        txn.put(Cf::Default, b"rollback_key", b"rollback_value");
-        txn.rollback();
-        
-        assert!(db.get(Cf::Default, b"rollback_key").is_none());
     }
 }

@@ -1549,7 +1549,7 @@ pub fn page(
                     window.currentSortDirection = window.currentSortDirection === 'asc' ? 'desc' : 'asc';
                 }} else {{
                     window.currentSortColumn = column;
-                    window.currentSortDirection = 'asc';
+                    window.currentSortDirection = 'desc';
                 }}
             }}
             
@@ -1635,12 +1635,10 @@ pub fn page(
                 
                 if (typeof aVal === 'string' && typeof bVal === 'string') {{
                     const comparison = aVal.localeCompare(bVal);
-                    // Reversed: when arrow is up (asc), sort descending (smaller on top)
-                    return window.currentSortDirection === 'asc' ? -comparison : comparison;
+                    return window.currentSortDirection === 'asc' ? comparison : -comparison;
                 }} else {{
                     const comparison = aVal - bVal;
-                    // Reversed: when arrow is up (asc), sort descending (smaller on top)
-                    return window.currentSortDirection === 'asc' ? -comparison : comparison;
+                    return window.currentSortDirection === 'asc' ? comparison : -comparison;
                 }}
             }});
             

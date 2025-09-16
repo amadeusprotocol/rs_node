@@ -1,6 +1,6 @@
 use ama_core::bic::contract;
 use ama_core::config::{Config, gen_sk, get_pk, read_sk, write_sk};
-use ama_core::consensus::tx;
+use ama_core::consensus::doms::tx;
 use ama_core::node::protocol::TxPool;
 use anyhow::{Error, Result};
 use bs58;
