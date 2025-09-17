@@ -4,7 +4,7 @@ use crate::consensus::doms::entry::Entry;
 use crate::utils::misc::{TermExt, bitvec_to_bools, bools_to_bitvec};
 use crate::utils::rocksdb;
 use crate::utils::safe_etf::encode_safe_deterministic;
-use eetf::{Atom, Binary, Term, BigInteger};
+use eetf::{Atom, BigInteger, Binary, Term};
 use std::collections::HashMap;
 // TODO: make the database trait that the fabric will use
 

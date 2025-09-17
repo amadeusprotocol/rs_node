@@ -1,7 +1,7 @@
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-use aes_gcm::aead::Aead;
 use crate::utils::misc::get_unix_nanos_now;
-use sha2::{Sha256, Digest};
+use aes_gcm::aead::Aead;
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -87,8 +87,7 @@ impl TryFrom<&[u8]> for EncryptedMessage {
         let version_str = format!("{}.{}.{}", version.0, version.1, version.2);
 
         // Enforce minimum version 1.1.7
-        if version.0 < 1 || (version.0 == 1 && version.1 < 1) ||
-           (version.0 == 1 && version.1 == 1 && version.2 < 7) {
+        if version.0 < 1 || (version.0 == 1 && version.1 < 1) || (version.0 == 1 && version.1 == 1 && version.2 < 7) {
             return Err(Error::VersionTooOld(version_str));
         }
 
@@ -98,8 +97,7 @@ impl TryFrom<&[u8]> for EncryptedMessage {
         }
 
         // Parse public key
-        let pk: [u8; 48] = bin[7..55].try_into()
-            .map_err(|_| Error::BadPkLen(bin[7..55].len()))?;
+        let pk: [u8; 48] = bin[7..55].try_into().map_err(|_| Error::BadPkLen(bin[7..55].len()))?;
 
         // Parse shard info
         let shard_index = u16::from_be_bytes([bin[55], bin[56]]);
@@ -115,33 +113,21 @@ impl TryFrom<&[u8]> for EncryptedMessage {
         let original_size = u32::from_be_bytes(bin[67..71].try_into().unwrap());
 
         // Validate size
-        if original_size >= 10_240_000 {  // 10MB
+        if original_size >= 10_240_000 {
+            // 10MB
             return Err(Error::OriginalSizeTooLarge(original_size));
         }
 
         // Rest is encrypted payload
         let payload = bin[71..].to_vec();
 
-        Ok(EncryptedMessage {
-            version,
-            pk,
-            shard_index,
-            shard_total,
-            ts_nano,
-            original_size,
-            payload,
-        })
+        Ok(EncryptedMessage { version, pk, shard_index, shard_total, ts_nano, original_size, payload })
     }
 }
 
 impl EncryptedMessage {
     /// Encrypt a message using shared secret
-    pub fn encrypt(
-        pk: &[u8],
-        shared_secret: &[u8],
-        payload: &[u8],
-        version: (u8, u8, u8),
-    ) -> Result<Vec<Self>, Error> {
+    pub fn encrypt(pk: &[u8], shared_secret: &[u8], payload: &[u8], version: (u8, u8, u8)) -> Result<Vec<Self>, Error> {
         let ts_nano = get_unix_nanos_now() as u64;
 
         // Generate random IV (same as Elixir: :crypto.strong_rand_bytes(12))
@@ -159,12 +145,10 @@ impl EncryptedMessage {
         let iv = &iv_bytes;
 
         // Encrypt with AES-256-GCM
-        let cipher = Aes256Gcm::new_from_slice(&key)
-            .map_err(|e| Error::EncryptionError(e.to_string()))?;
+        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| Error::EncryptionError(e.to_string()))?;
         let nonce = Nonce::from_slice(iv);
 
-        let ciphertext = cipher.encrypt(nonce, payload)
-            .map_err(|e| Error::EncryptionError(e.to_string()))?;
+        let ciphertext = cipher.encrypt(nonce, payload).map_err(|e| Error::EncryptionError(e.to_string()))?;
 
         // Split tag and ciphertext (GCM appends 16-byte tag)
         let (ct, tag) = ciphertext.split_at(ciphertext.len() - 16);
@@ -175,8 +159,7 @@ impl EncryptedMessage {
         encrypted_payload.extend_from_slice(tag);
         encrypted_payload.extend_from_slice(ct);
 
-        let pk_array: [u8; 48] = pk.try_into()
-            .map_err(|_| Error::BadPkLen(pk.len()))?;
+        let pk_array: [u8; 48] = pk.try_into().map_err(|_| Error::BadPkLen(pk.len()))?;
 
         // Check if we need sharding
         if encrypted_payload.len() < 1360 {
@@ -194,7 +177,7 @@ impl EncryptedMessage {
             // Need to shard using Reed-Solomon
             let shard_size = 1024;
             let total_shards = ((encrypted_payload.len() + shard_size - 1) / shard_size) as u16;
-            let _redundancy = total_shards / 4 + 1;  // 25% redundancy
+            let _redundancy = total_shards / 4 + 1; // 25% redundancy
 
             // TODO: Implement Reed-Solomon sharding
             // For now, return error
@@ -204,7 +187,8 @@ impl EncryptedMessage {
 
     /// Decrypt payload using shared secret
     pub fn decrypt(&self, shared_secret: &[u8]) -> Result<Vec<u8>, Error> {
-        if self.payload.len() < 28 {  // IV(12) + Tag(16)
+        if self.payload.len() < 28 {
+            // IV(12) + Tag(16)
             return Err(Error::DecryptionError("Payload too short".to_string()));
         }
 
@@ -221,8 +205,7 @@ impl EncryptedMessage {
         let key = Sha256::digest(&key_input);
 
         // Decrypt with AES-256-GCM
-        let cipher = Aes256Gcm::new_from_slice(&key)
-            .map_err(|e| Error::DecryptionError(e.to_string()))?;
+        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| Error::DecryptionError(e.to_string()))?;
         let nonce = Nonce::from_slice(iv);
 
         // Combine ciphertext and tag for decryption
@@ -230,8 +213,7 @@ impl EncryptedMessage {
         ct_with_tag.extend_from_slice(ciphertext);
         ct_with_tag.extend_from_slice(tag);
 
-        cipher.decrypt(nonce, ct_with_tag.as_slice())
-            .map_err(|e| Error::DecryptionError(e.to_string()))
+        cipher.decrypt(nonce, ct_with_tag.as_slice()).map_err(|e| Error::DecryptionError(e.to_string()))
     }
 
     /// Convert to binary format for network transmission
@@ -274,18 +256,11 @@ pub struct SharedSecretCache {
 
 impl SharedSecretCache {
     pub fn new() -> Self {
-        Self {
-            cache: Arc::new(RwLock::new(HashMap::new())),
-        }
+        Self { cache: Arc::new(RwLock::new(HashMap::new())) }
     }
 
-    pub async fn get_or_compute(
-        &self,
-        pk: &[u8],
-        sk: &[u8],
-    ) -> Result<[u8; 48], Error> {
-        let pk_array: [u8; 48] = pk.try_into()
-            .map_err(|_| Error::BadPkLen(pk.len()))?;
+    pub async fn get_or_compute(&self, pk: &[u8], sk: &[u8]) -> Result<[u8; 48], Error> {
+        let pk_array: [u8; 48] = pk.try_into().map_err(|_| Error::BadPkLen(pk.len()))?;
 
         // Check cache first
         {
@@ -296,8 +271,8 @@ impl SharedSecretCache {
         }
 
         // Compute shared secret
-        let shared_secret = crate::utils::bls12_381::get_shared_secret(pk, sk)
-            .map_err(|e| Error::EncryptionError(e.to_string()))?;
+        let shared_secret =
+            crate::utils::bls12_381::get_shared_secret(pk, sk).map_err(|e| Error::EncryptionError(e.to_string()))?;
 
         // Store in cache
         {

@@ -1,6 +1,11 @@
 use ama_core::Context;
-use axum::{Router, extract::State, response::{Json, Response}, routing::get};
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
+use axum::{
+    Router,
+    extract::State,
+    response::{Json, Response},
+    routing::get,
+};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -94,8 +99,5 @@ async fn health(State(ctx): State<Arc<Context>>) -> Json<Value> {
 }
 
 fn system_router(ctx: Arc<Context>) -> Router {
-    Router::new()
-        .route("/metrics", get(prometheus_metrics))
-        .route("/health", get(health))
-        .with_state(ctx)
+    Router::new().route("/metrics", get(prometheus_metrics)).route("/health", get(health)).with_state(ctx)
 }

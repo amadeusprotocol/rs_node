@@ -1,9 +1,8 @@
 //! Deterministic wrapper API over RocksDB v10.
 use once_cell::sync::OnceCell;
 use rust_rocksdb::{
-    BlockBasedOptions, Cache, ColumnFamilyDescriptor, Direction, IteratorMode, MultiThreaded,
-    OptimisticTransactionDB, Options, ReadOptions, WriteOptions, OptimisticTransactionOptions,
-    Transaction
+    BlockBasedOptions, Cache, ColumnFamilyDescriptor, Direction, IteratorMode, MultiThreaded, OptimisticTransactionDB,
+    OptimisticTransactionOptions, Options, ReadOptions, Transaction, WriteOptions,
 };
 use tokio::fs::create_dir_all;
 
@@ -312,23 +311,17 @@ pub struct SimpleTransaction<'a> {
 
 impl<'a> RocksDbTransaction for SimpleTransaction<'a> {
     fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
-            Error::ColumnFamilyNotFound(cf.to_string())
-        })?;
+        let cf_handle = self.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
         self.txn.put_cf(&cf_handle, key, value).map_err(Into::into)
     }
 
     fn delete(&self, cf: &str, key: &[u8]) -> Result<(), Error> {
-        let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
-            Error::ColumnFamilyNotFound(cf.to_string())
-        })?;
+        let cf_handle = self.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
         self.txn.delete_cf(&cf_handle, key).map_err(Into::into)
     }
 
     fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-        let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
-            Error::ColumnFamilyNotFound(cf.to_string())
-        })?;
+        let cf_handle = self.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
         self.txn.get_cf(&cf_handle, key).map_err(Into::into)
     }
 
@@ -401,10 +394,9 @@ pub mod snapshot {
             }
             shift += 7;
             if shift >= 64 {
-                return Err(Error::TokioIo(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "varint too large",
-                ).into()));
+                return Err(Error::TokioIo(
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "varint too large").into(),
+                ));
             }
         }
         Ok(result)
@@ -442,7 +434,8 @@ pub mod snapshot {
             read_opts.set_total_order_seek(true);
             read_opts.set_snapshot(&snapshot);
 
-            let iterator = handles.db.iterator_cf_opt(&cf_handle, read_opts, IteratorMode::From(&[], Direction::Forward));
+            let iterator =
+                handles.db.iterator_cf_opt(&cf_handle, read_opts, IteratorMode::From(&[], Direction::Forward));
 
             let mut records = Vec::new();
             let mut count = 0u64;
@@ -519,7 +512,8 @@ pub mod snapshot {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     format!("manifest cf '{}' != requested cf '{}'", manifest.cf, cf_name),
-                ).into(),
+                )
+                .into(),
             ));
         }
 
@@ -584,9 +578,7 @@ pub mod snapshot {
         }
 
         drop(tx); // Close channel
-        write_task.await.map_err(|e| {
-            Error::TokioIo(std::io::Error::new(std::io::ErrorKind::Other, e).into())
-        })??;
+        write_task.await.map_err(|e| Error::TokioIo(std::io::Error::new(std::io::ErrorKind::Other, e).into()))??;
 
         Ok(())
     }
@@ -594,9 +586,8 @@ pub mod snapshot {
     /// Write a batch of key-value pairs to the database
     fn write_batch(cf_name: &str, batch: &[(Vec<u8>, Vec<u8>)]) -> Result<(), Error> {
         with_handles(|handles| -> Result<(), Error> {
-            let cf_handle = handles.db.cf_handle(cf_name).ok_or_else(|| {
-                Error::ColumnFamilyNotFound(cf_name.to_string())
-            })?;
+            let cf_handle =
+                handles.db.cf_handle(cf_name).ok_or_else(|| Error::ColumnFamilyNotFound(cf_name.to_string()))?;
 
             let mut write_opts = WriteOptions::default();
             write_opts.set_sync(false); // Use async writes for better performance

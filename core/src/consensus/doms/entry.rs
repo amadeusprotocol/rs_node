@@ -1,7 +1,7 @@
-/// Entry is a consensus block in Amadeus
-use crate::consensus::agg_sig::{DST_ENTRY, DST_VRF};
 use crate::Context;
 use crate::config::ENTRY_SIZE;
+/// Entry is a consensus block in Amadeus
+use crate::consensus::agg_sig::{DST_ENTRY, DST_VRF};
 use crate::consensus::doms::tx::TxU;
 use crate::consensus::fabric;
 use crate::node::protocol;
@@ -186,9 +186,7 @@ impl Entry {
         map.insert(Term::Atom(Atom::from("header")), Term::from(Binary { bytes: header_bin }));
 
         // Convert txs to ETF list of binaries
-        let txs_terms: Vec<Term> = self.txs.iter()
-            .map(|tx| Term::from(Binary { bytes: tx.clone() }))
-            .collect();
+        let txs_terms: Vec<Term> = self.txs.iter().map(|tx| Term::from(Binary { bytes: tx.clone() })).collect();
         map.insert(Term::Atom(Atom::from("txs")), Term::from(eetf::List { elements: txs_terms }));
 
         map.insert(Term::Atom(Atom::from("hash")), Term::from(Binary { bytes: self.hash.to_vec() }));
@@ -214,22 +212,12 @@ impl Entry {
         let header_bin: Vec<u8> = map.get_binary("header").ok_or(Error::BadEtf("header"))?;
         let signature = map.get_binary("signature").ok_or(Error::BadEtf("signature"))?;
         let mask = map.get_binary("mask").map(bitvec_to_bools);
-        let txs: Vec<Vec<u8>> = map.get_list("txs")
-            .unwrap_or_default()
-            .iter()
-            .filter_map(TermExt::get_binary)
-            .map(Into::into)
-            .collect();
+        let txs: Vec<Vec<u8>> =
+            map.get_list("txs").unwrap_or_default().iter().filter_map(TermExt::get_binary).map(Into::into).collect();
 
         let header = EntryHeader::from_etf_bin(&header_bin)?;
 
-        Ok(Entry {
-            hash,
-            header,
-            signature,
-            mask,
-            txs,
-        })
+        Ok(Entry { hash, header, signature, mask, txs })
     }
 }
 
@@ -350,10 +338,7 @@ impl Entry {
             return Err(Error::BadEtf("not_deterministicly_encoded_header"));
         }
 
-        let parsed = ParsedEntry {
-            entry: parsed_entry,
-            header_bin: original_header_bin,
-        };
+        let parsed = ParsedEntry { entry: parsed_entry, header_bin: original_header_bin };
         parsed.validate_signature()?;
         let is_special = parsed.entry.mask.is_some();
         parsed.entry.validate_contents(is_special)?;

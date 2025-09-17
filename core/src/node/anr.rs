@@ -1,7 +1,7 @@
 use crate::config::{Config, SeedANR};
+use crate::utils::blake3;
 use crate::utils::bls12_381::{sign, verify};
 use crate::utils::misc::{TermExt, TermMap, get_unix_secs_now};
-use crate::utils::blake3;
 use eetf::{Atom, Binary, FixInteger, Term};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -993,10 +993,7 @@ pub fn extract_b3_f4_from_anrs(anrs: &[Anr]) -> Vec<[u8; 4]> {
 
 /// Filter ANRs by Blake3 first-4-bytes prefix for fast lookup
 pub fn filter_anrs_by_b3_f4(anrs: &[Anr], target_prefixes: &[[u8; 4]]) -> Vec<Anr> {
-    anrs.iter()
-        .filter(|anr| target_prefixes.contains(&anr.pk_b3_f4))
-        .cloned()
-        .collect()
+    anrs.iter().filter(|anr| target_prefixes.contains(&anr.pk_b3_f4)).cloned().collect()
 }
 
 /// Find ANR by Blake3 prefix (first match)

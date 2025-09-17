@@ -15,20 +15,20 @@ emerges as the primary bottleneck rather than computational complexity.
 
 ## Glossary
 
-- **GEMM**: General matrix–matrix multiply, C=A\cdot B
+- **GEMM**: $General matrix–matrix multiply, C=A\cdot B$
 - **Freivalds' test**: Randomized check of AB=C by sampling r (or a matrix R) 
 and testing A(Br)=Cr
-- **Packed rounds**: Use R\in\{0,1\}^{p\times k} to do k Freivalds rounds in 
+- **Packed rounds**: $Use R\in\{0,1\}^{p\times k} to do k Freivalds rounds in$ 
 one pass
-- **Batching**: Check many GEMMs at once by random-scalar combining: \sum_i 
-\alpha_i A_i(B_iR)=\sum_i \alpha_i C_iR
+- **Batching**: Check many GEMMs at once by random-scalar combining: $\sum_i$ 
+$\alpha_i A_i(B_iR)=\sum_i \alpha_i C_iR$
 
 ---
 
 ## Theoretical Guarantees
 
 The probabilistic verification scheme provides error detection with probability 
-≥ 1-2^{-k} for k verification rounds when any checked GEMM contains 
+$\ge 1-2^{-k} for k verification rounds when any checked GEMM contains$ 
 computational errors.
 
 **Verification scope**: The method validates numeric correctness of matrix 
@@ -48,7 +48,7 @@ systems.
 The analysis operates under the following constraints:
 
 - **Arithmetic representation**: Computation over integers modulo large primes 
-(e.g., 2^{61}-1) or 64-bit rings; floating-point values encoded as fixed-point 
+(e.g.$, 2^{61}-1) or 64-bit rings$; floating-point values encoded as fixed-point 
 representations
 - **Data quantization**: Model weights quantized to 4-8 bits; intermediate 
 activations and outputs quantized to 8-16 bits for transmission and verification
@@ -84,14 +84,14 @@ cached weight matrices combined with commitment proofs.
 
 The probabilistic verification proceeds as follows:
 
-1. **Challenge generation**: Sample random matrix R∈{0,1}^{p×k} using public 
+1. **Challenge generation**: $Sample random matrix R\in{0,1}^{p\timesk} using public$ 
 randomness
 2. **Response computation**: Calculate T_i=B_iR and U_i=C_iR for all matrix 
 multiplications
 3. **Batch verification**: Combine results using random coefficients α_i:
-   - Compute L=∑_i α_i A_i T_i (verifier-side calculation)
-   - Compute R'=∑_i α_i U_i (combining prover responses)
-4. **Decision**: Accept if L=R'; soundness error bounded by 2^{-k}
+   $- Compute L=\sum_i α_i A_i T_i (verifier-side calculation)$
+   $- Compute R'=\sum_i α_i U_i (combining prover responses)$
+4. **Decision**: Accept if L=R'; $soundness error bounded by 2^{-k}$
 
 **Algorithmic properties**:
 - Single sequential pass through weight matrices
@@ -140,7 +140,7 @@ commitment proofs
 
 ### I/O Complexity
 
-For matrix multiplication A∈𝔽^{n×m} × B∈𝔽^{m×p} = C∈𝔽^{n×p},
+$For matrix multiplication A\in\mathbb{F}^{n\timesm} \times B\in\mathbb{F}^{m\timesp} = C\in\mathbb{F}^{n\timesp},$
 the verification I/O scales as:
 
 **Data transfer per verification pass**:
@@ -149,7 +149,7 @@ Transfer(bytes) = b_A·nm + b_B·mp + b_C·np
 ```
 where b_* represents quantization bitwidth (1-8 bytes per element).
 
-**Memory footprint**: Working memory scales as (m+n)k·b_work elements, 
+**Memory footprint**: $Working memory scales as (m+n)k\cdotb_work elements,$ 
 typically requiring tens of megabytes rather than gigabytes.
 
 ### Computational Efficiency
@@ -165,24 +165,24 @@ subsystem throughput rather than computational capacity
 
 ## Quantitative Results
 
-### Baseline: 4K×4K Matrix Multiplication
+### Baseline: $4K\times4K Matrix Multiplication$
 
-For n=m=p=4096 with 64-bit precision: total data transfer (nm + mp + np)·8 ≈ 
+For n=m=p=4096 with 64-bit precision: $total data transfer (nm + mp + np)\cdot8 \approx$ 
 403 MB per verification pass.
 
-**Latency measurements** (time ≈ transfer/bandwidth):
+$**Latency measurements** (time \approx transfer/bandwidth)$:
 - Local memory (30 GB/s): ~13 ms
 - NVMe storage (3 GB/s): ~0.13 s
 - Network transfer (1 Gbps): ~3.2 s
 
 ### Case Study: 7B Parameter Transformer
 
-Analysis of typical architecture (d≈4096, MLP expansion 4d, sequence length 
+$Analysis of typical architecture (d\approx4096, MLP expansion 4d, sequence length$ 
 T=2048):
 - Six matrix multiplications per decoder layer: query/key/value projections, 
 attention computation, output projection, MLP transformations
-- Data requirements (64-bit precision): ≈2.6 GB per layer verification pass
-- Full model (32 layers): total data access ≈83 GB with local tensor storage
+- Data requirements (64-bit precision): $\approx2$.6 GB per layer verification pass
+- Full model (32 layers): $total data access \approx83 GB with local tensor storage$
 
 **Measured performance**:
 - NVMe access (3 GB/s): ~28 seconds end-to-end
@@ -192,8 +192,8 @@ attention computation, output projection, MLP transformations
 ### Case Study: 120B Parameter Mixture-of-Experts
 
 Large-scale model analysis (36 layers, long context T=2048):
-- Per-layer requirements: dense attention ≈2.85 GiB, sparse attention ≈1.97 
-GiB, MoE ≈1.7 GiB
+- Per-layer requirements: $dense attention \approx2$.$85 GiB, sparse attention \approx1$.97 
+$GiB, MoE \approx1$.7 GiB
 - Total model verification: ~86-90 GiB data access with local availability
 - Round packing eliminates multiplicative scaling with security parameter k
 
@@ -232,7 +232,7 @@ verification through remote attestation, requiring minimal spot-checking
 
 ---
 
-## Artifact Schema We Have Designed
+## Suggested Artifact Schema
 
 ```json
 {
@@ -301,8 +301,7 @@ def verify(manifest_M, k, rng_seed):
 
 ## Research Questions Addressed
 
-### Q1: What computational and data requirements does verifiable inference 
-impose?
+### Q1: What computational and data requirements does verifiable inference impose?
 
 **Findings**: Prover overhead includes manifest generation and tensor 
 commitment/transmission. Verifier requirements scale with data transfer rather 

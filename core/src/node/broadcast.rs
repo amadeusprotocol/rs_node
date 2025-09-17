@@ -4,12 +4,12 @@ use crate::node::anr_manager::AnrManager;
 use crate::node::msg_encrypted::EncryptedMessage;
 use crate::node::protocol::Protocol;
 use crate::socket::UdpSocketExt;
+use flate2::Compression;
+use flate2::write::ZlibEncoder;
+use std::io::prelude::*;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::debug;
-use flate2::write::ZlibEncoder;
-use flate2::Compression;
-use std::io::prelude::*;
 
 // Helper function for zlib compression to match Elixir reference
 fn compress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
@@ -31,11 +31,7 @@ pub struct BroadcastOptions {
 
 impl Default for BroadcastOptions {
     fn default() -> Self {
-        Self {
-            validators: 1000,
-            peers: 10,
-            include_self: false,
-        }
+        Self { validators: 1000, peers: 10, include_self: false }
     }
 }
 
@@ -47,24 +43,12 @@ pub struct BroadcastManager {
 }
 
 impl BroadcastManager {
-    pub fn new(
-        config: Arc<Config>,
-        anr_manager: Arc<AnrManager>,
-        socket: Arc<dyn UdpSocketExt>,
-    ) -> Self {
-        Self {
-            config,
-            anr_manager,
-            socket,
-        }
+    pub fn new(config: Arc<Config>, anr_manager: Arc<AnrManager>, socket: Arc<dyn UdpSocketExt>) -> Self {
+        Self { config, anr_manager, socket }
     }
 
     /// Broadcast a protocol message to network peers
-    pub async fn broadcast<P: Protocol>(
-        &self,
-        msg: &P,
-        opts: BroadcastOptions,
-    ) -> Result<usize, BroadcastError> {
+    pub async fn broadcast<P: Protocol>(&self, msg: &P, opts: BroadcastOptions) -> Result<usize, BroadcastError> {
         // Get handshaked validators and peers
         let (validators, peers) = self.anr_manager.get_handshaked_and_online().await;
 
@@ -105,40 +89,29 @@ impl BroadcastManager {
     }
 
     /// Send a message to a specific ANR
-    async fn send_to_anr<P: Protocol>(
-        &self,
-        msg: &P,
-        anr: &Anr,
-    ) -> Result<(), BroadcastError> {
+    async fn send_to_anr<P: Protocol>(&self, msg: &P, anr: &Anr) -> Result<(), BroadcastError> {
         // Get ETF binary of the message
-        let payload = msg.to_etf_bin()
-            .map_err(|e| BroadcastError::Serialization(e.to_string()))?;
+        let payload = msg.to_etf_bin().map_err(|e| BroadcastError::Serialization(e.to_string()))?;
 
         // Compress the payload using zlib to match Elixir reference
-        let compressed = compress_with_zlib(&payload)
-            .map_err(|e| BroadcastError::Compression(e.to_string()))?;
+        let compressed = compress_with_zlib(&payload).map_err(|e| BroadcastError::Compression(e.to_string()))?;
 
         // Get shared secret for encryption
-        let shared_secret = self.anr_manager.get_shared_secret(&anr.pk).await
-            .map_err(|e| BroadcastError::Encryption(e.to_string()))?;
+        let shared_secret =
+            self.anr_manager.get_shared_secret(&anr.pk).await.map_err(|e| BroadcastError::Encryption(e.to_string()))?;
 
         // Get version from config
         let version = self.config.get_ver_3b();
 
         // Encrypt the message
-        let messages = EncryptedMessage::encrypt(
-            &self.config.get_pk(),
-            &shared_secret,
-            &compressed,
-            version,
-        ).map_err(|e| BroadcastError::Encryption(e.to_string()))?;
+        let messages = EncryptedMessage::encrypt(&self.config.get_pk(), &shared_secret, &compressed, version)
+            .map_err(|e| BroadcastError::Encryption(e.to_string()))?;
 
         // Send all message shards
         let dst = SocketAddr::new(std::net::IpAddr::V4(anr.ip4), self.config.udp_port);
         for msg in messages {
             let packet = msg.to_bytes();
-            self.socket.send_to(&packet, dst).await
-                .map_err(|e| BroadcastError::Network(e.to_string()))?;
+            self.socket.send_to(&packet, dst).await.map_err(|e| BroadcastError::Network(e.to_string()))?;
         }
 
         Ok(())

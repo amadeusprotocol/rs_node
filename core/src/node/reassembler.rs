@@ -5,12 +5,12 @@ use crate::utils::misc::get_unix_nanos_now;
 use crate::utils::reed_solomon;
 use crate::utils::reed_solomon::ReedSolomonResource;
 use crate::utils::{blake3, bls12_381};
-use flate2::write::ZlibEncoder;
-use flate2::read::ZlibDecoder;
 use flate2::Compression;
-use std::io::prelude::*;
+use flate2::read::ZlibDecoder;
+use flate2::write::ZlibEncoder;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::io::prelude::*;
 use tokio::sync::RwLock;
 
 pub struct ReedSolomonReassembler {
@@ -117,7 +117,7 @@ impl ReedSolomonReassembler {
                 MessageV2 {
                     version,
                     pk,
-                    signature: None,  // Unsigned
+                    signature: None, // Unsigned
                     shard_index: 0,
                     shard_total: 1,
                     ts_nano,
@@ -146,7 +146,7 @@ impl ReedSolomonReassembler {
                 MessageV2 {
                     version: version.to_string(),
                     pk,
-                    signature: None,  // Unsigned
+                    signature: None, // Unsigned
                     shard_index: shard_index as u16,
                     shard_total: total_shards,
                     ts_nano,

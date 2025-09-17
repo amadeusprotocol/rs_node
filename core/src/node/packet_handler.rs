@@ -14,12 +14,12 @@ fn decompress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     decoder.read_to_end(&mut result)?;
     Ok(result)
 }
+use eetf::Term;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
-use eetf::Term;
 
 /// Handles incoming UDP packets and message reassembly
 pub struct PacketHandler {
@@ -44,11 +44,7 @@ struct ReassemblyBuffer {
 
 impl PacketHandler {
     pub fn new(config: Arc<Config>, anr_manager: Arc<AnrManager>) -> Self {
-        Self {
-            config,
-            anr_manager,
-            reassembly_buffers: Arc::new(RwLock::new(HashMap::new())),
-        }
+        Self { config, anr_manager, reassembly_buffers: Arc::new(RwLock::new(HashMap::new())) }
     }
 
     /// Process incoming UDP packet
@@ -59,8 +55,7 @@ impl PacketHandler {
         ctx: &Context,
     ) -> Result<Vec<Instruction>, PacketError> {
         // Try to parse as encrypted message
-        let msg = EncryptedMessage::try_from(data)
-            .map_err(|e| PacketError::ParseError(e.to_string()))?;
+        let msg = EncryptedMessage::try_from(data).map_err(|e| PacketError::ParseError(e.to_string()))?;
 
         // Check if message is to self
         if msg.pk == self.config.get_pk() {
@@ -68,12 +63,11 @@ impl PacketHandler {
         }
 
         // Check version requirement (minimum 1.1.7)
-        if msg.version.0 < 1 ||
-           (msg.version.0 == 1 && msg.version.1 < 1) ||
-           (msg.version.0 == 1 && msg.version.1 == 1 && msg.version.2 < 7) {
-            return Err(PacketError::VersionTooOld(format!(
-                "{}.{}.{}", msg.version.0, msg.version.1, msg.version.2
-            )));
+        if msg.version.0 < 1
+            || (msg.version.0 == 1 && msg.version.1 < 1)
+            || (msg.version.0 == 1 && msg.version.1 == 1 && msg.version.2 < 7)
+        {
+            return Err(PacketError::VersionTooOld(format!("{}.{}.{}", msg.version.0, msg.version.1, msg.version.2)));
         }
 
         // Check if we have ANR for this peer
@@ -112,20 +106,21 @@ impl PacketHandler {
         ctx: &Context,
     ) -> Result<Vec<Instruction>, PacketError> {
         // Get shared secret
-        let shared_secret = self.anr_manager.get_shared_secret(&msg.pk).await
+        let shared_secret = self
+            .anr_manager
+            .get_shared_secret(&msg.pk)
+            .await
             .map_err(|e| PacketError::DecryptionError(e.to_string()))?;
 
         // Decrypt payload
-        let decrypted = msg.decrypt(&shared_secret)
-            .map_err(|e| PacketError::DecryptionError(e.to_string()))?;
+        let decrypted = msg.decrypt(&shared_secret).map_err(|e| PacketError::DecryptionError(e.to_string()))?;
 
         // Decompress
-        let decompressed = decompress_with_zlib(&decrypted)
-            .map_err(|e| PacketError::DecompressionError(e.to_string()))?;
+        let decompressed =
+            decompress_with_zlib(&decrypted).map_err(|e| PacketError::DecompressionError(e.to_string()))?;
 
         // Parse ETF term
-        let term = Term::decode(decompressed.as_slice())
-            .map_err(|e| PacketError::EtfError(e.to_string()))?;
+        let term = Term::decode(decompressed.as_slice()).map_err(|e| PacketError::EtfError(e.to_string()))?;
 
         // Process the protocol message
         self.process_protocol_message(term, peer_ip, ctx).await
@@ -138,43 +133,37 @@ impl PacketHandler {
         peer_ip: Ipv4Addr,
         ctx: &Context,
     ) -> Result<Vec<Instruction>, PacketError> {
-        let key = ReassemblyKey {
-            pk: msg.pk.to_vec(),
-            ts_nano: msg.ts_nano,
-            shard_total: msg.shard_total,
-        };
+        let key = ReassemblyKey { pk: msg.pk.to_vec(), ts_nano: msg.ts_nano, shard_total: msg.shard_total };
 
         let data_shards_needed = (msg.shard_total / 2) as usize;
 
         // Add shard to buffer
         let mut buffers = self.reassembly_buffers.write().await;
 
-        let buffer = buffers.entry(key.clone()).or_insert_with(|| {
-            ReassemblyBuffer {
-                shards: HashMap::new(),
-                original_size: msg.original_size,
-                version: msg.version,
-                created_at: get_unix_nanos_now() as u64,
-            }
+        let buffer = buffers.entry(key.clone()).or_insert_with(|| ReassemblyBuffer {
+            shards: HashMap::new(),
+            original_size: msg.original_size,
+            version: msg.version,
+            created_at: get_unix_nanos_now() as u64,
         });
 
         // Get shared secret for decryption
-        let shared_secret = self.anr_manager.get_shared_secret(&msg.pk).await
+        let shared_secret = self
+            .anr_manager
+            .get_shared_secret(&msg.pk)
+            .await
             .map_err(|e| PacketError::DecryptionError(e.to_string()))?;
 
         // Decrypt shard
-        let decrypted_shard = msg.decrypt(&shared_secret)
-            .map_err(|e| PacketError::DecryptionError(e.to_string()))?;
+        let decrypted_shard = msg.decrypt(&shared_secret).map_err(|e| PacketError::DecryptionError(e.to_string()))?;
 
         buffer.shards.insert(msg.shard_index, decrypted_shard);
 
         // Check if we have enough shards
         if buffer.shards.len() >= data_shards_needed {
             // Reconstruct message using Reed-Solomon
-            let mut shards_vec: Vec<(usize, Vec<u8>)> = buffer.shards
-                .iter()
-                .map(|(idx, data)| (*idx as usize, data.clone()))
-                .collect();
+            let mut shards_vec: Vec<(usize, Vec<u8>)> =
+                buffer.shards.iter().map(|(idx, data)| (*idx as usize, data.clone())).collect();
             shards_vec.sort_by_key(|s| s.0);
 
             // For now, just concatenate the shards in order
@@ -189,12 +178,11 @@ impl PacketHandler {
             buffers.remove(&key);
 
             // Decompress
-            let decompressed = decompress_with_zlib(&reconstructed)
-                .map_err(|e| PacketError::DecompressionError(e.to_string()))?;
+            let decompressed =
+                decompress_with_zlib(&reconstructed).map_err(|e| PacketError::DecompressionError(e.to_string()))?;
 
             // Parse ETF term
-            let term = Term::decode(decompressed.as_slice())
-                .map_err(|e| PacketError::EtfError(e.to_string()))?;
+            let term = Term::decode(decompressed.as_slice()).map_err(|e| PacketError::EtfError(e.to_string()))?;
 
             // Process the protocol message
             self.process_protocol_message(term, peer_ip, ctx).await

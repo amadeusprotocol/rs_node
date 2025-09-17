@@ -65,7 +65,7 @@ impl crate::utils::misc::Typename for Error {
 pub struct MessageV2 {
     pub version: String,
     pub pk: [u8; 48],
-    pub signature: Option<[u8; 96]>,  // Optional for unsigned messages (v1.1.7+ bootstrap)
+    pub signature: Option<[u8; 96]>, // Optional for unsigned messages (v1.1.7+ bootstrap)
     pub shard_index: u16,
     pub shard_total: u16,
     pub ts_nano: u64,
@@ -109,13 +109,13 @@ impl TryInto<Vec<u8>> for MessageV2 {
             if sig.len() != 96 {
                 return Err(Error::BadSigLen(sig.len()));
             }
-            out.push(0b0000_0001);  // signed
+            out.push(0b0000_0001); // signed
 
             // pk (48), signature (96)
             out.extend_from_slice(&self.pk);
             out.extend_from_slice(sig);
         } else {
-            out.push(0b0000_0000);  // unsigned
+            out.push(0b0000_0000); // unsigned
 
             // pk (48), NO signature for unsigned
             out.extend_from_slice(&self.pk);
@@ -186,8 +186,16 @@ impl MessageV2 {
 
             let payload = bin[sig_end + 16..].to_vec();
 
-            Ok(Self { version, pk, signature: Some(signature), shard_index, shard_total, ts_nano, original_size, payload })
-
+            Ok(Self {
+                version,
+                pk,
+                signature: Some(signature),
+                shard_index,
+                shard_total,
+                ts_nano,
+                original_size,
+                payload,
+            })
         } else if flag_byte == 0b00000000 {
             // UNSIGNED message (v1.1.7+ bootstrap format)
             let pk_start = 7;
@@ -206,7 +214,6 @@ impl MessageV2 {
             let payload = bin[metadata_start + 16..].to_vec();
 
             Ok(Self { version, pk, signature: None, shard_index, shard_total, ts_nano, original_size, payload })
-
         } else {
             // Invalid flags
             Err(Error::InvalidFlags(flag_byte))

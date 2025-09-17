@@ -146,11 +146,7 @@ impl AnrManager {
     /// Check if ANR is handshaked and has valid IP
     pub async fn handshaked_and_valid_ip4(&self, pk: &[u8], ip: Ipv4Addr) -> bool {
         let anrs = self.anrs.read().await;
-        if let Some(anr) = anrs.get(pk) {
-            anr.handshaked && anr.ip4 == ip
-        } else {
-            false
-        }
+        if let Some(anr) = anrs.get(pk) { anr.handshaked && anr.ip4 == ip } else { false }
     }
 
     /// Get random unverified ANRs for handshaking
@@ -158,11 +154,8 @@ impl AnrManager {
         let anrs = self.anrs.read().await;
         let now = get_unix_millis_now() as u32 / 1000;
 
-        let mut unverified: Vec<_> = anrs
-            .values()
-            .filter(|anr| !anr.handshaked && anr.next_check <= now)
-            .cloned()
-            .collect();
+        let mut unverified: Vec<_> =
+            anrs.values().filter(|anr| !anr.handshaked && anr.next_check <= now).cloned().collect();
 
         // Shuffle and take requested count
         use rand::seq::SliceRandom;
@@ -177,11 +170,7 @@ impl AnrManager {
     pub async fn get_random_verified(&self, count: usize) -> Vec<Anr> {
         let anrs = self.anrs.read().await;
 
-        let mut verified: Vec<_> = anrs
-            .values()
-            .filter(|anr| anr.handshaked)
-            .cloned()
-            .collect();
+        let mut verified: Vec<_> = anrs.values().filter(|anr| anr.handshaked).cloned().collect();
 
         // Shuffle and take requested count
         use rand::seq::SliceRandom;
@@ -197,16 +186,10 @@ impl AnrManager {
         let anrs = self.anrs.read().await;
         let now = get_unix_millis_now() as u32 / 1000;
 
-        let handshaked: Vec<_> = anrs
-            .values()
-            .filter(|anr| anr.handshaked && anr.next_check > now)
-            .cloned()
-            .collect();
+        let handshaked: Vec<_> = anrs.values().filter(|anr| anr.handshaked && anr.next_check > now).cloned().collect();
 
         // Split into validators (with chain PoP) and regular peers
-        let (validators, peers): (Vec<_>, Vec<_>) = handshaked
-            .into_iter()
-            .partition(|anr| anr.hasChainPop);
+        let (validators, peers): (Vec<_>, Vec<_>) = handshaked.into_iter().partition(|anr| anr.hasChainPop);
 
         (validators, peers)
     }

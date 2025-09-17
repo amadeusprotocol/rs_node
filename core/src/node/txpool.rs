@@ -1,8 +1,8 @@
 use crate::bic::base;
 use crate::bic::coin;
 use crate::bic::sol;
-use crate::consensus::{chain_balance, chain_epoch, chain_nonce, chain_segment_vr_hash, chain_diff_bits};
-use crate::consensus::doms::tx::{TxU, validate, pack};
+use crate::consensus::doms::tx::{TxU, pack, validate};
+use crate::consensus::{chain_balance, chain_diff_bits, chain_epoch, chain_nonce, chain_segment_vr_hash};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -36,10 +36,7 @@ pub struct TxPool {
 
 impl TxPool {
     pub fn new() -> Self {
-        Self {
-            pool: Arc::new(RwLock::new(HashMap::new())),
-            gifted_sol_cache: Arc::new(RwLock::new(HashMap::new())),
-        }
+        Self { pool: Arc::new(RwLock::new(HashMap::new())), gifted_sol_cache: Arc::new(RwLock::new(HashMap::new())) }
     }
 
     pub async fn insert(&self, tx_packed: &[u8]) -> Result<(), TxPoolError> {
@@ -72,40 +69,31 @@ impl TxPool {
         });
     }
 
-    pub fn validate_tx(
-        txu: &TxU,
-        args: &mut ValidateTxArgs,
-    ) -> Result<(), TxPoolError> {
+    pub fn validate_tx(txu: &TxU, args: &mut ValidateTxArgs) -> Result<(), TxPoolError> {
         // Check nonce validity
         let signer_vec = txu.tx.signer.to_vec();
-        let chain_nonce = args.batch_state.chain_nonces
+        let chain_nonce = args
+            .batch_state
+            .chain_nonces
             .get(&signer_vec)
             .cloned()
             .unwrap_or_else(|| chain_nonce(&txu.tx.signer).unwrap_or(0));
 
         if chain_nonce != 0 && txu.tx.nonce <= chain_nonce {
-            return Err(TxPoolError::InvalidNonce {
-                nonce: txu.tx.nonce,
-                hash: txu.hash,
-            });
+            return Err(TxPoolError::InvalidNonce { nonce: txu.tx.nonce, hash: txu.hash });
         }
         args.batch_state.chain_nonces.insert(signer_vec.clone(), txu.tx.nonce);
 
         // Check balance
-        let balance = args.batch_state.balances
-            .get(&signer_vec)
-            .cloned()
-            .unwrap_or_else(|| chain_balance(&txu.tx.signer));
+        let balance =
+            args.batch_state.balances.get(&signer_vec).cloned().unwrap_or_else(|| chain_balance(&txu.tx.signer));
 
         let exec_cost = base::exec_cost(args.epoch, txu);
         let fee = coin::to_cents(1);
 
         let new_balance = balance.saturating_sub(exec_cost).saturating_sub(fee);
         if balance < exec_cost + fee {
-            return Err(TxPoolError::InsufficientBalance {
-                nonce: txu.tx.nonce,
-                hash: txu.hash,
-            });
+            return Err(TxPoolError::InsufficientBalance { nonce: txu.tx.nonce, hash: txu.hash });
         }
         args.batch_state.balances.insert(signer_vec, new_balance);
 
@@ -114,18 +102,14 @@ impl TxPool {
             if action.function == "submit_sol" && !action.args.is_empty() {
                 let sol_bytes = &action.args[0];
                 if sol_bytes.len() >= 36 {
-                    let sol_epoch = u32::from_le_bytes([
-                        sol_bytes[0], sol_bytes[1], sol_bytes[2], sol_bytes[3]
-                    ]) as u64;
+                    let sol_epoch = u32::from_le_bytes([sol_bytes[0], sol_bytes[1], sol_bytes[2], sol_bytes[3]]) as u64;
                     let sol_svrh = &sol_bytes[4..36];
 
                     if sol_epoch != args.epoch
                         || sol_svrh != &args.segment_vr_hash[..]
-                        || sol_bytes.len() != sol::SOL_SIZE {
-                        return Err(TxPoolError::InvalidSol {
-                            nonce: txu.tx.nonce,
-                            hash: txu.hash,
-                        });
+                        || sol_bytes.len() != sol::SOL_SIZE
+                    {
+                        return Err(TxPoolError::InvalidSol { nonce: txu.tx.nonce, hash: txu.hash });
                     }
                 }
             }
@@ -139,12 +123,8 @@ impl TxPool {
         let segment_vr_hash = chain_segment_vr_hash();
         let diff_bits = chain_diff_bits();
 
-        let mut args = ValidateTxArgs {
-            epoch: chain_epoch,
-            segment_vr_hash,
-            diff_bits,
-            batch_state: BatchState::default(),
-        };
+        let mut args =
+            ValidateTxArgs { epoch: chain_epoch, segment_vr_hash, diff_bits, batch_state: BatchState::default() };
 
         let mut good = Vec::new();
         for tx_packed in txs_packed {
@@ -166,12 +146,8 @@ impl TxPool {
         let segment_vr_hash = chain_segment_vr_hash();
         let diff_bits = chain_diff_bits();
 
-        let mut args = ValidateTxArgs {
-            epoch: chain_epoch,
-            segment_vr_hash,
-            diff_bits,
-            batch_state: BatchState::default(),
-        };
+        let mut args =
+            ValidateTxArgs { epoch: chain_epoch, segment_vr_hash, diff_bits, batch_state: BatchState::default() };
 
         let mut result = Vec::new();
         let mut to_delete = Vec::new();

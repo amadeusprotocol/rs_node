@@ -9,14 +9,14 @@ use crate::utils::bls12_381;
 use crate::utils::misc::{Typename, pk_challenge_into_bin};
 use crate::utils::misc::{format_duration, get_unix_millis_now};
 use crate::{SystemStats, config, consensus, get_system_stats, metrics, node, utils};
+use flate2::read::ZlibDecoder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::io::prelude::*;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tracing::{debug, info, instrument, warn};
-use flate2::read::ZlibDecoder;
-use std::io::prelude::*;
 
 // Helper function for zlib decompression to match Elixir reference
 fn decompress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
@@ -254,6 +254,11 @@ impl Context {
         message.send_to_with_metrics_legacy(self, dst).await.map_err(Into::into)
     }
 
+    /// Convenience function to send signed MessageV2 format (for ANR data)
+    pub async fn send_signed_message_to(&self, message: &impl Protocol, dst: Ipv4Addr) -> Result<(), Error> {
+        message.send_to_legacy(self, dst).await.map_err(Into::into)
+    }
+
     /// Convenience function to receive UDP data with metrics tracking
     pub async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
         self.socket.recv_from_with_metrics(buf, &self.metrics).await
@@ -348,7 +353,7 @@ impl Context {
                 // Fallback to stored temporal_height in sysconf
                 match consensus::fabric::get_temporal_height() {
                     Ok(Some(height)) => height,
-                    Ok(None) | Err(_) => 0 // fallback to 0 if not available
+                    Ok(None) | Err(_) => 0, // fallback to 0 if not available
                 }
             }
         }
@@ -359,7 +364,7 @@ impl Context {
         // Get rooted height from rooted tip entry
         match consensus::consensus::get_rooted_tip_entry() {
             Ok(entry) => entry.header.height,
-            Err(_) => 0 // default to 0 if not available
+            Err(_) => 0, // default to 0 if not available
         }
     }
 
@@ -440,41 +445,36 @@ impl Context {
                 }
 
                 // Check version requirement (minimum 1.1.7)
-                if encrypted_msg.version.0 < 1 ||
-                   (encrypted_msg.version.0 == 1 && encrypted_msg.version.1 < 1) ||
-                   (encrypted_msg.version.0 == 1 && encrypted_msg.version.1 == 1 && encrypted_msg.version.2 < 7) {
+                if encrypted_msg.version.0 < 1
+                    || (encrypted_msg.version.0 == 1 && encrypted_msg.version.1 < 1)
+                    || (encrypted_msg.version.0 == 1 && encrypted_msg.version.1 == 1 && encrypted_msg.version.2 < 7)
+                {
                     return None;
                 }
 
                 // Get shared secret using BLS ECDH
-                let shared_secret = match crate::utils::bls12_381::get_shared_secret(
-                    &encrypted_msg.pk,
-                    &self.config.get_sk()
-                ) {
-                    Ok(secret) => secret.to_vec(),
-                    Err(_) => {
-                        // Invalid public key, ignore message
-                        return None;
-                    }
-                };
+                let shared_secret =
+                    match crate::utils::bls12_381::get_shared_secret(&encrypted_msg.pk, &self.config.get_sk()) {
+                        Ok(secret) => secret.to_vec(),
+                        Err(_) => {
+                            // Invalid public key, ignore message
+                            return None;
+                        }
+                    };
 
                 // Decrypt and decompress
                 match encrypted_msg.decrypt(&shared_secret) {
-                    Ok(decrypted) => {
-                        match decompress_with_zlib(&decrypted) {
-                            Ok(decompressed) => {
-                                match parse_etf_bin(&decompressed) {
-                                    Ok(proto) => {
-                                        self.node_peers.update_peer_from_proto(src, proto.typename()).await;
-                                        self.metrics.add_incoming_proto(proto.typename());
-                                        return Some(proto);
-                                    }
-                                    Err(e) => self.metrics.add_error(&e),
-                                }
+                    Ok(decrypted) => match decompress_with_zlib(&decrypted) {
+                        Ok(decompressed) => match parse_etf_bin(&decompressed) {
+                            Ok(proto) => {
+                                self.node_peers.update_peer_from_proto(src, proto.typename()).await;
+                                self.metrics.add_incoming_proto(proto.typename());
+                                return Some(proto);
                             }
-                            Err(e) => self.metrics.add_error(&Error::String(e.to_string())),
-                        }
-                    }
+                            Err(e) => self.metrics.add_error(&e),
+                        },
+                        Err(e) => self.metrics.add_error(&Error::String(e.to_string())),
+                    },
                     Err(e) => self.metrics.add_error(&Error::String(e.to_string())),
                 }
             }
@@ -530,8 +530,8 @@ impl Context {
             Instruction::SendNewPhoneWhoDisReply { dst } => {
                 let anr = Anr::from_config(&self.config)?;
                 let reply = NewPhoneWhoDisReply::new(anr);
-                // CRITICAL: Always use legacy MessageV2 for bootstrap messages
-                self.send_legacy_message_to(&reply, dst).await?;
+                // CRITICAL: Use signed MessageV2 for ANR data (contains sensitive information)
+                self.send_signed_message_to(&reply, dst).await?;
             }
 
             Instruction::SendPong { ts_m, dst } => {

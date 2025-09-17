@@ -1,9 +1,9 @@
 use crate::Context;
 use crate::bic::sol;
 use crate::bic::sol::Solution;
+use crate::consensus::consensus;
 use crate::consensus::doms::attestation::AttestationBulk;
 use crate::consensus::doms::entry::Entry;
-use crate::consensus::consensus;
 use crate::node::anr::Anr;
 use crate::node::peers::HandshakeStatus;
 use crate::node::{ReedSolomonReassembler, anr, msg_v2, peers, reassembler};
@@ -12,14 +12,14 @@ use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now, get_un
 use crate::utils::safe_etf::encode_safe;
 use eetf::convert::TryAsRef;
 use eetf::{Atom, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, FixInteger, List, Map, Term};
+use flate2::Compression;
+use flate2::write::ZlibEncoder;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io::Error as IoError;
+use std::io::prelude::*;
 use std::net::{Ipv4Addr, SocketAddr};
 use tracing::{info, instrument, warn};
-use flate2::write::ZlibEncoder;
-use flate2::Compression;
-use std::io::prelude::*;
 
 // Helper function for zlib compression to match Elixir reference
 fn compress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
@@ -41,11 +41,7 @@ pub trait Protocol: Typename + Debug + Send + Sync {
     async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error>;
     /// Send this protocol message to a destination using encrypted format (v1.1.7+)
     /// REQUIRES ANR to be available - use send_to_legacy_with_metrics for bootstrap messages
-    async fn send_to_with_metrics(
-        &self,
-        ctx: &Context,
-        dst: Ipv4Addr,
-    ) -> Result<(), Error> {
+    async fn send_to_with_metrics(&self, ctx: &Context, dst: Ipv4Addr) -> Result<(), Error> {
         use crate::node::msg_encrypted::EncryptedMessage;
         // Using zlib compression to match Elixir reference implementation
 
@@ -56,8 +52,7 @@ pub trait Protocol: Typename + Debug + Send + Sync {
         let payload = self.to_etf_bin().inspect_err(|e| ctx.metrics.add_error(e))?;
 
         // Look up ANR for destination to get public key
-        let dst_anr = ctx.node_anrs.get_by_ip4(dst).await
-            .ok_or(Error::NoAnrForDestination(dst))?;
+        let dst_anr = ctx.node_anrs.get_by_ip4(dst).await.ok_or(Error::NoAnrForDestination(dst))?;
 
         // Use encrypted format (v1.1.7+) - REQUIRED for all non-bootstrap messages
         // Order: ETF -> Compress -> Encrypt -> Shard -> Headers
@@ -68,12 +63,8 @@ pub trait Protocol: Typename + Debug + Send + Sync {
         let version = ctx.config.get_ver_3b();
 
         // Encrypt message using v1.1.7+ protocol
-        let messages = EncryptedMessage::encrypt(
-            &ctx.config.get_pk(),
-            &shared_secret,
-            &compressed,
-            version,
-        ).map_err(Error::MsgEncrypted)?;
+        let messages = EncryptedMessage::encrypt(&ctx.config.get_pk(), &shared_secret, &compressed, version)
+            .map_err(Error::MsgEncrypted)?;
 
         // Send all shards
         for msg in messages {
@@ -86,22 +77,12 @@ pub trait Protocol: Typename + Debug + Send + Sync {
 
     /// Send this protocol message using unsigned MessageV2 format (for bootstrap messages in v1.1.7+)
     /// Bootstrap messages don't require signatures in v1.1.7+
-    async fn send_to_with_metrics_legacy(
-        &self,
-        ctx: &Context,
-        dst: Ipv4Addr,
-    ) -> Result<(), Error> {
+    async fn send_to_with_metrics_legacy(&self, ctx: &Context, dst: Ipv4Addr) -> Result<(), Error> {
         let dst_addr = SocketAddr::new(std::net::IpAddr::V4(dst), ctx.config.udp_port);
         let payload = self.to_etf_bin().inspect_err(|e| ctx.metrics.add_error(e))?;
 
-        // Use unsigned MessageV2 format for bootstrap (v1.1.7+ format)
-        // Order: ETF -> Compress -> Shard -> Headers (no signature)
-        tracing::debug!("Sending {} to {} using unsigned MessageV2 format (v1.1.7+)", self.typename(), dst);
         let shards = ReedSolomonReassembler::build_unsigned_shards(&ctx.config, &payload)?;
         for shard in &shards {
-            if self.typename() == "new_phone_who_dis" {
-                println!("Unsigned bootstrap packet: {:?}", shard);
-            }
             ctx.socket.send_to_with_metrics(shard, dst_addr, &ctx.metrics).await?;
         }
 
@@ -117,8 +98,7 @@ pub trait Protocol: Typename + Debug + Send + Sync {
         let payload = self.to_etf_bin()?;
 
         // Look up ANR for destination to get public key
-        let dst_anr = ctx.node_anrs.get_by_ip4(dst).await
-            .ok_or(Error::NoAnrForDestination(dst))?;
+        let dst_anr = ctx.node_anrs.get_by_ip4(dst).await.ok_or(Error::NoAnrForDestination(dst))?;
 
         // Use encrypted format (v1.1.7+) - REQUIRED for all non-bootstrap messages
         // Order: ETF -> Compress -> Encrypt -> Shard -> Headers
@@ -129,12 +109,8 @@ pub trait Protocol: Typename + Debug + Send + Sync {
         let version = ctx.config.get_ver_3b();
 
         // Encrypt message using v1.1.7+ protocol
-        let messages = EncryptedMessage::encrypt(
-            &ctx.config.get_pk(),
-            &shared_secret,
-            &compressed,
-            version,
-        ).map_err(Error::MsgEncrypted)?;
+        let messages = EncryptedMessage::encrypt(&ctx.config.get_pk(), &shared_secret, &compressed, version)
+            .map_err(Error::MsgEncrypted)?;
 
         // Send all shards
         for msg in messages {
@@ -147,11 +123,7 @@ pub trait Protocol: Typename + Debug + Send + Sync {
 
     /// Send this protocol message using legacy MessageV2 format (for bootstrap messages)
     /// Always uses signature-based MessageV2 regardless of ANR availability
-    async fn send_to_legacy(
-        &self,
-        ctx: &Context,
-        dst: Ipv4Addr,
-    ) -> Result<(), Error> {
+    async fn send_to_legacy(&self, ctx: &Context, dst: Ipv4Addr) -> Result<(), Error> {
         let dst_addr = SocketAddr::new(std::net::IpAddr::V4(dst), ctx.config.udp_port);
         let payload = self.to_etf_bin()?;
 
@@ -1054,9 +1026,9 @@ mod tests {
         assert_eq!(parsed.typename(), "new_phone_who_dis");
 
         // Verify it deserializes correctly as NewPhoneWhoDis
-        if let Ok(_parsed_msg) = NewPhoneWhoDis::from_etf_map_validated(
-            Term::decode(&bin[..]).expect("decode").get_term_map().expect("map"),
-        ) {
+        if let Ok(_parsed_msg) =
+            NewPhoneWhoDis::from_etf_map_validated(Term::decode(&bin[..]).expect("decode").get_term_map().expect("map"))
+        {
             // Success - the simplified format works correctly
             assert!(true);
         } else {

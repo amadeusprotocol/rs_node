@@ -667,9 +667,11 @@ impl NodePeers {
 
     pub async fn update_peer_ping_timestamp(&self, ip: Ipv4Addr, ts_m: u64) {
         // Update using ConcurrentMap's update method
-        self.peers.update(&ip, |_key, peer| {
-            peer.last_ping = Some(ts_m);
-        }).await;
+        self.peers
+            .update(&ip, |_key, peer| {
+                peer.last_ping = Some(ts_m);
+            })
+            .await;
     }
 
     pub async fn update_peer_from_ping(&self, _ctx: &Context, ip: Ipv4Addr, ping: &Ping) {

@@ -2,7 +2,7 @@ use crate::consensus::chain_epoch;
 use crate::utils::rocksdb::{self, RocksDbTransaction};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 use tracing::{debug, info};
 
 pub struct FabricCleaner {
@@ -11,9 +11,7 @@ pub struct FabricCleaner {
 
 impl FabricCleaner {
     pub fn new() -> Self {
-        Self {
-            stop_signal: Arc::new(RwLock::new(false)),
-        }
+        Self { stop_signal: Arc::new(RwLock::new(false)) }
     }
 
     pub async fn start(self: Arc<Self>) {
@@ -73,12 +71,10 @@ impl FabricCleaner {
 
     fn get_finality_clean_next_epoch(&self) -> Option<u64> {
         match rocksdb::get("sysconf", b"finality_clean_next_epoch") {
-            Ok(Some(bytes)) => {
-                match bincode::decode_from_slice::<u64, _>(&bytes, bincode::config::standard()) {
-                    Ok((epoch, _)) => Some(epoch),
-                    Err(_) => None,
-                }
-            }
+            Ok(Some(bytes)) => match bincode::decode_from_slice::<u64, _>(&bytes, bincode::config::standard()) {
+                Ok((epoch, _)) => Some(epoch),
+                Err(_) => None,
+            },
             _ => None,
         }
     }
@@ -111,7 +107,8 @@ async fn clean_muts_rev(_epoch: u64, start: u64, end: u64) {
 
         // Get entry hashes at this height - we need the hashes for muts_rev keys
         let height_prefix = format!("{:016}:", height);
-        let kvs = match crate::utils::rocksdb::iter_prefix("entry_by_height|height:entryhash", height_prefix.as_bytes()) {
+        let kvs = match crate::utils::rocksdb::iter_prefix("entry_by_height|height:entryhash", height_prefix.as_bytes())
+        {
             Ok(kvs) => kvs,
             Err(_) => continue,
         };

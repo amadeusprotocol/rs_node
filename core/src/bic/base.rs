@@ -1,6 +1,6 @@
+use crate::consensus::doms::tx::{TxAction, TxU};
 use crate::consensus::kv;
 use crate::consensus::kv::Mutation;
-use crate::consensus::doms::tx::{TxU, TxAction};
 use crate::utils::misc::pk_hex;
 use blake3;
 use std::cell::RefCell;
@@ -43,9 +43,7 @@ pub fn exec_cost(_epoch: u64, txu: &TxU) -> u64 {
 }
 
 /// KV mutations are not implemented yet
-pub fn call_txs_pre_parallel_build_sol_cache(
-    txus: &[TxU],
-) -> std::collections::HashMap<[u8; 32], bool> {
+pub fn call_txs_pre_parallel_build_sol_cache(txus: &[TxU]) -> std::collections::HashMap<[u8; 32], bool> {
     use crate::bic::sol;
     use std::collections::HashMap;
 
@@ -226,11 +224,7 @@ fn execute_action_safe(env: &crate::bic::epoch::CallEnv, txu: &TxU) -> ActionRes
     }
 }
 
-fn execute_wasm_contract(
-    env: &crate::bic::epoch::CallEnv,
-    txu: &TxU,
-    action: &TxAction,
-) -> ActionResult {
+fn execute_wasm_contract(env: &crate::bic::epoch::CallEnv, txu: &TxU, action: &TxAction) -> ActionResult {
     // Check if contract has bytecode
     let contract_key: [u8; 48] = match action.contract.as_slice().try_into() {
         Ok(key) => key,

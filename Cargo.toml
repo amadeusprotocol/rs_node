@@ -8,5 +8,4 @@ ama_core = { path = "core" }
 http = { path = "http", package = "dashboard" }
 
 [patch.crates-io]
-bls12_381 = { git = "https://github.com/vans163/bls12_381" } # has newer deps
 reed-solomon-simd = { git = "https://github.com/AndersTrier/reed-solomon-simd" } # 3.1.0

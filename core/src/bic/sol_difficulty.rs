@@ -32,11 +32,7 @@ fn ceil_log2_ratio(a: u64, b: u64) -> u32 {
         return 0;
     }
     let d0 = ilog2_floor(a) - ilog2_floor(b);
-    if b << d0 >= a {
-        d0
-    } else {
-        d0 + 1
-    }
+    if b << d0 >= a { d0 } else { d0 + 1 }
 }
 
 pub fn next(prev_bits: u32, sols: u64) -> u32 {

@@ -2,6 +2,7 @@
 name = "ama_core"
 version = "1.1.8"
 edition = "2024"
+license = "Apache-2.0"
 
 [lib]
 name = "ama_core"
@@ -13,14 +14,12 @@ doctest = false
 eetf = "0.11.0"
 num-traits = "0.2.19"
 flate2 = { version = "1.0.25", features = ["zlib"] }
-miniz_oxide = "0.8.9"
-ratatui = "0.29.0"
 tokio = { version = "1.47.1", features = ["full"] }
 bs58 = "0.5.1"
 reed-solomon-simd = "3.1.0" # patched in workspace
 bincode = { version = "=2.0.1", features = ["derive"] } # pinned for snapshots compatibility
 blake3 = "1.8.2"
-bls12_381 = "0.8.0"
+bls12_381 = { git = "https://github.com/vans163/bls12_381" }
 sha2 = "0.10"
 blst = "0.3.15"
 thiserror = "2.0.15"

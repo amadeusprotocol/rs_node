@@ -203,11 +203,4 @@ cargo add ama_core --git https://github.com/valentynfaychuk/rs_node --package am
 
 ## Contributing
 
-Before pushing changes, run `cargo fmt` and `cargo clippy` to maintain the quality.
-
-## Next
-
-- [ ] Validation - through attestations
-- [ ] Implement the mutations hash
-- [ ] Running contracts in wasm runtime
-- [ ] Refactoring the RocksDB and Fabric
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
