@@ -7,6 +7,16 @@ use crate::socket::UdpSocketExt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::debug;
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
+use std::io::prelude::*;
+
+// Helper function for zlib compression to match Elixir reference
+fn compress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data)?;
+    encoder.finish()
+}
 
 /// Options for broadcasting messages
 #[derive(Debug, Clone)]
@@ -104,11 +114,9 @@ impl BroadcastManager {
         let payload = msg.to_etf_bin()
             .map_err(|e| BroadcastError::Serialization(e.to_string()))?;
 
-        // Compress the payload
-        let compressed = miniz_oxide::deflate::compress_to_vec(
-            &payload,
-            miniz_oxide::deflate::CompressionLevel::DefaultLevel as u8,
-        );
+        // Compress the payload using zlib to match Elixir reference
+        let compressed = compress_with_zlib(&payload)
+            .map_err(|e| BroadcastError::Compression(e.to_string()))?;
 
         // Get shared secret for encryption
         let shared_secret = self.anr_manager.get_shared_secret(&anr.pk).await
@@ -181,6 +189,8 @@ impl BroadcastManager {
 pub enum BroadcastError {
     #[error("Serialization error: {0}")]
     Serialization(String),
+    #[error("Compression error: {0}")]
+    Compression(String),
     #[error("Encryption error: {0}")]
     Encryption(String),
     #[error("Network error: {0}")]

@@ -17,6 +17,16 @@ use std::fmt::Debug;
 use std::io::Error as IoError;
 use std::net::{Ipv4Addr, SocketAddr};
 use tracing::{info, instrument, warn};
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
+use std::io::prelude::*;
+
+// Helper function for zlib compression to match Elixir reference
+fn compress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data)?;
+    encoder.finish()
+}
 
 /// Every object that has this trait must be convertible from an Erlang ETF
 /// Binary representation and must be able to handle itself as a message
@@ -37,7 +47,7 @@ pub trait Protocol: Typename + Debug + Send + Sync {
         dst: Ipv4Addr,
     ) -> Result<(), Error> {
         use crate::node::msg_encrypted::EncryptedMessage;
-        use miniz_oxide::deflate::{CompressionLevel, compress_to_vec};
+        // Using zlib compression to match Elixir reference implementation
 
         // Increment metrics counter immediately, even if send fails later
         ctx.metrics.add_outgoing_proto(self.typename());
@@ -51,7 +61,7 @@ pub trait Protocol: Typename + Debug + Send + Sync {
 
         // Use encrypted format (v1.1.7+) - REQUIRED for all non-bootstrap messages
         // Order: ETF -> Compress -> Encrypt -> Shard -> Headers
-        let compressed = compress_to_vec(&payload, CompressionLevel::DefaultLevel as u8);
+        let compressed = compress_with_zlib(&payload)?;
         let shared_secret = crate::utils::bls12_381::get_shared_secret(&dst_anr.pk, &ctx.config.get_sk())?;
 
         // Get version from config
@@ -74,9 +84,9 @@ pub trait Protocol: Typename + Debug + Send + Sync {
         Ok(())
     }
 
-    /// Send this protocol message using legacy MessageV2 format (for bootstrap messages)
-    /// Always uses signature-based MessageV2 regardless of ANR availability
-    async fn send_to_legacy_with_metrics(
+    /// Send this protocol message using unsigned MessageV2 format (for bootstrap messages in v1.1.7+)
+    /// Bootstrap messages don't require signatures in v1.1.7+
+    async fn send_to_with_metrics_legacy(
         &self,
         ctx: &Context,
         dst: Ipv4Addr,
@@ -84,11 +94,14 @@ pub trait Protocol: Typename + Debug + Send + Sync {
         let dst_addr = SocketAddr::new(std::net::IpAddr::V4(dst), ctx.config.udp_port);
         let payload = self.to_etf_bin().inspect_err(|e| ctx.metrics.add_error(e))?;
 
-        // Always use MessageV2 signature-based format for bootstrap
-        // Order: ETF -> Compress -> Sign -> Shard -> Headers (same as Elixir)
-        tracing::debug!("Sending {} to {} using legacy MessageV2 format", self.typename(), dst);
-        let shards = ReedSolomonReassembler::build_shards(&ctx.config, &payload)?;
+        // Use unsigned MessageV2 format for bootstrap (v1.1.7+ format)
+        // Order: ETF -> Compress -> Shard -> Headers (no signature)
+        tracing::debug!("Sending {} to {} using unsigned MessageV2 format (v1.1.7+)", self.typename(), dst);
+        let shards = ReedSolomonReassembler::build_unsigned_shards(&ctx.config, &payload)?;
         for shard in &shards {
+            if self.typename() == "new_phone_who_dis" {
+                println!("Unsigned bootstrap packet: {:?}", shard);
+            }
             ctx.socket.send_to_with_metrics(shard, dst_addr, &ctx.metrics).await?;
         }
 
@@ -98,7 +111,7 @@ pub trait Protocol: Typename + Debug + Send + Sync {
 
     async fn send_to(&self, ctx: &Context, dst: Ipv4Addr) -> Result<(), Error> {
         use crate::node::msg_encrypted::EncryptedMessage;
-        use miniz_oxide::deflate::{CompressionLevel, compress_to_vec};
+        // Using zlib compression to match Elixir reference implementation
 
         let dst_addr = SocketAddr::new(std::net::IpAddr::V4(dst), ctx.config.udp_port);
         let payload = self.to_etf_bin()?;
@@ -109,7 +122,7 @@ pub trait Protocol: Typename + Debug + Send + Sync {
 
         // Use encrypted format (v1.1.7+) - REQUIRED for all non-bootstrap messages
         // Order: ETF -> Compress -> Encrypt -> Shard -> Headers
-        let compressed = compress_to_vec(&payload, CompressionLevel::DefaultLevel as u8);
+        let compressed = compress_with_zlib(&payload)?;
         let shared_secret = crate::utils::bls12_381::get_shared_secret(&dst_anr.pk, &ctx.config.get_sk())?;
 
         // Get version from config
@@ -152,45 +165,45 @@ pub trait Protocol: Typename + Debug + Send + Sync {
 
         Ok(())
     }
-
-    /// Send encrypted message to a destination using a known public key
-    async fn send_to_pk(
-        &self,
-        ctx: &Context,
-        dst: Ipv4Addr,
-        dst_pk: &[u8],
-    ) -> Result<(), Error> {
-        use crate::node::msg_encrypted::EncryptedMessage;
-        use miniz_oxide::deflate::{CompressionLevel, compress_to_vec};
-
-        let dst_addr = SocketAddr::new(std::net::IpAddr::V4(dst), ctx.config.udp_port);
-        let payload = self.to_etf_bin()?;
-
-        // Compress payload
-        let compressed = compress_to_vec(&payload, CompressionLevel::DefaultLevel as u8);
-
-        // Get shared secret using BLS ECDH
-        let shared_secret = crate::utils::bls12_381::get_shared_secret(dst_pk, &ctx.config.get_sk())?;
-
-        // Get version
-        let version = ctx.config.get_ver_3b();
-
-        // Encrypt message using v1.1.7+ protocol
-        let messages = EncryptedMessage::encrypt(
-            &ctx.config.get_pk(),
-            &shared_secret,
-            &compressed,
-            version,
-        ).map_err(Error::MsgEncrypted)?;
-
-        // Send all shards
-        for msg in messages {
-            let packet = msg.to_bytes();
-            ctx.socket.send_to(&packet, dst_addr).await?;
-        }
-
-        Ok(())
-    }
+    //
+    // /// Send encrypted message to a destination using a known public key
+    // async fn send_to_pk(
+    //     &self,
+    //     ctx: &Context,
+    //     dst: Ipv4Addr,
+    //     dst_pk: &[u8],
+    // ) -> Result<(), Error> {
+    //     use crate::node::msg_encrypted::EncryptedMessage;
+    //     // Using zlib compression to match Elixir reference implementation
+    //
+    //     let dst_addr = SocketAddr::new(std::net::IpAddr::V4(dst), ctx.config.udp_port);
+    //     let payload = self.to_etf_bin()?;
+    //
+    //     // Compress payload
+    //     let compressed = compress_with_zlib(&payload)?;
+    //
+    //     // Get shared secret using BLS ECDH
+    //     let shared_secret = crate::utils::bls12_381::get_shared_secret(dst_pk, &ctx.config.get_sk())?;
+    //
+    //     // Get version
+    //     let version = ctx.config.get_ver_3b();
+    //
+    //     // Encrypt message using v1.1.7+ protocol
+    //     let messages = EncryptedMessage::encrypt(
+    //         &ctx.config.get_pk(),
+    //         &shared_secret,
+    //         &compressed,
+    //         version,
+    //     ).map_err(Error::MsgEncrypted)?;
+    //
+    //     // Send all shards
+    //     for msg in messages {
+    //         let packet = msg.to_bytes();
+    //         ctx.socket.send_to(&packet, dst_addr).await?;
+    //     }
+    //
+    //     Ok(())
+    // }
 }
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]

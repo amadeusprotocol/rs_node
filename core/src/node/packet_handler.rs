@@ -4,7 +4,16 @@ use crate::node::anr_manager::AnrManager;
 use crate::node::msg_encrypted::EncryptedMessage;
 use crate::node::protocol::Instruction;
 use crate::utils::misc::get_unix_nanos_now;
-use miniz_oxide::inflate::decompress_to_vec;
+use flate2::read::ZlibDecoder;
+use std::io::prelude::*;
+
+// Helper function for zlib decompression to match Elixir reference
+fn decompress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    let mut decoder = ZlibDecoder::new(data);
+    let mut result = Vec::new();
+    decoder.read_to_end(&mut result)?;
+    Ok(result)
+}
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -111,7 +120,7 @@ impl PacketHandler {
             .map_err(|e| PacketError::DecryptionError(e.to_string()))?;
 
         // Decompress
-        let decompressed = decompress_to_vec(&decrypted)
+        let decompressed = decompress_with_zlib(&decrypted)
             .map_err(|e| PacketError::DecompressionError(e.to_string()))?;
 
         // Parse ETF term
@@ -180,7 +189,7 @@ impl PacketHandler {
             buffers.remove(&key);
 
             // Decompress
-            let decompressed = decompress_to_vec(&reconstructed)
+            let decompressed = decompress_with_zlib(&reconstructed)
                 .map_err(|e| PacketError::DecompressionError(e.to_string()))?;
 
             // Parse ETF term

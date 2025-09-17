@@ -5,8 +5,10 @@ use crate::utils::misc::get_unix_nanos_now;
 use crate::utils::reed_solomon;
 use crate::utils::reed_solomon::ReedSolomonResource;
 use crate::utils::{blake3, bls12_381};
-use miniz_oxide::deflate::{CompressionLevel, compress_to_vec};
-use miniz_oxide::inflate::{DecompressError, decompress_to_vec};
+use flate2::write::ZlibEncoder;
+use flate2::read::ZlibDecoder;
+use flate2::Compression;
+use std::io::prelude::*;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use tokio::sync::RwLock;
@@ -24,7 +26,7 @@ pub enum Error {
     #[error(transparent)]
     MessageV2(#[from] msg_v2::Error),
     #[error("failed to decompress: {0}")]
-    Decompress(DecompressError),
+    Decompress(std::io::Error),
     #[error("message has no signature")]
     NoSignature,
 }
@@ -35,8 +37,8 @@ impl crate::utils::misc::Typename for Error {
     }
 }
 
-impl From<DecompressError> for Error {
-    fn from(e: DecompressError) -> Self {
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
         Self::Decompress(e)
     }
 }
@@ -80,14 +82,87 @@ impl Default for ReedSolomonReassembler {
     }
 }
 
+// Helper functions for zlib compression/decompression to match Elixir reference
+fn compress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data)?;
+    encoder.finish()
+}
+
+fn decompress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    let mut decoder = ZlibDecoder::new(data);
+    let mut result = Vec::new();
+    decoder.read_to_end(&mut result)?;
+    Ok(result)
+}
+
 impl ReedSolomonReassembler {
     pub fn new() -> Self {
         Self { reorg: RwLock::new(HashMap::new()) }
     }
 
+    /// Creates unsigned MessageV2 shards for bootstrap messages (v1.1.7+ format)
+    /// Bootstrap messages (new_phone_who_dis) don't require signatures
+    pub fn build_unsigned_shards(config: &crate::config::Config, payload: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
+        let compressed = compress_with_zlib(&payload)?;
+
+        let pk = config.get_pk();
+        let ts_nano = get_unix_nanos_now() as u64;
+        let original_size = compressed.len() as u32;
+        let version = config.get_ver();
+
+        if compressed.len() < 1300 {
+            // Small message: single shard, unsigned
+            return Ok(vec![
+                MessageV2 {
+                    version,
+                    pk,
+                    signature: None,  // Unsigned
+                    shard_index: 0,
+                    shard_total: 1,
+                    ts_nano,
+                    original_size,
+                    payload: compressed,
+                }
+                .try_into()?,
+            ]);
+        }
+
+        // Large message: Reed-Solomon sharding (unsigned)
+        let data_shards = compressed.len().div_ceil(1024);
+        let parity_shards = data_shards;
+        let total_shards = (data_shards + parity_shards) as u16;
+
+        let mut rs_resource = ReedSolomonResource::new(data_shards, parity_shards)?;
+        let encoded_shards = rs_resource.encode_shards(&compressed)?;
+
+        // Take data shards + some parity shards (not all) - matches signed version logic
+        let shards_to_send = data_shards + 1 + (data_shards / 4);
+        let limited_shards: Vec<_> = encoded_shards.into_iter().take(shards_to_send).collect();
+
+        let mut shards = Vec::new();
+        for (shard_index, shard_payload) in limited_shards {
+            shards.push(
+                MessageV2 {
+                    version: version.to_string(),
+                    pk,
+                    signature: None,  // Unsigned
+                    shard_index: shard_index as u16,
+                    shard_total: total_shards,
+                    ts_nano,
+                    original_size,
+                    payload: shard_payload,
+                }
+                .try_into()?,
+            );
+        }
+
+        Ok(shards)
+    }
+
     /// Creates signed MessageV2 shards from payload
     pub fn build_shards(config: &crate::config::Config, payload: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
-        let compressed = compress_to_vec(&payload, CompressionLevel::DefaultLevel as u8);
+        let compressed = compress_with_zlib(&payload)?;
 
         let pk = config.get_pk();
         let trainer_sk = config.get_sk();
@@ -107,7 +182,7 @@ impl ReedSolomonReassembler {
                 MessageV2 {
                     version,
                     pk,
-                    signature,
+                    signature: Some(signature),
                     shard_index: 0,
                     shard_total: 1,
                     ts_nano,
@@ -138,7 +213,7 @@ impl ReedSolomonReassembler {
                 MessageV2 {
                     version: version.to_string(),
                     pk,
-                    signature,
+                    signature: Some(signature),
                     shard_index: shard_index as u16,
                     shard_total: total_shards,
                     ts_nano,
@@ -171,8 +246,8 @@ impl ReedSolomonReassembler {
 
         // some messages are single-shard only, so we can skip the reorg logic
         if key.shard_total == 1 {
-            Self::verify_msg_sig(&key, &message.signature, &shard)?;
-            let payload = decompress_to_vec(&shard)?;
+            Self::verify_msg_sig(&key, message.signature.as_ref(), &shard)?;
+            let payload = decompress_with_zlib(&shard)?;
             return Ok(Some(payload));
         }
 
@@ -214,26 +289,25 @@ impl ReedSolomonReassembler {
             let msg_size = message.original_size as usize;
             let mut rs_res = ReedSolomonResource::new(data_shards, data_shards)?;
             let compressed = rs_res.decode_shards(shards, data_shards + data_shards, msg_size)?;
-            Self::verify_msg_sig(&key, &message.signature, &compressed)?;
-            let payload = decompress_to_vec(&compressed)?;
+            Self::verify_msg_sig(&key, message.signature.as_ref(), &compressed)?;
+            let payload = decompress_with_zlib(&compressed)?;
             return Ok(Some(payload));
         }
 
         Ok(None)
     }
 
-    fn verify_msg_sig(key: &ReassemblyKey, signature: &[u8], payload: &[u8]) -> Result<(), Error> {
-        if signature.is_empty() {
-            return Err(Error::NoSignature);
+    fn verify_msg_sig(key: &ReassemblyKey, signature: Option<&[u8; 96]>, payload: &[u8]) -> Result<(), Error> {
+        if let Some(sig) = signature {
+            // Signed message - verify signature
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(&key.pk);
+            hasher.update(payload);
+            let msg_hash = hasher.finalize();
+
+            bls12_381::verify(&key.pk, sig, &msg_hash, DST_NODE)?;
         }
-
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&key.pk);
-        hasher.update(payload);
-        let msg_hash = hasher.finalize();
-
-        bls12_381::verify(&key.pk, signature, &msg_hash, DST_NODE)?;
-
+        // Unsigned message (bootstrap) - no verification needed
         Ok(())
     }
 }
@@ -260,7 +334,7 @@ mod tests {
     // test version of build_message_v2 that uses consistent test keys
     fn test_build_message_v2(payload: Vec<u8>, version: &str) -> Result<Vec<MessageV2>, Error> {
         // compress the payload first, just like in build_shards
-        let compressed = compress_to_vec(&payload, CompressionLevel::DefaultLevel as u8);
+        let compressed = compress_with_zlib(&payload)?;
 
         let pk = test_trainer_pk();
         let trainer_sk = test_trainer_sk();
@@ -279,7 +353,7 @@ mod tests {
             return Ok(vec![MessageV2 {
                 version: version.to_string(),
                 pk,
-                signature,
+                signature: Some(signature),
                 shard_index: 0,
                 shard_total: 1,
                 ts_nano,
@@ -304,7 +378,7 @@ mod tests {
             messages.push(MessageV2 {
                 version: version.to_string(),
                 pk,
-                signature,
+                signature: Some(signature),
                 shard_index: shard_index as u16,
                 shard_total: total_shards,
                 ts_nano,
@@ -326,7 +400,7 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].shard_total, 1);
         // messages[0].payload is now compressed, not the original
-        let compressed = compress_to_vec(&payload, CompressionLevel::DefaultLevel as u8);
+        let compressed = compress_with_zlib(&payload).unwrap();
         assert_eq!(messages[0].payload, compressed);
 
         let reassembler = ReedSolomonReassembler::new();
@@ -362,7 +436,7 @@ mod tests {
         }
 
         // all messages should have same metadata
-        let compressed = compress_to_vec(&payload, CompressionLevel::DefaultLevel as u8);
+        let compressed = compress_with_zlib(&payload).unwrap();
         for msg in &messages {
             assert_eq!(msg.version, version);
             assert_eq!(msg.pk, messages[0].pk);
@@ -415,7 +489,7 @@ mod tests {
         }
 
         // calculate data_shards to know minimum needed for recovery
-        let compressed = compress_to_vec(&payload, CompressionLevel::DefaultLevel as u8);
+        let compressed = compress_with_zlib(&payload).unwrap();
         let data_shards = compressed.len().div_ceil(1024);
         println!("Generated {} messages, data_shards={}", messages.len(), data_shards);
 

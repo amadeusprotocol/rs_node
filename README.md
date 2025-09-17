@@ -15,7 +15,8 @@ It is best to run the offline node on the same machine (it requires a lot of sto
 To setup the machine, refer the Dockerfile from https://github.com/amadeus-robot/node.git
 
 ```bash
-OFFLINE=1 iex -S mix
+mix deps.get
+WORKFOLDER="$HOME/.cache/testamadeusd" OFFLINE=1 iex -S mix
 ```
 
 ### RocksDB toolbox (Optional)

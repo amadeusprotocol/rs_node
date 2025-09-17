@@ -15,6 +15,16 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tracing::{debug, info, instrument, warn};
+use flate2::read::ZlibDecoder;
+use std::io::prelude::*;
+
+// Helper function for zlib decompression to match Elixir reference
+fn decompress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    let mut decoder = ZlibDecoder::new(data);
+    let mut result = Vec::new();
+    decoder.read_to_end(&mut result)?;
+    Ok(result)
+}
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
 pub enum Error {
@@ -153,7 +163,7 @@ impl Context {
 
         for ip in &self.config.seed_ips {
             // CRITICAL: Always use legacy MessageV2 for bootstrap messages
-            new_phone_who_dis.send_to_legacy_with_metrics(self, *ip).await?;
+            new_phone_who_dis.send_to_with_metrics_legacy(self, *ip).await?;
             self.node_peers.set_handshake_status(*ip, HandshakeStatus::Initiated).await?;
         }
 
@@ -180,7 +190,7 @@ impl Context {
             let nodes_count = unverified_anrs.len();
             for ip in &unverified_anrs {
                 // CRITICAL: Always use legacy MessageV2 for bootstrap messages
-                new_phone_who_dis.send_to_legacy_with_metrics(self, *ip).await?;
+                new_phone_who_dis.send_to_with_metrics_legacy(self, *ip).await?;
                 self.node_peers.set_handshake_status(*ip, HandshakeStatus::Initiated).await?;
             }
 
@@ -241,7 +251,7 @@ impl Context {
 
     /// Convenience function to send legacy MessageV2 format (for bootstrap messages)
     pub async fn send_legacy_message_to(&self, message: &impl Protocol, dst: Ipv4Addr) -> Result<(), Error> {
-        message.send_to_legacy_with_metrics(self, dst).await.map_err(Into::into)
+        message.send_to_with_metrics_legacy(self, dst).await.map_err(Into::into)
     }
 
     /// Convenience function to receive UDP data with metrics tracking
@@ -451,7 +461,7 @@ impl Context {
                 // Decrypt and decompress
                 match encrypted_msg.decrypt(&shared_secret) {
                     Ok(decrypted) => {
-                        match miniz_oxide::inflate::decompress_to_vec(&decrypted) {
+                        match decompress_with_zlib(&decrypted) {
                             Ok(decompressed) => {
                                 match parse_etf_bin(&decompressed) {
                                     Ok(proto) => {
