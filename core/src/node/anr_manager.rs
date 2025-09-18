@@ -213,16 +213,8 @@ impl AnrManager {
 
         anrs.retain(|_, anr| {
             // Keep ANRs version 1.1.7 or higher
-            let parts: Vec<&str> = anr.version.split('.').collect();
-            if parts.len() != 3 {
-                return false;
-            }
-
-            let major = parts[0].parse::<u8>().unwrap_or(0);
-            let minor = parts[1].parse::<u8>().unwrap_or(0);
-            let patch = parts[2].parse::<u8>().unwrap_or(0);
-
-            major > 1 || (major == 1 && minor > 1) || (major == 1 && minor == 1 && patch >= 7)
+            let min_version = crate::Ver::new(1, 1, 7);
+            anr.version >= min_version
         });
 
         info!("Cleaned up pre-v1.1.7 ANRs");

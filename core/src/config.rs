@@ -4,6 +4,7 @@ use crate::node::anr::Anr;
 use crate::utils::bls12_381;
 pub use crate::utils::bls12_381::generate_sk as gen_sk;
 use crate::utils::ip_resolver::resolve_public_ipv4;
+use crate::utils::version::Ver;
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
 use std::path::Path;
@@ -20,7 +21,7 @@ pub const CLEANUP_PERIOD_SECS: u64 = 8; // how often node does the cleanup
 pub const HANDSHAKE_PERIOD_SECS: u64 = 1; // how often node checks ANR status
 pub const BROADCAST_PERIOD_SECS: u64 = 1; // how often node broadcasts pings
 
-pub const VERSION: [u8; 3] = parse_version();
+pub const VERSION: Ver = parse_version();
 
 /// IMPORTANT for compatibility
 pub const BINCODE_CONFIG: bincode::config::Configuration<
@@ -32,7 +33,7 @@ pub const BINCODE_CONFIG: bincode::config::Configuration<
     .with_big_endian() // network byte order
     .with_no_limit(); // no size cap
 
-const fn parse_version() -> [u8; 3] {
+const fn parse_version() -> Ver {
     const S: &str = env!("CRATE_VERSION");
     let bytes = S.as_bytes();
     let mut out = [0u8; 3];
@@ -51,7 +52,7 @@ const fn parse_version() -> [u8; 3] {
         i += 1;
     }
     out[part] = acc;
-    out
+    Ver::from_bytes(out)
 }
 
 pub const SEED_NODES: &[&str] = &["104.218.45.23", "72.9.144.110"];
@@ -61,7 +62,7 @@ pub const SEED_NODES: &[&str] = &["104.218.45.23", "72.9.144.110"];
 pub struct SeedANR {
     pub ip4: String,
     pub port: u16,
-    pub version: String,
+    pub version: Ver,
     pub signature: Vec<u8>,
     pub ts: u32,
     pub pk: Vec<u8>,
@@ -93,7 +94,7 @@ pub struct Config {
     pub work_folder: String,
 
     // version info
-    pub version_3b: [u8; 3],
+    pub version: Ver,
 
     // network configuration
     pub offline: bool,
@@ -153,12 +154,12 @@ impl Config {
         &self.work_folder
     }
 
-    pub fn get_ver(&self) -> String {
-        self.version_3b.iter().map(|b| b.to_string()).collect::<Vec<String>>().join(".")
+    pub fn get_ver(&self) -> Ver {
+        self.version
     }
 
     pub fn get_ver_3b(&self) -> (u8, u8, u8) {
-        (self.version_3b[0], self.version_3b[1], self.version_3b[2])
+        (self.version.major(), self.version.minor(), self.version.patch())
     }
 
     pub fn get_public_ipv4(&self) -> Ipv4Addr {
@@ -184,7 +185,7 @@ impl Config {
         let work_folder = root.unwrap_or(&work_folder).to_string();
         fs::create_dir_all(&work_folder).await?;
 
-        let version_3b = VERSION;
+        let version = VERSION;
 
         // network configuration from env
         let offline = std::env::var("OFFLINE").is_ok();
@@ -252,7 +253,7 @@ impl Config {
             None => resolve_public_ipv4().await, //.unwrap_or(Ipv4Addr::new(127, 0, 0, 1)),
         };
 
-        let ver = version_3b.iter().map(|b| b.to_string()).collect::<Vec<String>>().join(".");
+        let ver = version;
         let public_ipv4 = my_ip.map(|ip| ip.to_string());
 
         // anr configuration
@@ -265,7 +266,7 @@ impl Config {
                 &trainer_pk,
                 &trainer_pop,
                 ip,
-                ver.clone(),
+                ver,
                 anr_name.clone(),
                 anr_desc.clone(),
             )
@@ -274,7 +275,7 @@ impl Config {
 
         let seed_anrs = vec![
             SeedANR {
-                version: "1.1.7".to_string(),
+                version: Ver::new(1, 1, 7),
                 port: 36969,
                 ts: 1757522697,
                 signature: vec![
@@ -292,7 +293,7 @@ impl Config {
                 ],
             },
             SeedANR {
-                version: "1.1.7".to_string(),
+                version: Ver::new(1, 1, 7),
                 port: 36969,
                 ts: 1757525152,
                 signature: vec![
@@ -312,7 +313,7 @@ impl Config {
         ];
         Ok(Self {
             work_folder,
-            version_3b,
+            version,
             offline,
             http_ipv4,
             http_port,
@@ -355,7 +356,7 @@ impl Config {
 
         Self {
             work_folder: ".config/rs_amadeusd".to_string(),
-            version_3b: VERSION,
+            version: VERSION,
             offline: false,
             http_ipv4: Ipv4Addr::new(0, 0, 0, 0),
             http_port: 80,

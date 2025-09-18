@@ -2,7 +2,7 @@ use crate::config::Config;
 use crate::node::anr;
 use crate::node::protocol::{Ping, Pong};
 use crate::utils::misc::get_unix_millis_now;
-use crate::{Context, consensus};
+use crate::{Context, Ver, consensus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -90,7 +90,7 @@ impl crate::utils::misc::Typename for Error {
 pub struct Peer {
     pub ip: Ipv4Addr,
     pub pk: Option<Vec<u8>>,
-    pub version: Option<String>,
+    pub version: Option<Ver>,
     pub latency: Option<u64>,
     pub last_msg: u64,
     pub last_ping: Option<u64>,
@@ -866,13 +866,13 @@ impl NodePeers {
     }
 
     /// Update peer with version and public key information from ANR
-    pub async fn update_peer_from_anr(&self, ip: Ipv4Addr, pk: &[u8], version: &str, status: Option<HandshakeStatus>) {
+    pub async fn update_peer_from_anr(&self, ip: Ipv4Addr, pk: &[u8], version: &Ver, status: Option<HandshakeStatus>) {
         let current_time = get_unix_millis_now();
         let updated = self
             .peers
             .update(&ip, |_key, peer| {
                 peer.pk = Some(pk.to_vec());
-                peer.version = Some(version.to_string());
+                peer.version = Some(*version);
                 peer.last_seen = current_time;
                 if let Some(status) = &status {
                     peer.handshake_status = status.clone();
@@ -886,7 +886,7 @@ impl NodePeers {
             let peer = Peer {
                 ip,
                 pk: Some(pk.to_vec()),
-                version: Some(version.to_string()),
+                version: Some(*version),
                 latency: None,
                 last_msg: current_time,
                 last_ping: None,
@@ -935,7 +935,7 @@ mod tests {
         let peer = Peer {
             ip,
             pk: Some(vec![1, 2, 3]),
-            version: Some("1.0.0".to_string()),
+            version: Some(Ver::new(1, 0, 0)),
             latency: Some(100),
             last_msg: ts_m,
             last_ping: Some(ts_m),

@@ -1063,6 +1063,78 @@ pub fn page(
             }}
         }}
 
+        /* Orbital Loader Styles */
+        .orbital-loader {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-left: 12px;
+        }}
+
+        .orbital-container {{
+            position: relative;
+            width: 24px;
+            height: 24px;
+        }}
+
+        .orbital-ring {{
+            position: absolute;
+            border: 2px solid transparent;
+            border-radius: 50%;
+            border-top-color: hsl(var(--foreground));
+        }}
+
+        .orbital-ring-1 {{
+            width: 24px;
+            height: 24px;
+            top: 0;
+            left: 0;
+            animation: orbital-spin-1 1s linear infinite;
+        }}
+
+        .orbital-ring-2 {{
+            width: 16px;
+            height: 16px;
+            top: 4px;
+            left: 4px;
+            animation: orbital-spin-2 1.5s linear infinite reverse;
+        }}
+
+        .orbital-ring-3 {{
+            width: 8px;
+            height: 8px;
+            top: 8px;
+            left: 8px;
+            animation: orbital-spin-3 0.8s linear infinite;
+        }}
+
+        @keyframes orbital-spin-1 {{
+            from {{
+                transform: rotate(0deg);
+            }}
+            to {{
+                transform: rotate(360deg);
+            }}
+        }}
+
+        @keyframes orbital-spin-2 {{
+            from {{
+                transform: rotate(0deg);
+            }}
+            to {{
+                transform: rotate(-360deg);
+            }}
+        }}
+
+        @keyframes orbital-spin-3 {{
+            from {{
+                transform: rotate(0deg);
+            }}
+            to {{
+                transform: rotate(360deg);
+            }}
+        }}
+
         /* Status styling matching @design reference */
         .status-list {{
             display: flex;
@@ -1183,6 +1255,13 @@ pub fn page(
                 <div class="copy-tooltip">Click to copy</div>
             </div>
             <div class="version-text font-mono">v{}</div>
+            <div class="orbital-loader" id="node-status-loader" style="display: none;">
+                <div class="orbital-container">
+                    <div class="orbital-ring orbital-ring-1"></div>
+                    <div class="orbital-ring orbital-ring-2"></div>
+                    <div class="orbital-ring orbital-ring-3"></div>
+                </div>
+            </div>
         </div>
         <div class="header-right">
             <div class="search-container">
@@ -1402,7 +1481,7 @@ pub fn page(
                             <line x1="6" x2="6.01" y1="6" y2="6"/>
                             <line x1="6" x2="6.01" y1="18" y2="18"/>
                         </svg>
-                        <div class="resource-text">Loading...</div>
+                        <div class="resource-text">0 GB available (0 B used)</div>
                     </div>
                 </div>
                 
@@ -1788,17 +1867,23 @@ pub fn page(
                     fetch('/api/metrics'),
                     fetch('/api/peers')
                 ]);
-                
+
                 if (metricsRes.ok && peersRes.ok) {{
                     const [metrics, peers] = await Promise.all([
                         metricsRes.json(),
                         peersRes.json()
                     ]);
-                    
+
                     updateMetricsDisplay(metrics, peers);
+                }} else {{
+                    // API requests failed - show offline state
+                    console.warn('API requests failed - showing offline state');
+                    updateMetricsDisplay(null, {{}});
                 }}
             }} catch (error) {{
                 console.warn('Failed to refresh dashboard data:', error);
+                // Network error or other failure - show offline state
+                updateMetricsDisplay(null, {{}});
             }} finally {{
                 isRefreshing = false;
             }}
@@ -1806,7 +1891,30 @@ pub fn page(
         
         function updateMetricsDisplay(metrics, peers) {{
             // Update all metric cards
-            const peerCount = Object.keys(peers).length;
+            const peerCount = Object.keys(peers || {{}}).length;
+
+            // Show/hide orbital loader based on node status
+            const loader = document.getElementById('node-status-loader');
+            if (loader) {{
+                // Show loader if node appears to be offline (no metrics or very low activity)
+                const isOffline = !metrics || (!metrics.uptime && !peerCount);
+                loader.style.display = isOffline ? 'flex' : 'none';
+            }}
+
+            // If metrics is null (offline), set default offline values
+            if (!metrics) {{
+                metrics = {{
+                    block_height: 0,
+                    temporal_height: 0,
+                    uptime_formatted: '0d 0h 0m',
+                    tasks: 0,
+                    errors: {{}},
+                    udpps: null,
+                    udp: {{}},
+                    incoming_protos: {{}},
+                    outgoing_protos: {{}}
+                }};
+            }}
             
             // Update block height using specific selector
             const blockHeightElement = document.querySelector('.block-value-large');
@@ -1896,58 +2004,61 @@ pub fn page(
             }}
 
             // Update network I/O using udpps values directly from metrics
-            if (metrics.udpps) {{
-                // Use the pre-calculated per-second values from udpps
-                const inBytesStr = formatBytesPerSec(metrics.udpps.incoming_bytes || 0);
-                const outBytesStr = formatBytesPerSec(metrics.udpps.outgoing_bytes || 0);
-                const inPpsStr = formatPacketsPerSec(metrics.udpps.incoming_packets || 0);
-                const outPpsStr = formatPacketsPerSec(metrics.udpps.outgoing_packets || 0);
-                
-                const networkValues = document.querySelectorAll('.network-value');
-                if (networkValues.length >= 4) {{
+            const networkValues = document.querySelectorAll('.network-value');
+            if (networkValues.length >= 4) {{
+                if (metrics.udpps) {{
+                    // Use the pre-calculated per-second values from udpps
+                    const inBytesStr = formatBytesPerSec(metrics.udpps.incoming_bytes || 0);
+                    const outBytesStr = formatBytesPerSec(metrics.udpps.outgoing_bytes || 0);
+                    const inPpsStr = formatPacketsPerSec(metrics.udpps.incoming_packets || 0);
+                    const outPpsStr = formatPacketsPerSec(metrics.udpps.outgoing_packets || 0);
+
                     networkValues[0].textContent = inBytesStr;
                     networkValues[1].textContent = inPpsStr;
                     networkValues[2].textContent = outBytesStr;
                     networkValues[3].textContent = outPpsStr;
-                }}
-            }} else if (metrics.uptime && metrics.uptime > 0) {{
-                // Fallback to calculating from totals if udpps not available
-                const uptime = metrics.uptime;
-                const inBytesPerSec = (metrics.udp?.incoming_bytes || 0) / uptime;
-                const outBytesPerSec = (metrics.udp?.outgoing_bytes || 0) / uptime;
-                const inPps = (metrics.udp?.incoming_packets || 0) / uptime;
-                const outPps = (metrics.udp?.outgoing_packets || 0) / uptime;
-                
-                const networkValues = document.querySelectorAll('.network-value');
-                if (networkValues.length >= 4) {{
+                }} else if (metrics.uptime && metrics.uptime > 0) {{
+                    // Fallback to calculating from totals if udpps not available
+                    const uptime = metrics.uptime;
+                    const inBytesPerSec = (metrics.udp?.incoming_bytes || 0) / uptime;
+                    const outBytesPerSec = (metrics.udp?.outgoing_bytes || 0) / uptime;
+                    const inPps = (metrics.udp?.incoming_packets || 0) / uptime;
+                    const outPps = (metrics.udp?.outgoing_packets || 0) / uptime;
+
                     networkValues[0].textContent = formatBytesPerSec(inBytesPerSec);
                     networkValues[1].textContent = formatPacketsPerSec(inPps);
                     networkValues[2].textContent = formatBytesPerSec(outBytesPerSec);
                     networkValues[3].textContent = formatPacketsPerSec(outPps);
+                }} else {{
+                    // Node is offline - show zero values
+                    networkValues[0].textContent = '0 B/s';    // DATA IN
+                    networkValues[1].textContent = '0 pps';    // PKT IN
+                    networkValues[2].textContent = '0 B/s';    // DATA OUT
+                    networkValues[3].textContent = '0 pps';    // PKT OUT
                 }}
             }}
             
             // Update system resources (CPU and memory)
-            if (metrics.cpu_usage !== undefined && metrics.memory_usage !== undefined) {{
-                const resourceValues = document.querySelectorAll('.resource-value');
-                const progressFills = document.querySelectorAll('.progress-fill');
-                
-                if (resourceValues.length >= 2 && progressFills.length >= 2) {{
+            const resourceValues = document.querySelectorAll('.resource-value');
+            const progressFills = document.querySelectorAll('.progress-fill');
+            const resourceTexts = document.querySelectorAll('.resource-text');
+
+            if (resourceValues.length >= 2 && progressFills.length >= 2) {{
+                if (metrics.cpu_usage !== undefined && metrics.memory_usage !== undefined) {{
                     // CPU usage
                     const coresAvailable = metrics.cores_available || 1;
                     const cpuUsage = Math.round(metrics.cpu_usage) / coresAvailable;
                     resourceValues[0].textContent = `${{cpuUsage}}%`;
                     progressFills[0].style.width = `${{Math.min(100, Math.max(0, cpuUsage))}}%`;
-                    
+
                     // Memory usage - use flexible formatting
                     const memoryUsedFormatted = formatMemorySize(metrics.memory_usage || 0);
                     const totalMemoryGB = metrics.total_memory ? (metrics.total_memory / (1024 * 1024 * 1024)).toFixed(1) : '16.0';
                     const memoryPercent = metrics.total_memory ? Math.round((metrics.memory_usage * 100) / metrics.total_memory) : 0;
                     resourceValues[1].textContent = `${{memoryPercent}}%`;
                     progressFills[1].style.width = `${{Math.min(100, Math.max(0, memoryPercent))}}%`;
-                    
+
                     // Update resource info texts
-                    const resourceTexts = document.querySelectorAll('.resource-text');
                     if (resourceTexts.length >= 2) {{
                         // Update CPU info text with cores available
                         if (metrics.cores_available !== undefined) {{
@@ -1955,6 +2066,17 @@ pub fn page(
                         }}
                         // Update memory info text with flexible units and total memory
                         resourceTexts[1].textContent = `${{totalMemoryGB}} GB available (${{memoryUsedFormatted}} used)`;
+                    }}
+                }} else {{
+                    // Node is offline - show default offline values
+                    resourceValues[0].textContent = '0%';
+                    progressFills[0].style.width = '0%';
+                    resourceValues[1].textContent = '0%';
+                    progressFills[1].style.width = '0%';
+
+                    if (resourceTexts.length >= 2) {{
+                        resourceTexts[0].textContent = '0 cores available';
+                        resourceTexts[1].textContent = '0 GB available (0 B used)';
                     }}
                 }}
             }}

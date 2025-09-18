@@ -8,3 +8,4 @@ pub mod rocksdb;
 pub mod safe_etf;
 pub mod system_metrics;
 pub mod vanilla_ser;
+pub mod version;

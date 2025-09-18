@@ -38,7 +38,7 @@ struct ReassemblyKey {
 struct ReassemblyBuffer {
     shards: HashMap<u16, Vec<u8>>,
     original_size: u32,
-    version: (u8, u8, u8),
+    version: crate::Ver,
     created_at: u64,
 }
 
@@ -63,11 +63,9 @@ impl PacketHandler {
         }
 
         // Check version requirement (minimum 1.1.7)
-        if msg.version.0 < 1
-            || (msg.version.0 == 1 && msg.version.1 < 1)
-            || (msg.version.0 == 1 && msg.version.1 == 1 && msg.version.2 < 7)
-        {
-            return Err(PacketError::VersionTooOld(format!("{}.{}.{}", msg.version.0, msg.version.1, msg.version.2)));
+        let min_version = crate::Ver::new(1, 1, 7);
+        if msg.version < min_version {
+            return Err(PacketError::VersionTooOld(msg.version.to_string()));
         }
 
         // Check if we have ANR for this peer

@@ -1,4 +1,5 @@
 use crate::utils::misc::get_unix_nanos_now;
+use crate::Ver;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use sha2::{Digest, Sha256};
@@ -59,7 +60,7 @@ impl crate::utils::misc::Typename for Error {
 /// 71+     N       Encrypted Payload   IV(12) + Tag(16) + Ciphertext
 #[derive(Debug, Clone)]
 pub struct EncryptedMessage {
-    pub version: (u8, u8, u8),
+    pub version: Ver,
     pub pk: [u8; 48],
     pub shard_index: u16,
     pub shard_total: u16,
@@ -83,12 +84,12 @@ impl TryFrom<&[u8]> for EncryptedMessage {
         }
 
         // Parse version
-        let version = (bin[3], bin[4], bin[5]);
-        let version_str = format!("{}.{}.{}", version.0, version.1, version.2);
+        let version = Ver::new(bin[3], bin[4], bin[5]);
 
         // Enforce minimum version 1.1.7
-        if version.0 < 1 || (version.0 == 1 && version.1 < 1) || (version.0 == 1 && version.1 == 1 && version.2 < 7) {
-            return Err(Error::VersionTooOld(version_str));
+        let min_version = Ver::new(1, 1, 7);
+        if version < min_version {
+            return Err(Error::VersionTooOld(version.to_string()));
         }
 
         // Reserved byte must be 0
@@ -127,7 +128,7 @@ impl TryFrom<&[u8]> for EncryptedMessage {
 
 impl EncryptedMessage {
     /// Encrypt a message using shared secret
-    pub fn encrypt(pk: &[u8], shared_secret: &[u8], payload: &[u8], version: (u8, u8, u8)) -> Result<Vec<Self>, Error> {
+    pub fn encrypt(pk: &[u8], shared_secret: &[u8], payload: &[u8], version: Ver) -> Result<Vec<Self>, Error> {
         let ts_nano = get_unix_nanos_now() as u64;
 
         // Generate random IV (same as Elixir: :crypto.strong_rand_bytes(12))
@@ -224,9 +225,7 @@ impl EncryptedMessage {
         out.extend_from_slice(b"AMA");
 
         // Version
-        out.push(self.version.0);
-        out.push(self.version.1);
-        out.push(self.version.2);
+        out.extend_from_slice(&self.version.as_bytes());
 
         // Reserved
         out.push(0);

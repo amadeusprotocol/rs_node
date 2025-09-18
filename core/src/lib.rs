@@ -15,3 +15,4 @@ pub use config::Config;
 pub use context::{Context, PeerInfo};
 pub use metrics::{MetricsSnapshot, UdpStats};
 pub use utils::system_metrics::{SystemStats, get_system_stats};
+pub use utils::version::Ver;

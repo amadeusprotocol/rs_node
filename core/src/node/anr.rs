@@ -2,6 +2,7 @@ use crate::config::{Config, SeedANR};
 use crate::utils::blake3;
 use crate::utils::bls12_381::{sign, verify};
 use crate::utils::misc::{TermExt, TermMap, get_unix_secs_now};
+use crate::utils::version::Ver;
 use eetf::{Atom, Binary, FixInteger, Term};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -52,7 +53,7 @@ pub struct Anr {
     pub port: u16,
     pub signature: Vec<u8>,
     pub ts: u32,
-    pub version: String,
+    pub version: Ver,
     pub anr_name: Option<String>,
     pub anr_desc: Option<String>,
     // runtime fields
@@ -116,7 +117,7 @@ impl Anr {
         )
     }
 
-    pub fn build(sk: &[u8], pk: &[u8], pop: &[u8], ip4: Ipv4Addr, version: String) -> Result<Self, Error> {
+    pub fn build(sk: &[u8], pk: &[u8], pop: &[u8], ip4: Ipv4Addr, version: Ver) -> Result<Self, Error> {
         Self::build_with_name_desc(sk, pk, pop, ip4, version, None, None)
     }
 
@@ -125,7 +126,7 @@ impl Anr {
         pk: &[u8],
         pop: &[u8],
         ip4: Ipv4Addr,
-        version: String,
+        version: Ver,
         anr_name: Option<String>,
         anr_desc: Option<String>,
     ) -> Result<Self, Error> {
@@ -188,7 +189,8 @@ impl Anr {
             .ok_or(Error::BadEtf("ts"))?;
 
         let version_bytes = map.get_binary::<Vec<u8>>("version").ok_or(Error::BadEtf("version"))?;
-        let version = String::from_utf8_lossy(&version_bytes).to_string();
+        let version_str = String::from_utf8_lossy(&version_bytes);
+        let version = Ver::try_from(version_str.as_ref()).map_err(|_| Error::BadEtf("invalid_version_format"))?;
 
         // parse optional anr_name and anr_desc fields (they may be nil or missing)
         let anr_name = map
@@ -327,7 +329,7 @@ impl Anr {
         map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
         map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
         map.insert(Term::Atom(Atom::from("ts")), Term::FixInteger(FixInteger::from(self.ts as i32)));
-        map.insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.as_bytes().to_vec())));
+        map.insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.to_string().as_bytes().to_vec())));
 
         map.into_term()
     }
@@ -662,7 +664,7 @@ mod tests {
 
         let pop = vec![3; 96];
         let ip4 = Ipv4Addr::new(127, 0, 0, 1);
-        let version = "1.0.0".to_string();
+        let version = Ver::new(1, 0, 0);
 
         // manually create ANR without signature verification for testing
         let pk_b3 = blake3::hash(&pk);
@@ -737,7 +739,7 @@ mod tests {
         pk[4..12].copy_from_slice(&time_bytes[..8]);
         let pop = vec![2; 96];
         let ip4 = Ipv4Addr::new(192, 168, 1, 1);
-        let version = "1.0.0".to_string();
+        let version = Ver::new(1, 0, 0);
 
         // compute Blake3 fields for testing
         let pk_b3 = blake3::hash(&pk);
@@ -801,7 +803,7 @@ mod tests {
             port: 36969,
             signature: vec![0; 96],
             ts: 2000,
-            version: "2.0.0".to_string(),
+            version: Ver::new(2, 0, 0),
             anr_name: None,
             anr_desc: None,
             handshaked: false,
@@ -816,7 +818,7 @@ mod tests {
 
         let retrieved = registry.get(&pk).await.unwrap();
         assert_eq!(retrieved.ts, 2000);
-        assert_eq!(retrieved.version, "2.0.0");
+        assert_eq!(retrieved.version, Ver::new(2, 0, 0));
         assert!(retrieved.handshaked); // should be preserved
 
         // insert newer anr with different ip (should reset handshake)
@@ -827,7 +829,7 @@ mod tests {
             port: 36969,
             signature: vec![0; 96],
             ts: 3000,
-            version: "3.0.0".to_string(),
+            version: Ver::new(3, 0, 0),
             anr_name: None,
             anr_desc: None,
             handshaked: true,
@@ -875,7 +877,7 @@ mod tests {
                 port: 36969,
                 signature: vec![i as u8; 96],
                 ts: 1000 + i as u32,
-                version: format!("1.0.{}", i),
+                version: Ver::new(1, 0, i as u8),
                 anr_name: None,
                 anr_desc: None,
                 handshaked: false, // Explicitly not handshaked
@@ -929,7 +931,7 @@ mod tests {
             port: 36969,
             signature: vec![7, 8, 9],
             ts: 1234567890,
-            version: "1.0.0".to_string(),
+            version: Ver::new(1, 0, 0),
             anr_name: Some("test".to_string()),
             anr_desc: Some("desc".to_string()),
             handshaked: false,

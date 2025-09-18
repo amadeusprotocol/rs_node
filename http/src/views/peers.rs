@@ -253,7 +253,7 @@ pub fn rows(peers: &HashMap<String, PeerInfo>) -> String {
                <td>{}</td>\
              </tr>",
             esc(addr),
-            esc(info.version.as_deref().unwrap_or("N/A")),
+            esc(&info.version.map(|v| v.to_string()).unwrap_or_else(|| "N/A".to_string())),
             status_html,
             esc(&info.last_msg),
             info.temporal_height,

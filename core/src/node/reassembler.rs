@@ -2,6 +2,8 @@ use super::msg_v2::MessageV2;
 use crate::consensus::DST_NODE;
 use crate::node::msg_v2;
 use crate::utils::misc::get_unix_nanos_now;
+#[cfg(test)]
+use crate::Ver;
 use crate::utils::reed_solomon;
 use crate::utils::reed_solomon::ReedSolomonResource;
 use crate::utils::{blake3, bls12_381};
@@ -144,7 +146,7 @@ impl ReedSolomonReassembler {
         for (shard_index, shard_payload) in limited_shards {
             shards.push(
                 MessageV2 {
-                    version: version.to_string(),
+                    version,
                     pk,
                     signature: None, // Unsigned
                     shard_index: shard_index as u16,
@@ -211,7 +213,7 @@ impl ReedSolomonReassembler {
         for (shard_index, shard_payload) in limited_shards {
             shards.push(
                 MessageV2 {
-                    version: version.to_string(),
+                    version,
                     pk,
                     signature: Some(signature),
                     shard_index: shard_index as u16,
@@ -332,7 +334,7 @@ mod tests {
     }
 
     // test version of build_message_v2 that uses consistent test keys
-    fn test_build_message_v2(payload: Vec<u8>, version: &str) -> Result<Vec<MessageV2>, Error> {
+    fn test_build_message_v2(payload: Vec<u8>, version: Ver) -> Result<Vec<MessageV2>, Error> {
         // compress the payload first, just like in build_shards
         let compressed = compress_with_zlib(&payload)?;
 
@@ -351,7 +353,7 @@ mod tests {
         // reference: if byte_size(msg_compressed) < 1300, single shard
         if compressed.len() < 1300 {
             return Ok(vec![MessageV2 {
-                version: version.to_string(),
+                version,
                 pk,
                 signature: Some(signature),
                 shard_index: 0,
@@ -376,7 +378,7 @@ mod tests {
         let mut messages = Vec::new();
         for (shard_index, shard_payload) in limited_shards {
             messages.push(MessageV2 {
-                version: version.to_string(),
+                version,
                 pk,
                 signature: Some(signature),
                 shard_index: shard_index as u16,
@@ -394,7 +396,7 @@ mod tests {
     async fn test_message_v2_roundtrip_small() {
         // test small message (single shard)
         let payload = b"hello world".to_vec();
-        let version = "1.1.7";
+        let version = Ver::new(1, 1, 7);
 
         let messages = test_build_message_v2(payload.clone(), version).unwrap();
         assert_eq!(messages.len(), 1);
@@ -424,7 +426,7 @@ mod tests {
             let hash = hasher.finish();
             payload.extend_from_slice(&hash.to_le_bytes());
         }
-        let version = "1.1.7";
+        let version = Ver::new(1, 1, 7);
 
         let messages = test_build_message_v2(payload.clone(), version).unwrap();
         // If it's still a single shard, that's ok, just test the roundtrip
@@ -475,7 +477,7 @@ mod tests {
             let hash = hasher.finish();
             payload.extend_from_slice(&hash.to_le_bytes());
         }
-        let version = "1.1.7";
+        let version = Ver::new(1, 1, 7);
 
         let messages = test_build_message_v2(payload.clone(), version).unwrap();
 

@@ -1,3 +1,5 @@
+use crate::Ver;
+
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
 pub enum Error {
     #[error("message v2 is only {0} bytes")]
@@ -34,6 +36,8 @@ impl crate::utils::misc::Typename for Error {
     }
 }
 
+const EARLIEST_SUPPORTED_VERSION: Ver = Ver::new(1, 1, 7);
+
 /// Message Format (Signed or Unsigned)
 ///
 /// Signed format (flags = 0x01):
@@ -63,7 +67,7 @@ impl crate::utils::misc::Typename for Error {
 /// 167+    N       Payload/Shard       Message data or Reed-Solomon shard
 #[derive(Debug, Clone)]
 pub struct MessageV2 {
-    pub version: String,
+    pub version: Ver,
     pub pk: [u8; 48],
     pub signature: Option<[u8; 96]>, // Optional for unsigned messages (v1.1.7+ bootstrap)
     pub shard_index: u16,
@@ -87,7 +91,7 @@ impl TryInto<Vec<u8>> for MessageV2 {
             return Err(Error::BadPkLen(self.pk.len()));
         }
 
-        let ver = Self::ver_to_bytes(&self.version)?;
+        let ver = self.version.as_bytes();
 
         // Calculate capacity based on whether we have a signature
         let capacity = if self.signature.is_some() {
@@ -151,13 +155,9 @@ impl MessageV2 {
         }
 
         let version_bytes = &bin[3..6];
-        let version = format!("{}.{}.{}", version_bytes[0], version_bytes[1], version_bytes[2]);
-
-        // Enforce minimum version 1.1.7 for v1.1.7+ compatibility
-        let major = version_bytes[0];
-        let minor = version_bytes[1];
-        let patch = version_bytes[2];
-        if major < 1 || (major == 1 && minor < 1) || (major == 1 && minor == 1 && patch < 7) {
+        let version = Ver::new(version_bytes[0], version_bytes[1], version_bytes[2]);
+        
+        if version < EARLIEST_SUPPORTED_VERSION {
             return Err(Error::VersionNotSupported);
         }
 
@@ -220,19 +220,4 @@ impl MessageV2 {
         }
     }
 
-    fn ver_to_bytes(v: &str) -> Result<[u8; 3], Error> {
-        let parts: Vec<&str> = v.split('.').collect();
-        if parts.len() != 3 {
-            return Err(Error::VersionFormat);
-        }
-        let mut out = [0u8; 3];
-        for (i, p) in parts.iter().enumerate() {
-            let n: i64 = p.parse().map_err(|_| Error::VersionFormat)?;
-            if !(0..=255).contains(&n) {
-                return Err(Error::VersionOutOfRange);
-            }
-            out[i] = n as u8;
-        }
-        Ok(out)
-    }
 }

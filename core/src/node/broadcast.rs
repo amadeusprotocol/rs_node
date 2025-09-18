@@ -101,7 +101,7 @@ impl BroadcastManager {
             self.anr_manager.get_shared_secret(&anr.pk).await.map_err(|e| BroadcastError::Encryption(e.to_string()))?;
 
         // Get version from config
-        let version = self.config.get_ver_3b();
+        let version = self.config.version;
 
         // Encrypt the message
         let messages = EncryptedMessage::encrypt(&self.config.get_pk(), &shared_secret, &compressed, version)

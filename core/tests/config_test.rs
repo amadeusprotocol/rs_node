@@ -27,7 +27,7 @@ async fn test_config_has_all_essential_elixir_parts() {
     assert_eq!(config.work_folder, tmp.to_str());
 
     // verify version info
-    assert_eq!(config.get_ver(), env!("CRATE_VERSION"));
+    assert_eq!(config.get_ver().to_string(), env!("CRATE_VERSION"));
 
     // verify network configuration
     assert_eq!(config.http_port, 8080);
@@ -46,7 +46,7 @@ async fn test_config_has_all_essential_elixir_parts() {
     let seed_anr = &config.seed_anrs[0];
     assert_eq!(seed_anr.ip4, "72.9.144.110");
     assert_eq!(seed_anr.port, 36969);
-    assert_eq!(seed_anr.version, "1.1.7");
+    assert_eq!(seed_anr.version, ama_core::Ver::new(1, 1, 7));
     assert_eq!(seed_anr.ts, 1757522697);
     assert_eq!(seed_anr.signature.len(), 96); // v1.1.7 has BLS signatures
     assert_eq!(seed_anr.pk.len(), 48);
@@ -55,7 +55,7 @@ async fn test_config_has_all_essential_elixir_parts() {
     let seed_anr2 = &config.seed_anrs[1];
     assert_eq!(seed_anr2.ip4, "167.235.169.185");
     assert_eq!(seed_anr2.port, 36969);
-    assert_eq!(seed_anr2.version, "1.1.7");
+    assert_eq!(seed_anr2.version, ama_core::Ver::new(1, 1, 7));
     assert_eq!(seed_anr2.ts, 1757525152);
     assert_eq!(seed_anr2.signature.len(), 96); // v1.1.7 has BLS signatures
     assert_eq!(seed_anr2.pk.len(), 48);
@@ -94,7 +94,7 @@ async fn test_config_from_sk() {
     assert_eq!(config.trainer_pk.len(), 48);
     assert!(!config.trainer_pk_b58.is_empty());
     assert_eq!(config.trainer_pop.len(), 96);
-    assert_eq!(config.get_ver(), "1.1.8");
+    assert_eq!(config.get_ver().to_string(), "1.1.8");
     assert_eq!(config.udp_port, 36969);
     // verify that seed nodes list includes the essential nodes
     assert!(config.seed_ips.contains(&"104.218.45.23".parse().unwrap()));
@@ -127,7 +127,7 @@ async fn test_config_version_methods() {
     let config = Config::from_fs(Some(tmp.to_str()), None).await.unwrap();
 
     // Test that get_ver() returns a string and get_ver_3b() returns consistent tuple
-    let version_str = config.get_ver();
+    let version_str = config.get_ver().to_string();
     let version_3b = config.get_ver_3b();
 
     // Parse the string version and compare with tuple
@@ -142,6 +142,6 @@ async fn test_config_version_methods() {
     assert_eq!(version_3b.1, expected_minor);
     assert_eq!(version_3b.2, expected_patch);
 
-    // Verify it matches the version_3b field directly
-    assert_eq!(version_3b, (config.version_3b[0], config.version_3b[1], config.version_3b[2]));
+    // Verify it matches the version field directly
+    assert_eq!(version_3b, (config.version.major(), config.version.minor(), config.version.patch()));
 }

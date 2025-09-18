@@ -1,4 +1,6 @@
 use crate::Context;
+#[cfg(test)]
+use crate::Ver;
 use crate::bic::sol;
 use crate::bic::sol::Solution;
 use crate::consensus::consensus;
@@ -8,10 +10,10 @@ use crate::node::anr::Anr;
 use crate::node::peers::HandshakeStatus;
 use crate::node::{ReedSolomonReassembler, anr, msg_v2, peers, reassembler};
 use crate::utils::bls12_381;
-use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now, get_unix_secs_now, pk_challenge_into_bin};
+use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now};
 use crate::utils::safe_etf::encode_safe;
 use eetf::convert::TryAsRef;
-use eetf::{Atom, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, FixInteger, List, Map, Term};
+use eetf::{Atom, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, List, Map, Term};
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use std::collections::HashMap;
@@ -19,7 +21,7 @@ use std::fmt::Debug;
 use std::io::Error as IoError;
 use std::io::prelude::*;
 use std::net::{Ipv4Addr, SocketAddr};
-use tracing::{info, instrument, warn};
+use tracing::{instrument, warn};
 
 // Helper function for zlib compression to match Elixir reference
 fn compress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
@@ -60,7 +62,7 @@ pub trait Protocol: Typename + Debug + Send + Sync {
         let shared_secret = crate::utils::bls12_381::get_shared_secret(&dst_anr.pk, &ctx.config.get_sk())?;
 
         // Get version from config
-        let version = ctx.config.get_ver_3b();
+        let version = ctx.config.version;
 
         // Encrypt message using v1.1.7+ protocol
         let messages = EncryptedMessage::encrypt(&ctx.config.get_pk(), &shared_secret, &compressed, version)
@@ -106,7 +108,7 @@ pub trait Protocol: Typename + Debug + Send + Sync {
         let shared_secret = crate::utils::bls12_381::get_shared_secret(&dst_anr.pk, &ctx.config.get_sk())?;
 
         // Get version from config
-        let version = ctx.config.get_ver_3b();
+        let version = ctx.config.version;
 
         // Encrypt message using v1.1.7+ protocol
         let messages = EncryptedMessage::encrypt(&ctx.config.get_pk(), &shared_secret, &compressed, version)
@@ -244,11 +246,7 @@ pub enum Instruction {
     SpecialBusinessReply { business: Vec<u8> },
     SolicitEntry { hash: Vec<u8> },
     SolicitEntry2,
-    SendWhat { challenge: i32, dst: Ipv4Addr },
     SendNewPhoneWhoDisReply { dst: Ipv4Addr },
-    ReplyWhatChallenge { anr: anr::Anr, challenge: u32 },
-    ReceivedWhatResponse { responder_anr: anr::Anr, challenge: u32, their_signature: Vec<u8> },
-    HandshakeComplete { anr: anr::Anr },
 }
 
 impl Typename for Instruction {
@@ -277,7 +275,6 @@ pub fn parse_etf_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
         PeersV2::TYPENAME => Box::new(PeersV2::from_etf_map_validated(map)?),
         NewPhoneWhoDis::TYPENAME => Box::new(NewPhoneWhoDis::from_etf_map_validated(map)?),
         NewPhoneWhoDisReply::TYPENAME => Box::new(NewPhoneWhoDisReply::from_etf_map_validated(map)?),
-        What::TYPENAME => Box::new(What::from_etf_map_validated(map)?),
         SpecialBusiness::TYPENAME => Box::new(SpecialBusiness::from_etf_map_validated(map)?),
         SpecialBusinessReply::TYPENAME => Box::new(SpecialBusinessReply::from_etf_map_validated(map)?),
         _ => {
@@ -369,14 +366,6 @@ pub struct NewPhoneWhoDis {
 #[derive(Debug)]
 pub struct NewPhoneWhoDisReply {
     pub anr: Anr,
-}
-
-#[derive(Debug)]
-pub struct What {
-    pub anr: Anr,
-    // must fit into FixInteger (for [:safe])
-    pub challenge: i32,
-    pub signature: Vec<u8>,
 }
 
 impl Typename for Ping {
@@ -705,74 +694,6 @@ impl NewPhoneWhoDisReply {
     }
 }
 
-impl Typename for What {
-    fn typename(&self) -> &'static str {
-        Self::TYPENAME
-    }
-}
-
-#[async_trait::async_trait]
-impl Protocol for What {
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let anr_map = map.get_term_map("anr").ok_or(Error::BadEtf("anr"))?;
-        let challenge = map.get_integer("challenge").ok_or(Error::BadEtf("challenge"))?;
-        let signature: Vec<u8> = map.get_binary("signature").ok_or(Error::BadEtf("signature"))?;
-        let anr = Anr::from_etf_term_map(anr_map)?;
-
-        if !anr.verify_signature() {
-            return Err(Error::BadEtf("anr_signature_invalid"));
-        }
-
-        if challenge == 0 {
-            return Err(Error::BadEtf("challenge_zero"));
-        }
-
-        Ok(Self { anr, challenge, signature })
-    }
-
-    fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
-        let mut map = TermMap::default();
-        map.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
-        map.insert(Term::Atom(Atom::from("anr")), self.anr.to_etf_term());
-        map.insert(Term::Atom(Atom::from("challenge")), Term::FixInteger(FixInteger { value: self.challenge }));
-        map.insert(Term::Atom(Atom::from("signature")), Term::Binary(Binary::from(self.signature.clone())));
-        Ok(encode_safe(&map.into_term()))
-    }
-
-    #[instrument(skip(self, ctx), fields(src = %src), name = "What::handle")]
-    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
-        // SECURITY: ip address spoofing protection
-        if src != self.anr.ip4 {
-            warn!("what ip mismatched with anr {}", self.anr.ip4);
-            return Err(Error::BadEtf("anr_ip_mismatch"));
-        }
-
-        // SECURITY: replay attack protection
-        let now = get_unix_secs_now();
-        let ts = self.challenge as u32; // challenge is a hidden seconds since epoch
-        if ts < now.saturating_sub(6) {
-            return Ok(vec![Instruction::Noop { why: format!("challenge is {} seconds old", now - ts) }]);
-        }
-
-        // FIXME: add check for ts being too far in the future?
-
-        let data = pk_challenge_into_bin(&self.anr.pk, self.challenge);
-        bls12_381::verify(&self.anr.pk, &self.signature, &data, crate::consensus::DST_ANR_CHALLENGE)?;
-
-        ctx.node_anrs.insert(self.anr.clone()).await;
-        ctx.node_anrs.set_handshaked(&self.anr.pk).await;
-        ctx.update_peer_from_anr(src, &self.anr.pk, &self.anr.version, Some(HandshakeStatus::Completed)).await;
-
-        info!("completed handshake, pk {}", bs58::encode(&self.anr.pk).into_string());
-
-        Ok(vec![Instruction::Noop { why: "handshake completed".to_string() }])
-    }
-}
-
-impl What {
-    pub const TYPENAME: &'static str = "what?";
-}
-
 impl Typename for SpecialBusiness {
     fn typename(&self) -> &'static str {
         Self::TYPENAME
@@ -852,7 +773,6 @@ mod tests {
     use crate::config::Config;
     use crate::consensus::doms::entry::{EntryHeader, EntrySummary};
     use crate::utils::bls12_381::sign as bls_sign;
-    use crate::utils::misc::get_unix_secs_now;
 
     #[tokio::test]
     async fn test_ping_etf_roundtrip() {
@@ -913,7 +833,7 @@ mod tests {
         let pk = bls::get_public_key(&sk).expect("pk");
         let pop = bls_sign(&sk, &pk, crate::consensus::DST_POP).expect("pop");
         let ip = Ipv4Addr::new(127, 0, 0, 1);
-        let _my_anr = anr::Anr::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
+        let _my_anr = anr::Anr::build(&sk, &pk, &pop, ip, Ver::new(1, 0, 0)).expect("anr");
 
         // construct message
         let _challenge = get_unix_secs_now();
@@ -939,7 +859,7 @@ mod tests {
         let pk = bls::get_public_key(&sk).expect("pk");
         let pop = bls_sign(&sk, &pk, crate::consensus::DST_POP).expect("pop");
         let ip = Ipv4Addr::new(127, 0, 0, 1);
-        let _my_anr = anr::Anr::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
+        let _my_anr = anr::Anr::build(&sk, &pk, &pop, ip, Ver::new(1, 0, 0)).expect("anr");
         let _challenge = get_unix_secs_now();
         let _msg = NewPhoneWhoDis::new();
 
@@ -947,55 +867,6 @@ mod tests {
         let wrong_ip = Ipv4Addr::new(127, 0, 0, 2);
         let _src = SocketAddr::V4(SocketAddrV4::new(wrong_ip, 36969));
         // Protocol handle_inner now manages validation internally
-    }
-
-    #[tokio::test]
-    async fn test_what_roundtrip_and_handle() {
-        use crate::node::anr;
-        use crate::utils::{bls12_381 as bls, misc::get_unix_secs_now};
-        use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-
-        // responder ANR
-        let sk = bls::generate_sk();
-        let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls_sign(&sk, &pk, crate::consensus::DST_POP).expect("pop");
-        let ip = Ipv4Addr::new(127, 0, 0, 1);
-        let responder_anr = anr::Anr::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
-
-        // fresh challenge within 6s window
-        let challenge = get_unix_secs_now() as i32;
-        let data = pk_challenge_into_bin(&pk, challenge);
-        let sig = bls_sign(&sk, &data, crate::consensus::DST_ANR_CHALLENGE).expect("sig").to_vec();
-        let msg = What { anr: responder_anr.clone(), challenge, signature: sig };
-
-        let bin = msg.to_etf_bin().expect("serialize");
-        let parsed = parse_etf_bin(&bin).expect("deserialize");
-        assert_eq!(parsed.typename(), "what?");
-
-        let _src = SocketAddr::V4(SocketAddrV4::new(ip, 36969));
-        // Protocol handle_inner now manages state updates directly and returns Noop
-        // The previous test validations are now handled internally within the protocol
-    }
-
-    #[tokio::test]
-    async fn test_what_stale_challenge_noop() {
-        use crate::node::anr;
-        use crate::utils::bls12_381 as bls;
-        use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-
-        let sk = bls::generate_sk();
-        let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls_sign(&sk, &pk, crate::consensus::DST_POP).expect("pop");
-        let ip = Ipv4Addr::new(127, 0, 0, 1);
-        let responder_anr = anr::Anr::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
-
-        // challenge far in the past (>6s)
-        let challenge = get_unix_secs_now().saturating_sub(10);
-        let sig = vec![1u8; 96];
-        let _msg = What { anr: responder_anr, challenge: challenge as i32, signature: sig };
-
-        let _src = SocketAddr::V4(SocketAddrV4::new(ip, 36969));
-        // Protocol handle_inner now manages validation internally and returns Noop for stale challenges
     }
 
     fn create_dummy_entry_summary() -> EntrySummary {
@@ -1046,7 +917,7 @@ mod tests {
         let pk = bls::get_public_key(&sk).expect("pk");
         let pop = bls_sign(&sk, &pk, crate::consensus::DST_POP).expect("pop");
         let ip = Ipv4Addr::new(127, 0, 0, 1);
-        let responder_anr = anr::Anr::build(&sk, &pk, &pop, ip, "testver".to_string()).expect("anr");
+        let responder_anr = anr::Anr::build(&sk, &pk, &pop, ip, Ver::new(1, 0, 0)).expect("anr");
 
         // Test the simplified v1.1.7+ NewPhoneWhoDisReply format (just ANR)
         let msg = NewPhoneWhoDisReply { anr: responder_anr.clone() };
@@ -1080,7 +951,7 @@ mod tests {
 
         let config = Config {
             work_folder: "/tmp/test_protocol_send_to".to_string(),
-            version_3b: [1, 2, 3],
+            version: Ver::new(1, 2, 3),
             offline: false,
             http_ipv4: Ipv4Addr::new(127, 0, 0, 1),
             http_port: 3000,
@@ -1154,106 +1025,3 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod special_tests {
-    use super::*;
-
-    #[test]
-    fn special_test() {
-        let pk = vec![
-            169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244, 13,
-            106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138, 2, 252,
-            27, 222,
-        ];
-
-        assert_eq!(
-            pk_challenge_into_bin(&pk, 0),
-            vec![
-                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
-                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
-                2, 252, 27, 222, 48,
-            ]
-        );
-
-        assert_eq!(
-            pk_challenge_into_bin(&pk, 1),
-            vec![
-                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
-                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
-                2, 252, 27, 222, 49,
-            ]
-        );
-
-        assert_eq!(
-            pk_challenge_into_bin(&pk, 255),
-            vec![
-                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
-                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
-                2, 252, 27, 222, 50, 53, 53,
-            ]
-        );
-
-        assert_eq!(
-            pk_challenge_into_bin(&pk, 256),
-            vec![
-                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
-                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
-                2, 252, 27, 222, 50, 53, 54,
-            ]
-        );
-
-        assert_eq!(
-            pk_challenge_into_bin(&pk, 65535),
-            vec![
-                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
-                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
-                2, 252, 27, 222, 54, 53, 53, 51, 53,
-            ]
-        );
-
-        assert_eq!(
-            pk_challenge_into_bin(&pk, 65536),
-            vec![
-                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
-                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
-                2, 252, 27, 222, 54, 53, 53, 51, 54,
-            ]
-        );
-
-        assert_eq!(
-            pk_challenge_into_bin(&pk, 1640995200),
-            vec![
-                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
-                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
-                2, 252, 27, 222, 49, 54, 52, 48, 57, 57, 53, 50, 48, 48,
-            ]
-        );
-
-        assert_eq!(
-            pk_challenge_into_bin(&pk, 1693958400),
-            vec![
-                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
-                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
-                2, 252, 27, 222, 49, 54, 57, 51, 57, 53, 56, 52, 48, 48,
-            ]
-        );
-
-        assert_eq!(
-            pk_challenge_into_bin(&pk, 1735689600),
-            vec![
-                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
-                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
-                2, 252, 27, 222, 49, 55, 51, 53, 54, 56, 57, 54, 48, 48,
-            ]
-        );
-
-        assert_eq!(
-            pk_challenge_into_bin(&pk, 2147483647),
-            vec![
-                169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244,
-                13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138,
-                2, 252, 27, 222, 50, 49, 52, 55, 52, 56, 51, 54, 52, 55,
-            ]
-        );
-    }
-}

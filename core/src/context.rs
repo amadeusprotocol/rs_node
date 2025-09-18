@@ -1,14 +1,12 @@
-use crate::consensus::DST_ANR_CHALLENGE;
 use crate::node::anr::{Anr, NodeAnrs};
 use crate::node::peers::HandshakeStatus;
 use crate::node::protocol::*;
 use crate::node::protocol::{Instruction, NewPhoneWhoDis, NewPhoneWhoDisReply};
 use crate::node::{anr, peers};
 use crate::socket::UdpSocketExt;
-use crate::utils::bls12_381;
-use crate::utils::misc::{Typename, pk_challenge_into_bin};
+use crate::utils::misc::Typename;
 use crate::utils::misc::{format_duration, get_unix_millis_now};
-use crate::{SystemStats, config, consensus, get_system_stats, metrics, node, utils};
+use crate::{SystemStats, Ver, config, consensus, get_system_stats, metrics, node, utils};
 use flate2::read::ZlibDecoder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,8 +28,6 @@ fn decompress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
 pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Bls(#[from] bls12_381::Error),
     #[error(transparent)]
     Fabric(#[from] consensus::fabric::Error),
     #[error(transparent)]
@@ -69,7 +65,7 @@ pub struct PeerInfo {
     pub last_ts: u64,
     pub last_msg: String,
     pub handshake_status: HandshakeStatus,
-    pub version: Option<String>,
+    pub version: Option<Ver>,
     pub height: u64, // Keep for backward compatibility
     pub temporal_height: u64,
     pub rooted_height: u64,
@@ -417,7 +413,7 @@ impl Context {
     }
 
     /// Update peer information from ANR data
-    pub async fn update_peer_from_anr(&self, ip: Ipv4Addr, pk: &[u8], version: &str, status: Option<HandshakeStatus>) {
+    pub async fn update_peer_from_anr(&self, ip: Ipv4Addr, pk: &[u8], version: &Ver, status: Option<HandshakeStatus>) {
         self.node_peers.update_peer_from_anr(ip, pk, version, status).await
     }
 
@@ -445,10 +441,8 @@ impl Context {
                 }
 
                 // Check version requirement (minimum 1.1.7)
-                if encrypted_msg.version.0 < 1
-                    || (encrypted_msg.version.0 == 1 && encrypted_msg.version.1 < 1)
-                    || (encrypted_msg.version.0 == 1 && encrypted_msg.version.1 == 1 && encrypted_msg.version.2 < 7)
-                {
+                let min_version = Ver::new(1, 1, 7);
+                if encrypted_msg.version < min_version {
                     return None;
                 }
 
@@ -517,14 +511,6 @@ impl Context {
         match instruction {
             Instruction::Noop { why } => {
                 debug!("noop: {why}");
-            }
-
-            Instruction::SendWhat { challenge, dst } => {
-                let anr = Anr::from_config(&self.config)?;
-                let data = pk_challenge_into_bin(&self.config.trainer_pk, challenge);
-                let signature = bls12_381::sign(&self.config.trainer_sk, &data, DST_ANR_CHALLENGE)?.to_vec();
-                let what = What { anr, challenge, signature };
-                self.send_legacy_message_to(&what, dst).await?;
             }
 
             Instruction::SendNewPhoneWhoDisReply { dst } => {
@@ -693,26 +679,7 @@ impl Context {
                 // - Potentially rewind chain if needed
             }
 
-            Instruction::ReplyWhatChallenge { anr: _, challenge: _ } => {
-                // Handle what challenge reply (part of handshake)
-                info!("replying to what challenge");
-                // TODO: implement what challenge reply
-                // This is handled internally by NewPhoneWhoDis protocol handler
-            }
 
-            Instruction::ReceivedWhatResponse { responder_anr: _, challenge: _, their_signature: _ } => {
-                // Handle received what response (handshake completion)
-                info!("received what response");
-                // TODO: implement what response handling
-                // This is handled internally by What protocol handler
-            }
-
-            Instruction::HandshakeComplete { anr: _ } => {
-                // Handle handshake completion
-                info!("handshake completed with peer");
-                // TODO: mark peer as handshaked
-                // This is handled internally by What protocol handler
-            }
         };
 
         Ok(())
@@ -758,7 +725,7 @@ mod tests {
 
         let config = config::Config {
             work_folder: "/tmp/test".to_string(),
-            version_3b: [1, 2, 3],
+            version: Ver::new(1, 2, 3),
             offline: false,
             http_ipv4: Ipv4Addr::new(127, 0, 0, 1),
             http_port: 3000,
@@ -787,7 +754,7 @@ mod tests {
 
         // test that ANR creation doesn't panic and handles errors gracefully
         let my_anr =
-            Anr::build(&config.trainer_sk, &config.trainer_pk, &config.trainer_pop, target_ip, "testver".to_string());
+            Anr::build(&config.trainer_sk, &config.trainer_pk, &config.trainer_pop, target_ip, Ver::new(1, 0, 0));
         assert!(my_anr.is_ok());
     }
 
@@ -817,7 +784,7 @@ mod tests {
         let unique_id = format!("{}_{}", std::process::id(), utils::misc::get_unix_nanos_now());
         let config = config::Config {
             work_folder: format!("/tmp/test_cleanup_{}", unique_id),
-            version_3b: [1, 2, 3],
+            version: Ver::new(1, 2, 3),
             offline: false,
             http_ipv4: Ipv4Addr::new(127, 0, 0, 1),
             http_port: 3000,
@@ -870,7 +837,7 @@ mod tests {
         let work_folder = format!("/tmp/test_bootstrap_{}", std::process::id());
         let config = config::Config {
             work_folder,
-            version_3b: [1, 2, 3],
+            version: Ver::new(1, 2, 3),
             offline: false,
             http_ipv4: Ipv4Addr::new(127, 0, 0, 1),
             http_port: 3000,
@@ -923,7 +890,7 @@ mod tests {
 
         let config = config::Config {
             work_folder: "/tmp/test_tasks".to_string(),
-            version_3b: [1, 2, 3],
+            version: Ver::new(1, 2, 3),
             offline: false,
             http_ipv4: Ipv4Addr::new(127, 0, 0, 1),
             http_port: 3000,
@@ -984,7 +951,7 @@ mod tests {
 
         let config = config::Config {
             work_folder: "/tmp/test_convenience".to_string(),
-            version_3b: [1, 2, 3],
+            version: Ver::new(1, 2, 3),
             offline: false,
             http_ipv4: Ipv4Addr::new(127, 0, 0, 1),
             http_port: 3000,
