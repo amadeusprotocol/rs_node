@@ -14,21 +14,13 @@ use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now};
 use crate::utils::safe_etf::encode_safe;
 use eetf::convert::TryAsRef;
 use eetf::{Atom, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, List, Map, Term};
-use flate2::Compression;
-use flate2::write::ZlibEncoder;
+use crate::utils::compression::compress_with_zlib;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io::Error as IoError;
-use std::io::prelude::*;
 use std::net::{Ipv4Addr, SocketAddr};
 use tracing::{instrument, warn};
 
-// Helper function for zlib compression to match Elixir reference
-fn compress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(data)?;
-    encoder.finish()
-}
 
 /// Every object that has this trait must be convertible from an Erlang ETF
 /// Binary representation and must be able to handle itself as a message

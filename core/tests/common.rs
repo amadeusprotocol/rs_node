@@ -20,11 +20,6 @@ impl TmpTestDir {
         Ok(Self { path })
     }
 
-    /// Access the created directory path.
-    #[allow(dead_code)]
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 
     /// Convenience to get &str path.
     pub fn to_str(&self) -> &str {

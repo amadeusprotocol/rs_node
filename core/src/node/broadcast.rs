@@ -4,19 +4,11 @@ use crate::node::anr_manager::AnrManager;
 use crate::node::msg_encrypted::EncryptedMessage;
 use crate::node::protocol::Protocol;
 use crate::socket::UdpSocketExt;
-use flate2::Compression;
-use flate2::write::ZlibEncoder;
-use std::io::prelude::*;
+use crate::utils::compression::compress_with_zlib;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::debug;
 
-// Helper function for zlib compression to match Elixir reference
-fn compress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(data)?;
-    encoder.finish()
-}
 
 /// Options for broadcasting messages
 #[derive(Debug, Clone)]

@@ -4,25 +4,17 @@ use crate::node::protocol::*;
 use crate::node::protocol::{Instruction, NewPhoneWhoDis, NewPhoneWhoDisReply};
 use crate::node::{anr, peers};
 use crate::socket::UdpSocketExt;
+use crate::utils::compression::decompress_with_zlib;
 use crate::utils::misc::Typename;
 use crate::utils::misc::{format_duration, get_unix_millis_now};
 use crate::{SystemStats, Ver, config, consensus, get_system_stats, metrics, node, utils};
-use flate2::read::ZlibDecoder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::io::prelude::*;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tracing::{debug, info, instrument, warn};
 
-// Helper function for zlib decompression to match Elixir reference
-fn decompress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
-    let mut decoder = ZlibDecoder::new(data);
-    let mut result = Vec::new();
-    decoder.read_to_end(&mut result)?;
-    Ok(result)
-}
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
 pub enum Error {
@@ -158,8 +150,18 @@ impl Context {
         let new_phone_who_dis = NewPhoneWhoDis::new();
 
         for ip in &self.config.seed_ips {
-            // CRITICAL: Always use legacy MessageV2 for bootstrap messages
-            new_phone_who_dis.send_to_with_metrics_legacy(self, *ip).await?;
+            // CRITICAL: v1.1.8+ nodes expect encrypted messages using seed ANR data
+            // Try encrypted first (using seed ANRs), fallback to unsigned if needed
+            match new_phone_who_dis.send_to_with_metrics(self, *ip).await {
+                Ok(_) => {
+                    debug!("sent encrypted new_phone_who_dis to seed {ip}");
+                }
+                Err(e) => {
+                    // No fallback - Elixir v1.1.8+ nodes require encrypted handshakes
+                    warn!("failed to send encrypted new_phone_who_dis to seed {ip}: {e}");
+                    return Err(e.into());
+                }
+            }
             self.node_peers.set_handshake_status(*ip, HandshakeStatus::Initiated).await?;
         }
 
@@ -185,8 +187,8 @@ impl Context {
 
             let nodes_count = unverified_anrs.len();
             for ip in &unverified_anrs {
-                // CRITICAL: Always use legacy MessageV2 for bootstrap messages
-                new_phone_who_dis.send_to_with_metrics_legacy(self, *ip).await?;
+                // Use encrypted format - Elixir v1.1.8+ nodes require encrypted handshakes
+                new_phone_who_dis.send_to_with_metrics(self, *ip).await?;
                 self.node_peers.set_handshake_status(*ip, HandshakeStatus::Initiated).await?;
             }
 
@@ -247,7 +249,7 @@ impl Context {
 
     /// Convenience function to send legacy MessageV2 format (for bootstrap messages)
     pub async fn send_legacy_message_to(&self, message: &impl Protocol, dst: Ipv4Addr) -> Result<(), Error> {
-        message.send_to_with_metrics_legacy(self, dst).await.map_err(Into::into)
+        message.send_to_with_metrics(self, dst).await.map_err(Into::into)
     }
 
     /// Convenience function to send signed MessageV2 format (for ANR data)

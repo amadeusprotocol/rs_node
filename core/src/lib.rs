@@ -4,7 +4,6 @@ pub mod bic;
 pub mod config;
 pub mod consensus;
 pub mod context;
-pub mod genesis;
 pub mod metrics;
 pub mod node;
 pub mod socket;

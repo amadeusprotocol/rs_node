@@ -7,12 +7,9 @@ use crate::Ver;
 use crate::utils::reed_solomon;
 use crate::utils::reed_solomon::ReedSolomonResource;
 use crate::utils::{blake3, bls12_381};
-use flate2::Compression;
-use flate2::read::ZlibDecoder;
-use flate2::write::ZlibEncoder;
+use crate::utils::compression::{compress_with_zlib, decompress_with_zlib};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::io::prelude::*;
 use tokio::sync::RwLock;
 
 pub struct ReedSolomonReassembler {
@@ -84,19 +81,6 @@ impl Default for ReedSolomonReassembler {
     }
 }
 
-// Helper functions for zlib compression/decompression to match Elixir reference
-fn compress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(data)?;
-    encoder.finish()
-}
-
-fn decompress_with_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
-    let mut decoder = ZlibDecoder::new(data);
-    let mut result = Vec::new();
-    decoder.read_to_end(&mut result)?;
-    Ok(result)
-}
 
 impl ReedSolomonReassembler {
     pub fn new() -> Self {

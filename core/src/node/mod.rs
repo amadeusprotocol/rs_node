@@ -1,10 +1,8 @@
-//pub mod etf_ser;
 pub mod anr;
 pub mod anr_manager;
 pub mod broadcast;
 pub mod msg_encrypted;
 pub mod msg_v2;
-pub mod packet_handler;
 pub mod peers;
 /// The network protocol of the Amadeus node
 pub mod protocol;
