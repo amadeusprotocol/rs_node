@@ -6,7 +6,7 @@ pub mod msg_v2;
 pub mod peers;
 /// The network protocol of the Amadeus node
 pub mod protocol;
-pub mod reassembler;
+//pub mod reassembler;
 pub mod txpool;
 
 // Broadcaster trait defines a minimal sending capability for UDP broadcast mechanisms.
@@ -16,4 +16,5 @@ pub trait Broadcaster: Send + Sync {
 }
 
 pub use peers::NodePeers;
-pub use reassembler::ReedSolomonReassembler;
+// pub use reassembler::ReedSolomonReassembler;
+pub use msg_encrypted::EncryptedMessageReassembler;

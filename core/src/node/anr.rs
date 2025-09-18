@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use serde_with::serde_as;
 use tracing::debug;
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
@@ -43,12 +44,13 @@ impl crate::utils::misc::Typename for Error {
     }
 }
 
-// ama node record
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, bincode::Encode, bincode::Decode)]
 #[allow(non_snake_case)]
 pub struct Anr {
     pub ip4: Ipv4Addr,
-    pub pk: Vec<u8>,
+    #[serde_as(as = "[_; 48]")]
+    pub pk: [u8; 48],
     pub pop: Vec<u8>,
     pub port: u16,
     pub signature: Vec<u8>,
@@ -117,13 +119,13 @@ impl Anr {
         )
     }
 
-    pub fn build(sk: &[u8], pk: &[u8], pop: &[u8], ip4: Ipv4Addr, version: Ver) -> Result<Self, Error> {
+    pub fn build(sk: &[u8], pk: &[u8; 48], pop: &[u8], ip4: Ipv4Addr, version: Ver) -> Result<Self, Error> {
         Self::build_with_name_desc(sk, pk, pop, ip4, version, None, None)
     }
 
     pub fn build_with_name_desc(
         sk: &[u8],
-        pk: &[u8],
+        pk: &[u8; 48],
         pop: &[u8],
         ip4: Ipv4Addr,
         version: Ver,
@@ -139,7 +141,7 @@ impl Anr {
 
         let mut anr = Anr {
             ip4,
-            pk: pk.to_vec(),
+            pk: *pk,
             pop: pop.to_vec(),
             port: 36969,
             ts,
@@ -177,7 +179,7 @@ impl Anr {
         let ip4_str = map.get_string("ip4").ok_or(Error::BadEtf("ip4"))?;
         let ip4 = ip4_str.parse::<Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse"))?;
 
-        let pk = map.get_binary::<Vec<u8>>("pk").ok_or(Error::BadEtf("pk"))?;
+        let pk = map.get_binary::<[u8; 48]>("pk").ok_or(Error::BadEtf("pk"))?;
         let pop = map.get_binary::<Vec<u8>>("pop").ok_or(Error::BadEtf("pop"))?;
         let port = map.get_integer::<u16>("port").ok_or(Error::BadEtf("port"))?;
         let signature = map.get_binary::<Vec<u8>>("signature").ok_or(Error::BadEtf("signature"))?;
@@ -325,7 +327,7 @@ impl Anr {
         };
 
         map.insert(Term::Atom(Atom::from("ip4")), Term::Binary(Binary::from(self.ip4.to_string().as_bytes().to_vec())));
-        map.insert(Term::Atom(Atom::from("pk")), Term::Binary(Binary::from(self.pk.clone())));
+        map.insert(Term::Atom(Atom::from("pk")), Term::Binary(Binary::from(self.pk.to_vec())));
         map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
         map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
         map.insert(Term::Atom(Atom::from("ts")), Term::FixInteger(FixInteger::from(self.ts as i32)));
@@ -392,7 +394,7 @@ impl Anr {
 /// Tracks ANR (Amadeus Network Record) entries with cryptographic signatures
 #[derive(Debug, Clone)]
 pub struct NodeAnrs {
-    store: Arc<RwLock<HashMap<Vec<u8>, Anr>>>,
+    store: Arc<RwLock<HashMap<[u8; 48], Anr>>>,
 }
 
 impl NodeAnrs {
@@ -473,7 +475,7 @@ impl NodeAnrs {
     }
 
     /// Get all handshaked node public keys
-    pub async fn handshaked(&self) -> Vec<Vec<u8>> {
+    pub async fn handshaked(&self) -> Vec<[u8; 48]> {
         let map = self.store.read().await;
         let mut pks = Vec::new();
         for (k, v) in map.iter() {
@@ -599,7 +601,16 @@ impl NodeAnrs {
     /// Get ip addresses for given public keys
     pub async fn by_pks_ip<T: AsRef<[u8]>>(&self, pks: &[T]) -> Vec<Ipv4Addr> {
         // build a set of owned pk bytes for efficient lookup
-        let pk_set: std::collections::HashSet<Vec<u8>> = pks.iter().map(|p| p.as_ref().to_vec()).collect();
+        let pk_set: std::collections::HashSet<[u8; 48]> = pks.iter().filter_map(|p| {
+            let bytes = p.as_ref();
+            if bytes.len() == 48 {
+                let mut array = [0u8; 48];
+                array.copy_from_slice(bytes);
+                Some(array)
+            } else {
+                None
+            }
+        }).collect();
         let mut ips = Vec::new();
 
         let map = self.store.read().await;
@@ -654,7 +665,7 @@ mod tests {
 
         // create test keys with unique pk to avoid conflicts
         let _sk = [1; 32];
-        let mut pk = vec![2; 48];
+        let mut pk = [2; 48];
         // make pk unique per test run to avoid collision with parallel tests
         let pid_bytes = std::process::id().to_le_bytes();
         let time_bytes =
@@ -673,7 +684,7 @@ mod tests {
 
         let anr = Anr {
             ip4,
-            pk: pk.clone(),
+            pk,
             pop,
             port: 36969,
             signature: vec![0; 96],
@@ -705,7 +716,7 @@ mod tests {
 
         // test handshaked query
         let handshaked_pks = registry.handshaked().await;
-        assert!(handshaked_pks.iter().any(|p| p == &pk), "pk should be in handshaked list");
+        assert!(handshaked_pks.iter().any(|p| *p == pk), "pk should be in handshaked list");
 
         // test is_handshaked
         assert!(registry.is_handshaked(&pk).await, "is_handshaked should return true");
@@ -731,7 +742,7 @@ mod tests {
         let registry = NodeAnrs::new();
 
         // create unique pk for this test
-        let mut pk = vec![1; 48];
+        let mut pk = [1; 48];
         let pid_bytes = std::process::id().to_le_bytes();
         let time_bytes =
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos().to_le_bytes();
@@ -749,7 +760,7 @@ mod tests {
         // insert initial anr
         let anr1 = Anr {
             ip4,
-            pk: pk.clone(),
+            pk,
             pop: pop.clone(),
             port: 36969,
             signature: vec![0; 96],
@@ -771,7 +782,7 @@ mod tests {
         // try to insert older anr (should not update)
         let anr2 = Anr {
             ip4: Ipv4Addr::new(10, 0, 0, 1),
-            pk: pk.clone(),
+            pk,
             pop: pop.clone(),
             port: 36969,
             signature: vec![0; 96],
@@ -798,7 +809,7 @@ mod tests {
         // insert newer anr with same ip (should preserve handshake)
         let anr3 = Anr {
             ip4,
-            pk: pk.clone(),
+            pk,
             pop: pop.clone(),
             port: 36969,
             signature: vec![0; 96],
@@ -824,7 +835,7 @@ mod tests {
         // insert newer anr with different ip (should reset handshake)
         let anr4 = Anr {
             ip4: Ipv4Addr::new(10, 0, 0, 1),
-            pk: pk.clone(),
+            pk,
             pop,
             port: 36969,
             signature: vec![0; 96],
@@ -859,7 +870,7 @@ mod tests {
 
         // Create 5 unique not-handshaked ANRs
         for i in 1..=5 {
-            let mut pk = vec![i as u8; 48];
+            let mut pk = [i as u8; 48];
             // Make unique by adding time component
             let time_bytes =
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos().to_le_bytes();
@@ -872,7 +883,7 @@ mod tests {
 
             let anr = Anr {
                 ip4: Ipv4Addr::new(192, 168, 1, i), // different IPs
-                pk: pk.clone(),
+                pk,
                 pop: vec![i as u8; 96],
                 port: 36969,
                 signature: vec![i as u8; 96],
@@ -919,7 +930,10 @@ mod tests {
     #[test]
     fn test_to_etf_bin_ordered_validity() {
         // Test ANR with optional fields to expose the issues
-        let pk = vec![1, 2, 3];
+        let mut pk = [0u8; 48];
+        pk[0] = 1;
+        pk[1] = 2;
+        pk[2] = 3;
         let pk_b3 = blake3::hash(&pk);
         let mut pk_b3_f4 = [0u8; 4];
         pk_b3_f4.copy_from_slice(&pk_b3[0..4]);

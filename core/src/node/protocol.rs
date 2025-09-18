@@ -8,13 +8,12 @@ use crate::consensus::doms::attestation::AttestationBulk;
 use crate::consensus::doms::entry::Entry;
 use crate::node::anr::Anr;
 use crate::node::peers::HandshakeStatus;
-use crate::node::{ReedSolomonReassembler, anr, msg_v2, peers, reassembler};
+use crate::node::{anr, msg_v2, peers, EncryptedMessageReassembler};
 use crate::utils::bls12_381;
 use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now};
 use crate::utils::safe_etf::encode_safe;
 use eetf::convert::TryAsRef;
 use eetf::{Atom, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, List, Map, Term};
-use crate::utils::compression::compress_with_zlib;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io::Error as IoError;
@@ -36,46 +35,11 @@ pub trait Protocol: Typename + Debug + Send + Sync {
     /// Send this protocol message to a destination using encrypted format (v1.1.7+)
     /// REQUIRES ANR to be available - use send_to_legacy_with_metrics for bootstrap messages
     async fn send_to_with_metrics(&self, ctx: &Context, dst: Ipv4Addr) -> Result<(), Error> {
-        use crate::node::msg_encrypted::EncryptedMessage;
-        // Using zlib compression to match Elixir reference implementation
-
-        // Increment metrics counter immediately, even if send fails later
-        ctx.metrics.add_outgoing_proto(self.typename());
-
         let dst_addr = SocketAddr::new(std::net::IpAddr::V4(dst), ctx.config.udp_port);
-        let payload = self.to_etf_bin().inspect_err(|e| ctx.metrics.add_error(e))?;
-
-        // Look up ANR for destination to get public key
         let dst_anr = ctx.node_anrs.get_by_ip4(dst).await.ok_or(Error::NoAnrForDestination(dst))?;
-
-        // Use encrypted format (v1.1.7+) - REQUIRED for all non-bootstrap messages
-        // Order: ETF -> Compress -> Encrypt -> Shard -> Headers
-        let compressed = compress_with_zlib(&payload)?;
-        let shared_secret = crate::utils::bls12_381::get_shared_secret(&dst_anr.pk, &ctx.config.get_sk())?;
-
-        // Get version from config
-        let version = ctx.config.version;
-
-        // Encrypt message using v1.1.7+ protocol
-        let messages = EncryptedMessage::encrypt(&ctx.config.get_pk(), &shared_secret, &compressed, version)
-            .map_err(Error::MsgEncrypted)?;
-
-        // Send all shards
-        for msg in messages {
-            let packet = msg.to_bytes();
-            ctx.socket.send_to_with_metrics(&packet, dst_addr, &ctx.metrics).await?;
-        }
-
-        Ok(())
-    }
-
-    /// Send this protocol message using unsigned MessageV2 format (for bootstrap messages in v1.1.7+)
-    /// Bootstrap messages don't require signatures in v1.1.7+
-    async fn send_to_with_metrics_legacy(&self, ctx: &Context, dst: Ipv4Addr) -> Result<(), Error> {
-        let dst_addr = SocketAddr::new(std::net::IpAddr::V4(dst), ctx.config.udp_port);
         let payload = self.to_etf_bin().inspect_err(|e| ctx.metrics.add_error(e))?;
 
-        let shards = ReedSolomonReassembler::build_unsigned_shards(&ctx.config, &payload)?;
+        let shards = EncryptedMessageReassembler::build_shards(&ctx.config, &payload, &dst_anr.pk)?;
         for shard in &shards {
             ctx.socket.send_to_with_metrics(shard, dst_addr, &ctx.metrics).await?;
         }
@@ -83,93 +47,6 @@ pub trait Protocol: Typename + Debug + Send + Sync {
         ctx.metrics.add_outgoing_proto(self.typename());
         Ok(())
     }
-
-    async fn send_to(&self, ctx: &Context, dst: Ipv4Addr) -> Result<(), Error> {
-        use crate::node::msg_encrypted::EncryptedMessage;
-        // Using zlib compression to match Elixir reference implementation
-
-        let dst_addr = SocketAddr::new(std::net::IpAddr::V4(dst), ctx.config.udp_port);
-        let payload = self.to_etf_bin()?;
-
-        // Look up ANR for destination to get public key
-        let dst_anr = ctx.node_anrs.get_by_ip4(dst).await.ok_or(Error::NoAnrForDestination(dst))?;
-
-        // Use encrypted format (v1.1.7+) - REQUIRED for all non-bootstrap messages
-        // Order: ETF -> Compress -> Encrypt -> Shard -> Headers
-        let compressed = compress_with_zlib(&payload)?;
-        let shared_secret = crate::utils::bls12_381::get_shared_secret(&dst_anr.pk, &ctx.config.get_sk())?;
-
-        // Get version from config
-        let version = ctx.config.version;
-
-        // Encrypt message using v1.1.7+ protocol
-        let messages = EncryptedMessage::encrypt(&ctx.config.get_pk(), &shared_secret, &compressed, version)
-            .map_err(Error::MsgEncrypted)?;
-
-        // Send all shards
-        for msg in messages {
-            let packet = msg.to_bytes();
-            ctx.socket.send_to(&packet, dst_addr).await?;
-        }
-
-        Ok(())
-    }
-
-    /// Send this protocol message using legacy MessageV2 format (for bootstrap messages)
-    /// Always uses signature-based MessageV2 regardless of ANR availability
-    async fn send_to_legacy(&self, ctx: &Context, dst: Ipv4Addr) -> Result<(), Error> {
-        let dst_addr = SocketAddr::new(std::net::IpAddr::V4(dst), ctx.config.udp_port);
-        let payload = self.to_etf_bin()?;
-
-        // Always use MessageV2 signature-based format for bootstrap
-        // Order: ETF -> Compress -> Sign -> Shard -> Headers (same as Elixir)
-        tracing::debug!("Sending {} to {} using legacy MessageV2 format", self.typename(), dst);
-        let shards = ReedSolomonReassembler::build_shards(&ctx.config, &payload)?;
-        for shard in &shards {
-            ctx.socket.send_to(shard, dst_addr).await?;
-        }
-
-        Ok(())
-    }
-    //
-    // /// Send encrypted message to a destination using a known public key
-    // async fn send_to_pk(
-    //     &self,
-    //     ctx: &Context,
-    //     dst: Ipv4Addr,
-    //     dst_pk: &[u8],
-    // ) -> Result<(), Error> {
-    //     use crate::node::msg_encrypted::EncryptedMessage;
-    //     // Using zlib compression to match Elixir reference implementation
-    //
-    //     let dst_addr = SocketAddr::new(std::net::IpAddr::V4(dst), ctx.config.udp_port);
-    //     let payload = self.to_etf_bin()?;
-    //
-    //     // Compress payload
-    //     let compressed = compress_with_zlib(&payload)?;
-    //
-    //     // Get shared secret using BLS ECDH
-    //     let shared_secret = crate::utils::bls12_381::get_shared_secret(dst_pk, &ctx.config.get_sk())?;
-    //
-    //     // Get version
-    //     let version = ctx.config.get_ver_3b();
-    //
-    //     // Encrypt message using v1.1.7+ protocol
-    //     let messages = EncryptedMessage::encrypt(
-    //         &ctx.config.get_pk(),
-    //         &shared_secret,
-    //         &compressed,
-    //         version,
-    //     ).map_err(Error::MsgEncrypted)?;
-    //
-    //     // Send all shards
-    //     for msg in messages {
-    //         let packet = msg.to_bytes();
-    //         ctx.socket.send_to(&packet, dst_addr).await?;
-    //     }
-    //
-    //     Ok(())
-    // }
 }
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
@@ -198,8 +75,8 @@ pub enum Error {
     Sol(#[from] sol::Error),
     #[error(transparent)]
     Att(#[from] crate::consensus::doms::attestation::Error),
-    #[error(transparent)]
-    ReedSolomon(#[from] reassembler::Error),
+    // #[error(transparent)]
+    // ReedSolomon(#[from] reassembler::Error),
     #[error(transparent)]
     MsgV2(#[from] msg_v2::Error),
     #[error(transparent)]
@@ -896,36 +773,6 @@ mod tests {
             assert!(true);
         } else {
             panic!("Failed to deserialize simplified NewPhoneWhoDis");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_new_phone_who_dis_reply_v1_1_7_format() {
-        use crate::node::anr;
-        use crate::utils::bls12_381 as bls;
-        use std::net::Ipv4Addr;
-
-        let sk = bls::generate_sk();
-        let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls_sign(&sk, &pk, crate::consensus::DST_POP).expect("pop");
-        let ip = Ipv4Addr::new(127, 0, 0, 1);
-        let responder_anr = anr::Anr::build(&sk, &pk, &pop, ip, Ver::new(1, 0, 0)).expect("anr");
-
-        // Test the simplified v1.1.7+ NewPhoneWhoDisReply format (just ANR)
-        let msg = NewPhoneWhoDisReply { anr: responder_anr.clone() };
-
-        // Serialize to ETF
-        let bin = msg.to_etf_bin().expect("serialize NewPhoneWhoDisReply");
-
-        // Deserialize back
-        let parsed = parse_etf_bin(&bin).expect("deserialize NewPhoneWhoDisReply");
-        assert_eq!(parsed.typename(), "new_phone_who_dis_reply");
-
-        // Cast back to NewPhoneWhoDisReply to verify ANR field
-        if let Ok(parsed_msg) = NewPhoneWhoDisReply::from_etf_map_validated(
-            Term::decode(&bin[..]).expect("decode").get_term_map().expect("map"),
-        ) {
-            assert_eq!(parsed_msg.anr, responder_anr, "ANR mismatch");
         }
     }
 

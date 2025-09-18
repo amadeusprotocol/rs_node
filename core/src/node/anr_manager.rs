@@ -10,7 +10,7 @@ use tracing::{debug, info};
 /// ANR Manager with caching and validation
 pub struct AnrManager {
     /// All known ANRs by public key
-    anrs: Arc<RwLock<HashMap<Vec<u8>, Anr>>>,
+    anrs: Arc<RwLock<HashMap<[u8; 48], Anr>>>,
     /// Our own ANR cache (refreshed every 60 minutes)
     my_anr: Arc<RwLock<Option<Anr>>>,
     /// Next refresh time for our ANR

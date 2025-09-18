@@ -4,7 +4,6 @@ use crate::node::protocol::*;
 use crate::node::protocol::{Instruction, NewPhoneWhoDis, NewPhoneWhoDisReply};
 use crate::node::{anr, peers};
 use crate::socket::UdpSocketExt;
-use crate::utils::compression::decompress_with_zlib;
 use crate::utils::misc::Typename;
 use crate::utils::misc::{format_duration, get_unix_millis_now};
 use crate::{SystemStats, Ver, config, consensus, get_system_stats, metrics, node, utils};
@@ -46,7 +45,8 @@ impl Typename for Error {
 pub struct Context {
     pub(crate) config: config::Config,
     pub(crate) metrics: metrics::Metrics,
-    pub(crate) reassembler: node::ReedSolomonReassembler,
+    //pub(crate) reassembler: node::ReedSolomonReassembler,
+    pub(crate) encrypted_reassembler: node::EncryptedMessageReassembler,
     pub(crate) node_peers: peers::NodePeers,
     pub(crate) node_anrs: NodeAnrs,
     pub(crate) socket: Arc<dyn UdpSocketExt>,
@@ -73,7 +73,8 @@ impl Context {
         use crate::consensus::fabric::init_kvdb;
         use crate::utils::archiver::init_storage;
         use metrics::Metrics;
-        use node::reassembler::ReedSolomonReassembler as Reassembler;
+        // use node::reassembler::ReedSolomonReassembler as Reassembler;
+        use node::EncryptedMessageReassembler;
         use tokio::time::{Duration, interval};
 
         assert_ne!(config.get_root(), "");
@@ -83,12 +84,13 @@ impl Context {
         let metrics = Metrics::new();
         let node_peers = peers::NodePeers::default();
         let node_anrs = NodeAnrs::new();
-        let reassembler = Reassembler::new();
+        //let reassembler = Reassembler::new();
+        let encrypted_reassembler = EncryptedMessageReassembler::new();
 
         node_anrs.seed(&config).await; // must be done before node_peers.seed()
         node_peers.seed(&config, &node_anrs).await?;
 
-        let ctx = Arc::new(Self { config, metrics, reassembler, node_peers, node_anrs, socket });
+        let ctx = Arc::new(Self { config, metrics, encrypted_reassembler, node_peers, node_anrs, socket });
 
         tokio::spawn({
             let ctx = ctx.clone();
@@ -171,7 +173,8 @@ impl Context {
 
     #[instrument(skip(self), name = "cleanup_task")]
     async fn cleanup_task(&self, cleanup_secs: u64) {
-        let cleared_shards = self.reassembler.clear_stale(cleanup_secs).await;
+        // let cleared_shards = self.reassembler.clear_stale(cleanup_secs).await;
+        let cleared_shards = self.encrypted_reassembler.clear_stale(cleanup_secs).await;
         let cleared_peers = self.node_peers.clear_stale(&self.node_anrs).await;
         if cleared_shards > 0 || cleared_peers > 0 {
             debug!("cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
@@ -252,10 +255,10 @@ impl Context {
         message.send_to_with_metrics(self, dst).await.map_err(Into::into)
     }
 
-    /// Convenience function to send signed MessageV2 format (for ANR data)
-    pub async fn send_signed_message_to(&self, message: &impl Protocol, dst: Ipv4Addr) -> Result<(), Error> {
-        message.send_to_legacy(self, dst).await.map_err(Into::into)
-    }
+    // /// Convenience function to send signed MessageV2 format (for ANR data)
+    // pub async fn send_signed_message_to(&self, message: &impl Protocol, dst: Ipv4Addr) -> Result<(), Error> {
+    //     message.send_to_legacy(self, dst).await.map_err(Into::into)
+    // }
 
     /// Convenience function to receive UDP data with metrics tracking
     pub async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
@@ -419,76 +422,31 @@ impl Context {
         self.node_peers.update_peer_from_anr(ip, pk, version, status).await
     }
 
-    /// manual trigger for cleanup (optional helper)
-    pub async fn cleanup_stale(&self) {
-        const CLEANUP_SECS: u64 = 8;
-        let cleared_shards = self.reassembler.clear_stale(CLEANUP_SECS).await;
-        let cleared_peers = self.node_peers.clear_stale(&self.node_anrs).await;
-        info!("cleanup: cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
-    }
 
     /// Reads UDP datagram and silently does parsing, validation and reassembly
     /// If the protocol message is complete, returns Some(Protocol)
     pub async fn parse_udp(&self, buf: &[u8], src: Ipv4Addr) -> Option<Box<dyn Protocol>> {
-        use crate::node::msg_encrypted::EncryptedMessage;
 
         self.metrics.add_incoming_udp_packet(buf.len());
 
-        // Try to parse as encrypted message first (v1.1.7+)
-        match EncryptedMessage::try_from(buf) {
-            Ok(encrypted_msg) => {
-                // Check if message is to self
-                if encrypted_msg.pk == self.config.get_pk() {
-                    return None;
+        // Fall back to old MessageV2 format for backward compatibility
+        match self.encrypted_reassembler.add_shard(buf, &self.config.get_sk()).await {
+            Ok(Some(packet)) => match parse_etf_bin(&packet) {
+                Ok(proto) => {
+                    self.node_peers.update_peer_from_proto(src, proto.typename()).await;
+                    self.metrics.add_incoming_proto(proto.typename());
+                    return Some(proto);
                 }
-
-                // Check version requirement (minimum 1.1.7)
-                let min_version = Ver::new(1, 1, 7);
-                if encrypted_msg.version < min_version {
-                    return None;
-                }
-
-                // Get shared secret using BLS ECDH
-                let shared_secret =
-                    match crate::utils::bls12_381::get_shared_secret(&encrypted_msg.pk, &self.config.get_sk()) {
-                        Ok(secret) => secret.to_vec(),
-                        Err(_) => {
-                            // Invalid public key, ignore message
-                            return None;
-                        }
-                    };
-
-                // Decrypt and decompress
-                match encrypted_msg.decrypt(&shared_secret) {
-                    Ok(decrypted) => match decompress_with_zlib(&decrypted) {
-                        Ok(decompressed) => match parse_etf_bin(&decompressed) {
-                            Ok(proto) => {
-                                self.node_peers.update_peer_from_proto(src, proto.typename()).await;
-                                self.metrics.add_incoming_proto(proto.typename());
-                                return Some(proto);
-                            }
-                            Err(e) => self.metrics.add_error(&e),
-                        },
-                        Err(e) => self.metrics.add_error(&Error::String(e.to_string())),
-                    },
-                    Err(e) => self.metrics.add_error(&Error::String(e.to_string())),
-                }
-            }
-            Err(_) => {
-                // Fall back to old MessageV2 format for backward compatibility
-                match self.reassembler.add_shard(buf).await {
-                    Ok(Some(packet)) => match parse_etf_bin(&packet) {
-                        Ok(proto) => {
-                            self.node_peers.update_peer_from_proto(src, proto.typename()).await;
-                            self.metrics.add_incoming_proto(proto.typename());
-                            return Some(proto);
-                        }
-                        Err(e) => self.metrics.add_error(&e),
-                    },
-                    Ok(None) => {} // waiting for more shards, not an error
-                    Err(e) => self.metrics.add_error(&e),
-                }
-            }
+                Err(e) => {
+                    println!("Failed to parse protocol from reassembled packet: {e}");
+                    self.metrics.add_error(&e)
+                },
+            },
+            Ok(None) => {} // waiting for more shards, not an error
+            Err(e) => {
+                println!("Failed to reassemble encrypted message from {}: {e}", src);
+                self.metrics.add_error(&e)
+            },
         }
 
         None
@@ -519,7 +477,8 @@ impl Context {
                 let anr = Anr::from_config(&self.config)?;
                 let reply = NewPhoneWhoDisReply::new(anr);
                 // CRITICAL: Use signed MessageV2 for ANR data (contains sensitive information)
-                self.send_signed_message_to(&reply, dst).await?;
+                self.send_message_to(&reply, dst).await?;
+                // self.send_signed_message_to(&reply, dst).await?;
             }
 
             Instruction::SendPong { ts_m, dst } => {
@@ -816,7 +775,7 @@ mod tests {
         match Context::with_config_and_socket(config, socket).await {
             Ok(ctx) => {
                 // test cleanup_stale manual trigger - should not panic
-                ctx.cleanup_stale().await;
+                ctx.cleanup_task(8).await;
             }
             Err(_) => {
                 // context creation failed - this can happen when running tests in parallel
@@ -921,9 +880,10 @@ mod tests {
         let metrics = metrics::Metrics::new();
         let node_peers = peers::NodePeers::default();
         let node_anrs = crate::node::anr::NodeAnrs::new();
-        let reassembler = node::reassembler::ReedSolomonReassembler::new();
+        // let reassembler = node::reassembler::ReedSolomonReassembler::new();
+        let encrypted_reassembler = node::EncryptedMessageReassembler::new();
 
-        let ctx = Context { config, metrics, reassembler, node_peers, node_anrs, socket };
+        let ctx = Context { config, metrics, encrypted_reassembler, node_peers, node_anrs, socket };
 
         // Test task tracking via Context wrapper methods
         let snapshot = ctx.get_metrics_snapshot();
