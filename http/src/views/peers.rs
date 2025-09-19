@@ -45,6 +45,10 @@ pub fn page(peers: &HashMap<String, PeerInfo>) -> String {
             border: 1px solid #333;
             overflow-x: auto;
         }}
+
+        .table-container::-webkit-scrollbar-corner {{
+            background-color: #1e1e1e;
+        }}
         
         table {{
             width: 100%;

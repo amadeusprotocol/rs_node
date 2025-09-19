@@ -158,8 +158,8 @@ pub fn page(snapshot: &MetricsSnapshot, peers: &HashMap<String, PeerInfo>, ctx: 
         }}
         
         @media (max-width: 768px) {{
-            .container {{ padding: 15px; }}
-            .cards-grid {{ 
+            .container {{ padding: 15px 15px 40px 15px; }}
+            .cards-grid {{
                 grid-template-columns: 1fr;
                 gap: 16px;
             }}

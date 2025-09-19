@@ -210,6 +210,7 @@ pub fn page(
             display: flex;
             align-items: center;
             gap: 16px;
+            padding-right: 16px;
         }}
         
         h1 {{ 
@@ -288,7 +289,7 @@ pub fn page(
         .header-right {{
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 16px;
         }}
         
         .search-container {{
@@ -329,7 +330,8 @@ pub fn page(
             border: 2px solid hsl(var(--border));
             border-radius: 12px;
             padding: 24px;
-            min-height: 160px;
+            height: fit-content;
+            min-height: fit-content;
         }}
         
         .metric-header {{
@@ -464,8 +466,7 @@ pub fn page(
             display: flex;
             align-items: center;
             gap: 12px;
-            min-height: 48px; /* Minimum height of 2 regular rows */
-            padding: 8px 4px; /* Internal padding for visual breathing room */
+            padding: 7px 4px; /* Internal padding for visual breathing room */
         }}
 
         .uptime-icon-large {{
@@ -479,6 +480,8 @@ pub fn page(
             font-weight: 700;
             color: hsl(var(--foreground));
             font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+            word-break: break-word;
+            flex: 1;
         }}
 
         .uptime-row {{
@@ -522,8 +525,7 @@ pub fn page(
             display: flex;
             align-items: center;
             gap: 12px;
-            min-height: 48px; /* Minimum height of 2 regular rows */
-            padding: 8px 4px; /* Internal padding for visual breathing room */
+            padding: 7px 4px; /* Internal padding for visual breathing room */
         }}
 
         .block-icon-large {{
@@ -537,10 +539,12 @@ pub fn page(
             font-weight: 700;
             color: hsl(var(--foreground));
             font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+            word-break: break-word;
+            flex: 1;
         }}
 
         .block-spacer {{
-            height: 56px; /* Match height of 2 uptime rows (24px each + 8px gap) */
+            flex: 1; /* Use available space instead of fixed height */
         }}
         
         /* System Resources */
@@ -683,14 +687,12 @@ pub fn page(
         
         .tab-content {{
             display: none;
-            flex: 1;
             overflow: hidden;
         }}
         
         .tab-content.active {{
             display: flex;
             flex-direction: column;
-            flex: 1;
             overflow: hidden;
         }}
         
@@ -734,7 +736,7 @@ pub fn page(
             text-transform: uppercase;
             letter-spacing: 1px;
             font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
-            margin-bottom: 20px;
+            margin-bottom: 0;
         }}
 
         .section-header {{
@@ -946,6 +948,11 @@ pub fn page(
         .message-table-container::-webkit-scrollbar-thumb:hover {{
             background: hsl(var(--foreground) / 0.4);
         }}
+
+        .message-type-list::-webkit-scrollbar-corner,
+        .message-table-container::-webkit-scrollbar-corner {{
+            background: hsl(var(--background));
+        }}
         
         .message-table {{
             width: 100%;
@@ -1108,7 +1115,7 @@ pub fn page(
             display: flex;
             align-items: center;
             justify-content: center;
-            margin-left: 12px;
+            padding-right: 12px;
         }}
 
         .orbital-container {{
@@ -1242,6 +1249,36 @@ pub fn page(
             .two-column {{
                 grid-template-columns: 1fr;
             }}
+
+            /* Tablet layout improvements */
+            .container {{
+                height: 100vh;
+                overflow-y: auto;
+                padding-bottom: 24px; /* Match desktop spacing */
+                display: flex;
+                flex-direction: column;
+            }}
+
+            .tabs-container {{
+                flex: 1;
+                min-height: 400px;
+                display: flex !important;
+                flex-direction: column;
+            }}
+
+            .overview-grid {{
+                grid-template-columns: 1fr 1fr; /* Keep two columns for message cards */
+            }}
+
+            .section-card {{
+                max-height: 450px;
+                overflow-y: auto;
+            }}
+
+            .message-type-list {{
+                max-height: 350px;
+                overflow-y: auto;
+            }}
         }}
         
         /* Logo responsive behavior */
@@ -1249,31 +1286,158 @@ pub fn page(
             height: 40px;
             width: auto;
         }}
-        
+
         .logo-compact {{
             height: 40px;
             width: auto;
             display: none;
         }}
-        
-        @media (max-width: 768px) {{
-            .container {{ padding: 16px; }}
-            .header {{ padding: 12px 16px; }}
-            .metrics-grid {{
-                grid-template-columns: 1fr;
-            }}
-            .search-input {{ width: 180px; }}
-            .tab-list {{
-                flex-direction: column;
-            }}
-            
-            /* Switch to compact logo on small screens */
+
+        /* Medium screens: switch to compact logo but keep full search width */
+        @media (max-width: 900px) {{
             .logo-wordmark {{
                 display: none;
             }}
-            
+
             .logo-compact {{
                 display: block;
+            }}
+        }}
+
+        /* Search button for small screens */
+        .search-button {{
+            display: none;
+            background: none;
+            border: 2px solid hsl(var(--border));
+            border-radius: 12px;
+            padding: 8px;
+            cursor: pointer;
+            color: hsl(var(--foreground));
+            transition: all 0.2s ease;
+        }}
+
+        .search-button:hover {{
+            background: hsl(var(--muted));
+            border-color: hsl(var(--foreground));
+        }}
+
+        .search-button svg {{
+            width: 16px;
+            height: 16px;
+        }}
+
+        /* Small screens: replace search container with button and adjust layout */
+        @media (max-width: 750px) {{
+            .container {{ padding: 16px 16px 40px 16px; }}
+
+            .search-container {{
+                display: none;
+            }}
+
+            .search-button {{
+                display: block;
+            }}
+
+            .metrics-grid {{
+                grid-template-columns: 1fr;
+            }}
+            .tab-list {{
+                display: none; /* Hide tabs list on mobile since all content is visible */
+            }}
+
+            /* Always reserve space for orbital loader even when hidden */
+            .orbital-loader {{
+                visibility: hidden; /* Use visibility instead of display to maintain space */
+                margin-left: 12px; /* Same margin as version text */
+            }}
+
+            .orbital-loader[style*="display: flex"] {{
+                visibility: visible; /* Show when needed */
+            }}
+
+            /* Mobile height constraints and scrolling */
+            html, body {{
+                overflow-x: hidden;
+                height: 100vh;
+                margin: 0;
+                padding: 0;
+            }}
+
+            .container {{
+                height: 100vh; /* Minimum height, allow expansion */
+                overflow-y: auto;
+                padding-bottom: 24px; /* Increased to match tablet visual spacing */
+                display: flex;
+                flex-direction: column;
+            }}
+
+            .tabs-container {{
+                flex: none; /* Don't constrain height */
+                min-height: auto; /* Let content determine height */
+                display: flex !important;
+                flex-direction: column;
+                overflow: visible; /* Allow content to show */
+                gap: 24px; /* Standard gap between all tab sections */
+            }}
+
+            .tab-content {{
+                display: flex !important; /* Show all tab content on mobile */
+                flex-direction: column;
+                margin-bottom: 0; /* Remove margin, use gap instead */
+                overflow-y: visible; /* Remove scrolling */
+            }}
+
+            .tab-content.active {{
+                display: flex !important;
+                flex-direction: column;
+            }}
+
+            /* Mobile overview grid - single column with standard gaps */
+            .overview-grid {{
+                display: grid !important; /* Ensure grid display */
+                grid-template-columns: 1fr !important;
+                gap: 24px; /* Standard gap like other cards */
+                margin-bottom: 0; /* Remove extra margin */
+            }}
+
+            .section-card {{
+                max-height: 450px; /* Match tablet height */
+                overflow-y: auto; /* Enable scrolling when content exceeds height */
+                flex-shrink: 0;
+                margin-bottom: 0; /* Remove individual margins, use container gap */
+            }}
+
+            /* Fix system card margin for consistent spacing */
+            .system-card {{
+                margin-bottom: 24px; /* Consistent with other cards */
+                flex-shrink: 0; /* Prevent shrinking */
+            }}
+
+            .message-type-list {{
+                max-height: 450px; /* Match section card height */
+                overflow-y: auto; /* Enable scrolling like tablet */
+            }}
+
+            /* Make incoming/outgoing message cards taller */
+            #incoming-content .section-card,
+            #outgoing-content .section-card {{
+                max-height: 450px; /* Only target message cards specifically */
+            }}
+
+            .message-table-container {{
+                max-height: none; /* Remove height restrictions for consistency */
+                overflow-y: visible; /* Remove scrolling for consistency */
+            }}
+
+            /* Ensure metrics grid doesn't take too much space */
+            .metrics-grid {{
+                flex-shrink: 0;
+                margin-bottom: 24px;
+            }}
+
+            /* Fix transaction history card height - use min-height for flexibility */
+            #transactions-content .section-card {{
+                max-height: 450px; /* Only target message cards specifically */
             }}
         }}
     </style>
@@ -1310,6 +1474,11 @@ pub fn page(
                 </svg>
                 <input type="text" class="search-input" placeholder="Search transactions..." />
             </div>
+            <button class="search-button" type="button" title="Search">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                </svg>
+            </button>
         </div>
     </div>
 
@@ -1350,6 +1519,18 @@ pub fn page(
                         </div>
                         <div class="uptime-secondary-value" id="temporal-height">{}</div>
                     </div>
+                    <div class="uptime-row">
+                        <div class="uptime-left">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="uptime-icon">
+                                <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+                                    <path d="M3 12a9 9 0 0 0 9 9a9 9 0 0 0 9-9a9 9 0 0 0-9-9"/>
+                                    <path d="M17 12a5 5 0 1 0-5 5"/>
+                                </g>
+                            </svg>
+                            <div class="uptime-label">TODO:</div>
+                        </div>
+                        <div class="uptime-secondary-value">0</div>
+                    </div>
                 </div>
             </div>
 
@@ -1381,6 +1562,30 @@ pub fn page(
                             <div class="peer-label">PENDING:</div>
                         </div>
                         <div class="peer-value" id="pending-count">{}</div>
+                    </div>
+                    <div class="peer-row">
+                        <div class="peer-left">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="peer-icon">
+                                <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+                                    <path d="M3 12a9 9 0 0 0 9 9a9 9 0 0 0 9-9a9 9 0 0 0-9-9"/>
+                                    <path d="M17 12a5 5 0 1 0-5 5"/>
+                                </g>
+                            </svg>
+                            <div class="peer-label">TODO:</div>
+                        </div>
+                        <div class="peer-value">0</div>
+                    </div>
+                    <div class="peer-row">
+                        <div class="peer-left">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="peer-icon">
+                                <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+                                    <path d="M3 12a9 9 0 0 0 9 9a9 9 0 0 0 9-9a9 9 0 0 0-9-9"/>
+                                    <path d="M17 12a5 5 0 1 0-5 5"/>
+                                </g>
+                            </svg>
+                            <div class="peer-label">TODO:</div>
+                        </div>
+                        <div class="peer-value">0</div>
                     </div>
                 </div>
             </div>
@@ -1563,11 +1768,11 @@ pub fn page(
                             <div class="section-packet-count">
                                 <svg class="packet-count-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24">
                                     <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
-                                        <path d="M6 9a6 6 0 1 0 12 0A6 6 0 0 0 6 9"/>
-                                        <path d="M12 3q2 .5 2 6c0 5.5-.667 5.667-2 6m0-12q-2 .5-2 6c0 5.5.667 5.667 2 6M6 9h12M3 20h7m4 0h7m-11 0a2 2 0 1 0 4 0a2 2 0 0 0-4 0m2-5v3"/>
+                                        <path d="M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                                        <path d="m3 7l9 6l9-6"/>
                                     </g>
                                 </svg>
-                                <span class="packet-count-text" id="incoming-packet-count">{} packets</span>
+                                <span class="packet-count-text" id="incoming-packet-count">{}</span>
                             </div>
                         </div>
                         <div class="message-type-list">
@@ -1581,11 +1786,11 @@ pub fn page(
                             <div class="section-packet-count">
                                 <svg class="packet-count-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24">
                                     <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
-                                        <path d="M6 9a6 6 0 1 0 12 0A6 6 0 0 0 6 9"/>
-                                        <path d="M12 3q2 .5 2 6c0 5.5-.667 5.667-2 6m0-12q-2 .5-2 6c0 5.5.667 5.667 2 6M6 9h12M3 20h7m4 0h7m-11 0a2 2 0 1 0 4 0a2 2 0 0 0-4 0m2-5v3"/>
+                                        <path d="M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                                        <path d="m3 7l9 6l9-6"/>
                                     </g>
                                 </svg>
-                                <span class="packet-count-text" id="outgoing-packet-count">{} packets</span>
+                                <span class="packet-count-text" id="outgoing-packet-count">{}</span>
                             </div>
                         </div>
                         <div class="message-type-list">
@@ -2036,14 +2241,14 @@ pub fn page(
                 const incomingPackets = (metrics.udp && metrics.udp.incoming_packets !== undefined)
                     ? metrics.udp.incoming_packets
                     : 0;
-                incomingPacketElement.textContent = `${{incomingPackets.toLocaleString()}} packets`;
+                incomingPacketElement.textContent = `${{incomingPackets.toLocaleString()}}`;
             }}
 
             if (outgoingPacketElement) {{
                 const outgoingPackets = (metrics.udp && metrics.udp.outgoing_packets !== undefined)
                     ? metrics.udp.outgoing_packets
                     : 0;
-                outgoingPacketElement.textContent = `${{outgoingPackets.toLocaleString()}} packets`;
+                outgoingPacketElement.textContent = `${{outgoingPackets.toLocaleString()}}`;
             }}
 
             // Helper function to format bytes with flexible units
@@ -2165,8 +2370,9 @@ pub fn page(
             updateProtocolList('incoming', metrics.incoming_protos || {{}});
             updateProtocolList('outgoing', metrics.outgoing_protos || {{}});
             
-            // Update peers table if peers tab is active
-            if (document.getElementById('peers-content').classList.contains('active')) {{
+            // Update peers table if peers tab is active or on mobile (width <= 750px)
+            const isMobile = window.innerWidth <= 750;
+            if (isMobile || document.getElementById('peers-content').classList.contains('active')) {{
                 updatePeersTable(peers);
             }}
         }}
