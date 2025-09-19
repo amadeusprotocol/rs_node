@@ -2,6 +2,18 @@ use ama_core::node::peers::HandshakeStatus;
 use ama_core::{Context, MetricsSnapshot, PeerInfo};
 use std::collections::HashMap;
 
+fn format_number(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.insert(0, ',');
+        }
+        result.insert(0, c);
+    }
+    result
+}
+
 fn generate_protocol_items(protocols: &HashMap<String, u64>) -> String {
     if protocols.is_empty() {
         return r#"<div class="empty-state">No data available</div>"#.to_string();
@@ -126,6 +138,7 @@ pub fn page(
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Amadeus Advanced Dashboard</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <style>
         * {{ 
             margin: 0; 
@@ -722,6 +735,33 @@ pub fn page(
             letter-spacing: 1px;
             font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
             margin-bottom: 20px;
+        }}
+
+        .section-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }}
+
+        .section-packet-count {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+
+        .packet-count-icon {{
+            width: 16px;
+            height: 16px;
+            color: #9ca3af;
+        }}
+
+        .packet-count-text {{
+            font-size: 12px;
+            color: #9ca3af;
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+            font-weight: normal;
+            text-transform: none;
         }}
         
         .status-list {{
@@ -1518,14 +1558,36 @@ pub fn page(
             <div id="overview-content" class="tab-content active">
                 <div class="overview-grid">
                     <div class="section-card">
-                        <div class="section-title">Incoming Messages</div>
+                        <div class="section-header">
+                            <div class="section-title">Incoming Messages</div>
+                            <div class="section-packet-count">
+                                <svg class="packet-count-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24">
+                                    <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+                                        <path d="M6 9a6 6 0 1 0 12 0A6 6 0 0 0 6 9"/>
+                                        <path d="M12 3q2 .5 2 6c0 5.5-.667 5.667-2 6m0-12q-2 .5-2 6c0 5.5.667 5.667 2 6M6 9h12M3 20h7m4 0h7m-11 0a2 2 0 1 0 4 0a2 2 0 0 0-4 0m2-5v3"/>
+                                    </g>
+                                </svg>
+                                <span class="packet-count-text" id="incoming-packet-count">{} packets</span>
+                            </div>
+                        </div>
                         <div class="message-type-list">
                             {}
                         </div>
                     </div>
-                    
+
                     <div class="section-card">
-                        <div class="section-title">Outgoing Messages</div>
+                        <div class="section-header">
+                            <div class="section-title">Outgoing Messages</div>
+                            <div class="section-packet-count">
+                                <svg class="packet-count-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24">
+                                    <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+                                        <path d="M6 9a6 6 0 1 0 12 0A6 6 0 0 0 6 9"/>
+                                        <path d="M12 3q2 .5 2 6c0 5.5-.667 5.667-2 6m0-12q-2 .5-2 6c0 5.5.667 5.667 2 6M6 9h12M3 20h7m4 0h7m-11 0a2 2 0 1 0 4 0a2 2 0 0 0-4 0m2-5v3"/>
+                                    </g>
+                                </svg>
+                                <span class="packet-count-text" id="outgoing-packet-count">{} packets</span>
+                            </div>
+                        </div>
                         <div class="message-type-list">
                             {}
                         </div>
@@ -1960,12 +2022,30 @@ pub fn page(
                 errorsElement.textContent = totalErrors.toLocaleString();
             }}
             
-            // Update uptime using specific selector  
+            // Update uptime using specific selector
             const uptimeElement = document.querySelector('.uptime-value-large');
             if (uptimeElement && metrics.uptime_formatted) {{
                 uptimeElement.textContent = metrics.uptime_formatted;
             }}
-            
+
+            // Update UDP packet counts in overview cards
+            const incomingPacketElement = document.getElementById('incoming-packet-count');
+            const outgoingPacketElement = document.getElementById('outgoing-packet-count');
+
+            if (incomingPacketElement) {{
+                const incomingPackets = (metrics.udp && metrics.udp.incoming_packets !== undefined)
+                    ? metrics.udp.incoming_packets
+                    : 0;
+                incomingPacketElement.textContent = `${{incomingPackets.toLocaleString()}} packets`;
+            }}
+
+            if (outgoingPacketElement) {{
+                const outgoingPackets = (metrics.udp && metrics.udp.outgoing_packets !== undefined)
+                    ? metrics.udp.outgoing_packets
+                    : 0;
+                outgoingPacketElement.textContent = `${{outgoingPackets.toLocaleString()}} packets`;
+            }}
+
             // Helper function to format bytes with flexible units
             function formatBytesPerSec(bytesPerSec) {{
                 if (bytesPerSec >= 1024 * 1024 * 1024) {{
@@ -2223,7 +2303,9 @@ pub fn page(
         memory_usage,
         disk_usage,
         disk_usage,
+        format_number(snapshot.udp.incoming_packets),
         generate_protocol_items(&snapshot.incoming_protos),
+        format_number(snapshot.udp.outgoing_packets),
         generate_protocol_items(&snapshot.outgoing_protos),
     )
 }

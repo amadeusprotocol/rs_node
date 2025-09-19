@@ -1,9 +1,6 @@
 //! Deterministic wrapper API over RocksDB v10.
 use once_cell::sync::OnceCell;
-use rust_rocksdb::{
-    BlockBasedOptions, Cache, ColumnFamilyDescriptor, Direction, IteratorMode, MultiThreaded, OptimisticTransactionDB,
-    OptimisticTransactionOptions, Options, ReadOptions, Transaction, WriteOptions,
-};
+use rust_rocksdb::{BlockBasedOptions, Cache, ColumnFamilyDescriptor, DBCompressionType, DBRecoveryMode, Direction, FlushOptions, IteratorMode, MultiThreaded, OptimisticTransactionDB, OptimisticTransactionOptions, Options, ReadOptions, SliceTransform, Transaction, WriteOptions};
 use tokio::fs::create_dir_all;
 
 #[cfg(test)]
@@ -130,9 +127,9 @@ fn get_handles() -> &'static DbHandles {
 }
 
 /// Expects path directory to exist
-pub async fn init(base: &str) -> Result<(), Error> {
+pub async fn init(base: String) -> Result<(), Error> {
     if GLOBAL_DB.get().is_some() {
-        return Ok(());
+        return Ok(()); // singleton
     }
 
     let path = format!("{}/db", base);
@@ -142,13 +139,34 @@ pub async fn init(base: &str) -> Result<(), Error> {
     db_opts.create_if_missing(true);
     db_opts.create_missing_column_families(true);
 
-    // Set RAM limits to 10MB total
-    db_opts.set_db_write_buffer_size(10 * 1024 * 1024); // 10MB total write buffer size
-    db_opts.set_max_write_buffer_number(3); // Maximum 3 write buffers per CF
+    #[cfg(debug_assertions)]
+    db_opts.set_use_fsync(false); // faster on macOS for dev
 
-    // Set block cache to 2MB (part of the 10MB limit)
-    let cache = Cache::new_lru_cache(2 * 1024 * 1024); // 2MB block cache
+    // Bigger memtables → fewer WAL flushes/SSTs
+    db_opts.set_write_buffer_size(64 * 1024 * 1024);
+    db_opts.set_db_write_buffer_size(1024 * 1024 * 1024);
+    db_opts.set_max_write_buffer_number(3);
+    db_opts.set_min_write_buffer_number_to_merge(1);
+
+    // Keep open FDs bounded
+    db_opts.set_max_open_files(1024);
+    db_opts.set_max_file_opening_threads(8);
+    db_opts.increase_parallelism(4);
+
+    // WAL hygiene: trigger flush/purge rather than piling up thousands of WALs
+    db_opts.set_max_total_wal_size(1 * 1024 * 1024 * 1024); // 1GB cap
+    db_opts.set_recycle_log_file_num(8);
+    db_opts.set_wal_bytes_per_sync(1 << 20);
+    db_opts.set_bytes_per_sync(1 << 20);
+
+    // Faster, tolerant recovery (optional)
+    db_opts.set_wal_recovery_mode(DBRecoveryMode::TolerateCorruptedTailRecords);
+
+    // RocksDB auto-allocates between flushes/compactions
+    db_opts.set_max_background_jobs(6);
+
     let mut block_opts = BlockBasedOptions::default();
+    let cache = Cache::new_lru_cache(128 * 1024 * 1024);
     block_opts.set_block_cache(&cache);
     db_opts.set_block_based_table_factory(&block_opts);
 
@@ -156,18 +174,29 @@ pub async fn init(base: &str) -> Result<(), Error> {
         .iter()
         .map(|&name| {
             let mut opts = Options::default();
-            opts.set_target_file_size_base(2 * 1024 * 1024 * 1024);
+            opts.set_target_file_size_base(64 * 1024 * 1024);
             opts.set_target_file_size_multiplier(2);
-            // Set write buffer size per CF (shared from total 10MB)
-            opts.set_write_buffer_size(1024 * 1024); // 1MB per CF write buffer
-            opts.set_max_write_buffer_number(2); // Max 2 buffers per CF
+            opts.set_write_buffer_size(64 * 1024 * 1024);
+            opts.set_max_write_buffer_number(2);
+            opts.set_level_zero_file_num_compaction_trigger(4);
+            opts.set_compression_type(DBCompressionType::Lz4);
+            opts.set_level_compaction_dynamic_level_bytes(true);
+            opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(8));
+            let mut block_opts = BlockBasedOptions::default();
+            block_opts.set_bloom_filter(10.0, true);
+            block_opts.set_block_size(16 * 1024); // 16KB blocks
+            opts.set_block_based_table_factory(&block_opts);
             ColumnFamilyDescriptor::new(name, opts)
         })
         .collect();
 
     let db: OptimisticTransactionDB<MultiThreaded> =
-        OptimisticTransactionDB::open_cf_descriptors(&db_opts, path, cf_descs)?;
+        OptimisticTransactionDB::open_cf_descriptors(&db_opts, path.clone(), cf_descs)?;
+    db.flush_opt(&FlushOptions::default())?; // for the default CF
+    db.flush_wal(true)?; // forces WAL roll+fsync
+
     GLOBAL_DB.set(DbHandles { db }).ok();
+
     Ok(())
 }
 

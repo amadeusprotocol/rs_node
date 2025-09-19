@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn, Instrument};
 
 fn main() -> anyhow::Result<()> {
     init_tracing();
@@ -39,9 +39,9 @@ async fn node_main() -> anyhow::Result<()> {
     let udp = tokio::spawn(async move {
         info!("udp server listening on {addr}");
         if let Err(e) = recv_loop(ctx_local).await {
-            eprintln!("udp node error: {e}");
+            error!("udp node error: {e}");
         }
-    });
+    }.instrument(tracing::Span::current()));
 
     let addr = format!("0.0.0.0:{}", get_http_port());
     let socket = TcpListener::bind(&addr).await.expect("bind http");
@@ -53,7 +53,7 @@ async fn node_main() -> anyhow::Result<()> {
         if let Err(e) = http_serve(socket, ctx_local).await {
             eprintln!("http server error: {e}");
         }
-    });
+    }.instrument(tracing::Span::current()));
 
     tokio::try_join!(udp, http)?;
 

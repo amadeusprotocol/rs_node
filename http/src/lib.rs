@@ -13,6 +13,8 @@ mod views {
 }
 
 use ama_core::Context;
+use axum::http::{header, StatusCode};
+use axum::routing::get;
 use std::process;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,8 +24,30 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 
+async fn favicon() -> impl axum::response::IntoResponse {
+    match tokio::fs::read("http/static/favicon.ico").await {
+        Ok(content) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "image/x-icon"),
+                (header::CACHE_CONTROL, "public, max-age=86400"),
+            ],
+            content,
+        ),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            [
+                (header::CONTENT_TYPE, "text/plain"),
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
+            vec![],
+        ),
+    }
+}
+
 pub async fn serve(socket: TcpListener, ctx: Arc<Context>) -> anyhow::Result<()> {
     let app = routes::app(ctx.clone())
+        .route("/favicon.ico", get(favicon))
         .nest_service("/static", ServeDir::new("http/static"))
         // Add timeout for regular requests (SSE streams handle their own timeouts)
         .layer(TimeoutLayer::new(Duration::from_secs(30)))

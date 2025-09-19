@@ -9,11 +9,7 @@ const TEST_DB: &str = "target/test_wasm";
 const CONTRACTS_DIR: &str = "../contracts"; // because core is in the workspace
 
 fn setup_test_env() -> CallEnv {
-    INIT.call_once(|| {
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let _ = rocksdb::init(TEST_DB).await;
-        });
-    });
+    // Don't use INIT.call_once(), just initialize fresh each time like other tests
 
     CallEnv {
         entry_epoch: 42,
@@ -128,8 +124,12 @@ mod runtime_tests {
 
     #[test]
     fn test_storage_operations_integration() {
-        let _env = setup_test_env();
+        // Use the same pattern as KV tests - unique DB per test
+        let base = format!("target/test_wasm_{}", std::process::id());
+        let _guard = rocksdb::init_for_test(&base).expect("init test db");
         kv::reset_for_tests(); // clear any existing data
+
+        let _env = setup_test_env();
 
         // test kv operations that the wasm host functions would use
         kv::kv_put("test_key", b"test_value");

@@ -6,6 +6,7 @@ use crate::utils::rocksdb;
 use crate::utils::safe_etf::encode_safe_deterministic;
 use eetf::{Atom, BigInteger, Binary, Term};
 use std::collections::HashMap;
+use tracing::{info, Instrument};
 // TODO: make the database trait that the fabric will use
 
 #[derive(Debug, thiserror::Error)]
@@ -20,6 +21,8 @@ pub enum Error {
     BinDecode(#[from] bincode::error::DecodeError),
     #[error(transparent)]
     BinEncode(#[from] bincode::error::EncodeError),
+    #[error(transparent)]
+    Join(#[from] tokio::task::JoinError),
     // #[error(transparent)]
     // Entry(#[from] consensus::entry::Error),
     #[error(transparent)]
@@ -40,7 +43,18 @@ const CF_SYSCONF: &str = "sysconf";
 
 /// Initialize Fabric DB area (creates/open RocksDB with the required CFs)
 pub async fn init_kvdb(base: &str) -> Result<(), Error> {
-    rocksdb::init(&format!("{}/fabric", base)).await.map_err(Into::into)
+    let long_init_hint = tokio::spawn(async {
+        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+        info!("rocksdb needs time to seal memtables to SST and compact L0 files...");
+    }.instrument(tracing::Span::current()));
+
+    // spawn_blocking + block_on is moving the init off the async runtime since
+    // it never yields (nasty rocksdb) and the hint would never be scheduled
+    let path = format!("{}/fabric", base);
+    tokio::task::spawn_blocking(move || tokio::runtime::Handle::current().block_on(rocksdb::init(path))).await??;
+    long_init_hint.abort();
+
+    Ok(())
 }
 
 pub fn close() {
