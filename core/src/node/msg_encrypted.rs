@@ -1,7 +1,7 @@
 use crate::Ver;
 use crate::utils::{bls12_381, misc::get_unix_nanos_now};
-use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit};
 use aes_gcm::aead::{Aead, AeadCore, OsRng};
+use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use tokio::sync::RwLock;
@@ -35,18 +35,18 @@ impl crate::utils::misc::Typename for Error {
 #[derive(Debug, Clone)]
 pub struct EncryptedMessage {
     pub version: Ver,
-    pub pk: [u8; 48],           // Sender's public key
-    pub shard_index: u16,       // Current shard index
-    pub shard_total: u16,       // Total number of shards
-    pub ts_nano: u64,           // Timestamp in nanoseconds
-    pub original_size: u32,     // Size of original plaintext
-    pub payload: Vec<u8>,       // Encrypted data (for single shard) or encrypted Reed-Solomon shard
+    pub pk: [u8; 48],       // Sender's public key
+    pub shard_index: u16,   // Current shard index
+    pub shard_total: u16,   // Total number of shards
+    pub ts_nano: u64,       // Timestamp in nanoseconds
+    pub original_size: u32, // Size of original plaintext
+    pub payload: Vec<u8>,   // Encrypted data (for single shard) or encrypted Reed-Solomon shard
 }
 
 impl EncryptedMessage {
     /// Derive AES-256 key using Elixir-compatible method: SHA256(shared_secret + timestamp_in_nanoseconds + iv)
     fn derive_aes_key(shared_secret: &[u8], ts_nano: u64, iv: &[u8]) -> [u8; 32] {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
         hasher.update(shared_secret);
@@ -141,7 +141,8 @@ impl EncryptedMessage {
 
     /// Raw decryption without decompression (for reassembler use)
     fn decrypt_raw(&self, shared_secret: &[u8]) -> Result<Vec<u8>, Error> {
-        if self.payload.len() < 28 {  // 12 (nonce) + 16 (tag) + minimum ciphertext
+        if self.payload.len() < 28 {
+            // 12 (nonce) + 16 (tag) + minimum ciphertext
             return Err(Error::PayloadTooSmall);
         }
 
@@ -160,8 +161,7 @@ impl EncryptedMessage {
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
         let nonce = Nonce::from_slice(nonce_bytes);
 
-        cipher.decrypt(nonce, ciphertext_with_tag.as_slice())
-            .map_err(|_| Error::AesError)
+        cipher.decrypt(nonce, ciphertext_with_tag.as_slice()).map_err(|_| Error::AesError)
     }
 
     /// Serialize to binary format
@@ -217,7 +217,7 @@ impl TryFrom<&[u8]> for EncryptedMessage {
         let version = Ver::new(version_bytes[0], version_bytes[1], version_bytes[2]);
 
         // Skip reserved byte at position 6
-        let pk_start = 7;  // Was 6, now 7 to skip the reserved byte
+        let pk_start = 7; // Was 6, now 7 to skip the reserved byte
         let pk_end = pk_start + 48;
         let pk = bin[pk_start..pk_end].try_into().expect("pk should be 48 bytes");
 
@@ -229,15 +229,7 @@ impl TryFrom<&[u8]> for EncryptedMessage {
 
         let payload = bin[pk_end + 16..].to_vec();
 
-        Ok(Self {
-            version,
-            pk,
-            shard_index,
-            shard_total,
-            ts_nano,
-            original_size,
-            payload,
-        })
+        Ok(Self { version, pk, shard_index, shard_total, ts_nano, original_size, payload })
     }
 }
 
@@ -252,6 +244,7 @@ struct EncryptedReassemblyKey {
     ts_nano: u64,
     shard_total: u16,
     original_size: u32,
+    version: Ver,
 }
 
 impl From<&EncryptedMessage> for EncryptedReassemblyKey {
@@ -261,6 +254,7 @@ impl From<&EncryptedMessage> for EncryptedReassemblyKey {
             ts_nano: msg.ts_nano,
             shard_total: msg.shard_total,
             original_size: msg.original_size,
+            version: msg.version,
         }
     }
 }
@@ -293,15 +287,12 @@ impl Default for EncryptedMessageReassembler {
 
 impl EncryptedMessageReassembler {
     pub fn new() -> Self {
-        Self {
-            reorg: RwLock::new(HashMap::new()),
-        }
+        Self { reorg: RwLock::new(HashMap::new()) }
     }
 
     /// Clean up stale incomplete reassembly entries older than `seconds`
     pub async fn clear_stale(&self, seconds: u64) -> usize {
-        let threshold_nanos = get_unix_nanos_now()
-            .saturating_sub(seconds as u128 * 1_000_000_000);
+        let threshold_nanos = get_unix_nanos_now().saturating_sub(seconds as u128 * 1_000_000_000);
         let mut map = self.reorg.write().await;
         let size_before = map.len();
         map.retain(|k, _v| (k.ts_nano as u128) > threshold_nanos);
@@ -345,9 +336,8 @@ impl EncryptedMessageReassembler {
                         EncryptedEntryState::Collecting(shards_map) => {
                             shards_map.insert(encrypted_msg.shard_index, encrypted_msg.payload.clone());
                             if shards_map.len() >= data_shards {
-                                let shards: Vec<(usize, Vec<u8>)> = shards_map.iter()
-                                    .map(|(idx, bytes)| (*idx as usize, bytes.clone()))
-                                    .collect();
+                                let shards: Vec<(usize, Vec<u8>)> =
+                                    shards_map.iter().map(|(idx, bytes)| (*idx as usize, bytes.clone())).collect();
                                 // Mark as spent to avoid reuse and release memory
                                 *occ.get_mut() = EncryptedEntryState::Spent;
                                 maybe_shards = Some(shards);
@@ -363,19 +353,19 @@ impl EncryptedMessageReassembler {
             let mut rs_res = crate::utils::reed_solomon::ReedSolomonResource::new(data_shards, data_shards)?;
             // For EncryptedMessage, we reconstruct to get the encrypted payload (nonce + ciphertext)
             // The original_size in the key refers to the encrypted payload size, not the plaintext size
-            let encrypted_payload = rs_res.decode_shards(shards, data_shards + data_shards,
-                encrypted_msg.payload.len() * data_shards)?; // Rough estimate
+            let encrypted_payload =
+                rs_res.decode_shards(shards, key.shard_total as usize, key.original_size as usize)?;
 
             let shared_secret = bls12_381::get_shared_secret(&key.pk, config_sk)?;
 
             // Create a temporary EncryptedMessage for decryption
             let temp_msg = EncryptedMessage {
-                version: encrypted_msg.version,
+                version: key.version,
                 pk: key.pk,
                 shard_index: 0,
                 shard_total: 1,
                 ts_nano: key.ts_nano,
-                original_size: key.original_size, // This is the plaintext size
+                original_size: key.original_size,
                 payload: encrypted_payload,
             };
 
@@ -416,10 +406,7 @@ impl EncryptedMessageReassembler {
 
     /// Creates encrypted message shards for broadcast (using own key as target)
     /// Used for messages that should be decryptable by the sender
-    pub fn build_broadcast_shards(
-        config: &crate::config::Config,
-        payload: &[u8],
-    ) -> Result<Vec<Vec<u8>>, Error> {
+    pub fn build_broadcast_shards(config: &crate::config::Config, payload: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
         let sender_pk = config.get_pk();
         Self::build_shards(config, payload, &sender_pk)
     }
@@ -481,7 +468,8 @@ mod tests {
         assert_eq!(deserialized.payload, encrypted_msg.payload);
 
         // Bob can still decrypt the deserialized message
-        let decrypted2 = deserialized.decrypt(&shared_secret_bob).expect("decryption of deserialized message should succeed");
+        let decrypted2 =
+            deserialized.decrypt(&shared_secret_bob).expect("decryption of deserialized message should succeed");
         assert_eq!(decrypted2, test_message, "Decrypted deserialized message should match original");
 
         println!("✓ EncryptedMessage round-trip test passed with BLS-compatible encryption");
@@ -507,8 +495,8 @@ mod tests {
         let encrypted_messages = EncryptedMessage::encrypt(&pk_alice, &shared_secret_alice, test_message, version)
             .expect("64-byte key encryption should succeed");
 
-        let decrypted = encrypted_messages[0].decrypt(&shared_secret_bob)
-            .expect("64-byte key decryption should succeed");
+        let decrypted =
+            encrypted_messages[0].decrypt(&shared_secret_bob).expect("64-byte key decryption should succeed");
 
         assert_eq!(decrypted, test_message, "64-byte key messages should round-trip correctly");
 
@@ -602,28 +590,59 @@ mod tests {
 
     #[test]
     fn special_compatibility_test() {
-        let src_pk = [169, 28, 174, 71, 198, 45, 103, 77, 154, 232, 203, 244, 17, 34, 237, 129, 66, 93, 94, 78, 141, 226, 51, 166, 153, 186, 221, 114, 128, 18, 56, 100, 37, 178, 123, 55, 51, 197, 165, 109, 247, 71, 136, 163, 211, 255, 114, 7];
-        let src_sk = [9, 150, 210, 55, 28, 239, 9, 161, 68, 62, 249, 195, 10, 127, 86, 17, 19, 41, 143, 189, 9, 205, 85, 30, 245, 51, 80, 235, 135, 77, 62, 50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        let dst_pk = [169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244, 13, 106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138, 2, 252, 27, 222];
-        let dst_sk = [97, 100, 58, 216, 121, 14, 255, 149, 44, 165, 1, 88, 100, 35, 75, 192, 138, 138, 67, 9, 134, 210, 6, 88, 155, 3, 21, 197, 119, 155, 33, 163, 103, 4, 46, 229, 62, 157, 185, 90, 19, 106, 206, 72, 245, 133, 133, 183, 132, 250, 78, 92, 40, 160, 223, 244, 177, 53, 84, 31, 128, 185, 176, 166];
-        let expected_shared_secret = [145, 211, 143, 152, 146, 107, 226, 184, 193, 178, 234, 80, 224, 201, 239, 165, 131, 124, 241, 141, 235, 118, 201, 148, 206, 156, 92, 207, 137, 41, 12, 197, 10, 84, 128, 170, 183, 98, 125, 37, 158, 197, 73, 174, 140, 4, 177, 64];
-        let enc_msg_bin = [65, 77, 65, 1, 1, 8, 0, 169, 28, 174, 71, 198, 45, 103, 77, 154, 232, 203, 244, 17, 34, 237, 129, 66, 93, 94, 78, 141, 226, 51, 166, 153, 186, 221, 114, 128, 18, 56, 100, 37, 178, 123, 55, 51, 197, 165, 109, 247, 71, 136, 163, 211, 255, 114, 7, 0, 0, 0, 1, 24, 102, 118, 222, 246, 28, 196, 24, 0, 0, 0, 29, 174, 153, 105, 150, 110, 19, 115, 132, 10, 128, 192, 116, 95, 183, 109, 90, 36, 47, 94, 235, 25, 153, 6, 60, 1, 52, 179, 109, 43, 112, 31, 229, 100, 116, 222, 232, 93, 45, 153, 183, 142, 186, 250, 130, 127, 209, 21, 245, 77, 243, 34, 160, 38, 105, 188, 253, 167, 218, 80];
+        let src_pk = [
+            169, 28, 174, 71, 198, 45, 103, 77, 154, 232, 203, 244, 17, 34, 237, 129, 66, 93, 94, 78, 141, 226, 51,
+            166, 153, 186, 221, 114, 128, 18, 56, 100, 37, 178, 123, 55, 51, 197, 165, 109, 247, 71, 136, 163, 211,
+            255, 114, 7,
+        ];
+        let src_sk = [
+            9, 150, 210, 55, 28, 239, 9, 161, 68, 62, 249, 195, 10, 127, 86, 17, 19, 41, 143, 189, 9, 205, 85, 30, 245,
+            51, 80, 235, 135, 77, 62, 50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+        ];
+        let dst_pk = [
+            169, 61, 121, 32, 15, 191, 174, 241, 143, 231, 124, 53, 186, 69, 28, 212, 233, 130, 22, 18, 34, 244, 13,
+            106, 212, 255, 255, 47, 184, 178, 49, 111, 90, 90, 184, 84, 230, 115, 5, 143, 205, 208, 136, 138, 2, 252,
+            27, 222,
+        ];
+        let dst_sk = [
+            97, 100, 58, 216, 121, 14, 255, 149, 44, 165, 1, 88, 100, 35, 75, 192, 138, 138, 67, 9, 134, 210, 6, 88,
+            155, 3, 21, 197, 119, 155, 33, 163, 103, 4, 46, 229, 62, 157, 185, 90, 19, 106, 206, 72, 245, 133, 133,
+            183, 132, 250, 78, 92, 40, 160, 223, 244, 177, 53, 84, 31, 128, 185, 176, 166,
+        ];
+        let expected_shared_secret = [
+            145, 211, 143, 152, 146, 107, 226, 184, 193, 178, 234, 80, 224, 201, 239, 165, 131, 124, 241, 141, 235,
+            118, 201, 148, 206, 156, 92, 207, 137, 41, 12, 197, 10, 84, 128, 170, 183, 98, 125, 37, 158, 197, 73, 174,
+            140, 4, 177, 64,
+        ];
+        let enc_msg_bin = [
+            65, 77, 65, 1, 1, 8, 0, 169, 28, 174, 71, 198, 45, 103, 77, 154, 232, 203, 244, 17, 34, 237, 129, 66, 93,
+            94, 78, 141, 226, 51, 166, 153, 186, 221, 114, 128, 18, 56, 100, 37, 178, 123, 55, 51, 197, 165, 109, 247,
+            71, 136, 163, 211, 255, 114, 7, 0, 0, 0, 1, 24, 102, 118, 222, 246, 28, 196, 24, 0, 0, 0, 29, 174, 153,
+            105, 150, 110, 19, 115, 132, 10, 128, 192, 116, 95, 183, 109, 90, 36, 47, 94, 235, 25, 153, 6, 60, 1, 52,
+            179, 109, 43, 112, 31, 229, 100, 116, 222, 232, 93, 45, 153, 183, 142, 186, 250, 130, 127, 209, 21, 245,
+            77, 243, 34, 160, 38, 105, 188, 253, 167, 218, 80,
+        ];
 
         // Test 1: Verify shared secret computation (src sending to dst)
-        let computed_shared_secret = bls12_381::get_shared_secret(&dst_pk, &src_sk)
-            .expect("Should compute shared secret from src to dst");
-        assert_eq!(computed_shared_secret, expected_shared_secret,
-            "Computed shared secret should match expected value");
+        let computed_shared_secret =
+            bls12_381::get_shared_secret(&dst_pk, &src_sk).expect("Should compute shared secret from src to dst");
+        assert_eq!(
+            computed_shared_secret, expected_shared_secret,
+            "Computed shared secret should match expected value"
+        );
 
         // Test 2: Verify symmetric shared secret (dst receiving from src)
-        let symmetric_shared_secret = bls12_381::get_shared_secret(&src_pk, &dst_sk)
-            .expect("Should compute shared secret from dst to src");
-        assert_eq!(symmetric_shared_secret, expected_shared_secret,
-            "Symmetric shared secret should match expected value");
+        let symmetric_shared_secret =
+            bls12_381::get_shared_secret(&src_pk, &dst_sk).expect("Should compute shared secret from dst to src");
+        assert_eq!(
+            symmetric_shared_secret, expected_shared_secret,
+            "Symmetric shared secret should match expected value"
+        );
 
         // Test 3: Parse the encrypted message
-        let encrypted_msg = EncryptedMessage::try_from(enc_msg_bin.as_slice())
-            .expect("Should parse encrypted message from binary");
+        let encrypted_msg =
+            EncryptedMessage::try_from(enc_msg_bin.as_slice()).expect("Should parse encrypted message from binary");
 
         // Verify message structure matches expected format
         assert_eq!(encrypted_msg.version, Ver::new(1, 1, 8), "Version should be 1.1.8");
@@ -633,8 +652,7 @@ mod tests {
         assert_eq!(encrypted_msg.original_size, 29, "Original plaintext size should be 37");
 
         // Test 4: Decrypt the message using dst's secret key
-        let decrypted = encrypted_msg.decrypt(&computed_shared_secret)
-            .expect("Should decrypt message successfully");
+        let decrypted = encrypted_msg.decrypt(&computed_shared_secret).expect("Should decrypt message successfully");
 
         // Verify decrypted content
         assert_eq!(decrypted.len(), 29, "Decrypted length should match original_size");

@@ -14,7 +14,6 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tracing::{debug, info, instrument, warn};
 
-
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
 pub enum Error {
     #[error(transparent)]
@@ -422,11 +421,9 @@ impl Context {
         self.node_peers.update_peer_from_anr(ip, pk, version, status).await
     }
 
-
     /// Reads UDP datagram and silently does parsing, validation and reassembly
     /// If the protocol message is complete, returns Some(Protocol)
     pub async fn parse_udp(&self, buf: &[u8], src: Ipv4Addr) -> Option<Box<dyn Protocol>> {
-
         self.metrics.add_incoming_udp_packet(buf.len());
 
         // Fall back to old MessageV2 format for backward compatibility
@@ -435,18 +432,15 @@ impl Context {
                 Ok(proto) => {
                     self.node_peers.update_peer_from_proto(src, proto.typename()).await;
                     self.metrics.add_incoming_proto(proto.typename());
+                    if packet.len() > 1300 {
+                        println!("received {} from {}", proto.typename(), src);
+                    }
                     return Some(proto);
                 }
-                Err(e) => {
-                    println!("Failed to parse protocol from reassembled packet: {e}");
-                    self.metrics.add_error(&e)
-                },
+                Err(e) => self.metrics.add_error(&e),
             },
             Ok(None) => {} // waiting for more shards, not an error
-            Err(e) => {
-                println!("Failed to reassemble encrypted message from {}: {e}", src);
-                self.metrics.add_error(&e)
-            },
+            Err(e) => self.metrics.add_error(&e),
         }
 
         None
@@ -639,8 +633,6 @@ impl Context {
                 // - Get best entry for current height
                 // - Potentially rewind chain if needed
             }
-
-
         };
 
         Ok(())
