@@ -397,7 +397,7 @@ mod tests {
         insert_entry(&entry_hash2, height, slot2, &entry_bin2, seen_time).unwrap();
 
         // test querying by height should return both entries
-        let entries = entries_by_height(height).unwrap();
+        let entries = entries_by_height(height as u64).unwrap();
         assert_eq!(entries.len(), 2);
         assert!(entries.contains(&entry_bin1));
         assert!(entries.contains(&entry_bin2));

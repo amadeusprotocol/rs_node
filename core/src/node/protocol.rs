@@ -737,7 +737,7 @@ mod tests {
         let result = parse_etf_bin(&bin).expect("should deserialize");
 
         // check that the result type is Pong
-        assert_eq!(result.typename(), "pong");
+        assert_eq!(result.typename(), "ping_reply");
     }
 
     #[tokio::test]
@@ -752,12 +752,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_peers_etf_roundtrip() {
-        let peers = GetPeerAnrs { ips: vec!["192.168.1.1".to_string(), "10.0.0.1".to_string()] };
+        let peers = GetPeerAnrs { has_peers_b3f4: vec![[192, 168, 1, 1], [10, 0, 0, 1]] };
 
         let bin = peers.to_etf_bin().expect("should serialize");
         let result = parse_etf_bin(&bin).expect("should deserialize");
 
-        assert_eq!(result.typename(), "peers");
+        assert_eq!(result.typename(), "get_peer_anrs");
     }
 
     #[tokio::test]
@@ -912,8 +912,8 @@ mod tests {
                 match sent_before {
                     Some(obj) => {
                         let sent_before_obj = obj.as_object().unwrap();
-                        let pong_before = sent_before_obj.get("pong").map(|v| v.as_u64().unwrap()).unwrap_or(0);
-                        let pong_after = sent_after.get("pong").map(|v| v.as_u64().unwrap()).unwrap_or(0);
+                        let pong_before = sent_before_obj.get("ping_reply").map(|v| v.as_u64().unwrap()).unwrap_or(0);
+                        let pong_after = sent_after.get("ping_reply").map(|v| v.as_u64().unwrap()).unwrap_or(0);
                         assert_eq!(
                             pong_after,
                             pong_before + 1,
@@ -922,7 +922,7 @@ mod tests {
                     }
                     None => {
                         // no sent packets before, should have 1 pong now
-                        assert_eq!(sent_after.get("pong").unwrap().as_u64().unwrap(), 1);
+                        assert_eq!(sent_after.get("ping_reply").unwrap().as_u64().unwrap(), 1);
                     }
                 }
             }

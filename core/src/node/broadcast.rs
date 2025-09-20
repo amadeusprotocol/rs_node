@@ -9,7 +9,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::debug;
 
-
 /// Options for broadcasting messages
 #[derive(Debug, Clone)]
 pub struct BroadcastOptions {

@@ -35,26 +35,28 @@ async fn test_config_has_all_essential_elixir_parts() {
 
     // verify node discovery - check that seed nodes list includes the essential nodes
     assert!(config.seed_ips.contains(&"72.9.144.110".parse().unwrap()));
-    assert!(config.seed_ips.contains(&"72.9.146.98".parse().unwrap()));
-    assert_eq!(config.seed_ips.len(), 30, "Expected exactly 30 seed nodes, got {}", config.seed_ips.len());
+    assert!(config.seed_ips.contains(&"167.235.169.185".parse().unwrap()));
+    assert!(config.seed_ips.contains(&"37.27.238.30".parse().unwrap()));
+    assert_eq!(config.seed_ips.len(), 3, "Expected exactly 3 seed nodes, got {}", config.seed_ips.len());
     assert_eq!(config.other_nodes, vec!["192.168.1.1", "192.168.1.2"]);
     assert_eq!(config.trust_factor, 0.9);
     assert_eq!(config.max_peers, 500);
 
-    // verify seed anrs from config.exs (updated to 30 seed ANRs)
-    assert_eq!(config.seed_anrs.len(), 30);
+    // verify seed anrs from config.exs (updated to 3 seed ANRs)
+    assert_eq!(config.seed_anrs.len(), 3);
     let seed_anr = &config.seed_anrs[0];
     assert_eq!(seed_anr.ip4, "72.9.144.110");
     assert_eq!(seed_anr.port, 36969);
     assert_eq!(seed_anr.version, ama_core::Ver::new(1, 1, 8));
-    assert_eq!(seed_anr.ts, 1755802866);
-    assert_eq!(seed_anr.signature.len(), 0); // empty signatures in new config
+    assert_eq!(seed_anr.ts, 1758219202);
+    assert!(seed_anr.signature.len() > 0); // has signatures in config
     assert_eq!(seed_anr.pk.len(), 48);
 
     // verify that the list includes essential known nodes
     let all_ips: Vec<&str> = config.seed_anrs.iter().map(|anr| anr.ip4.as_str()).collect();
     assert!(all_ips.contains(&"72.9.144.110"));
-    assert!(all_ips.contains(&"72.9.146.98"));
+    assert!(all_ips.contains(&"167.235.169.185"));
+    assert!(all_ips.contains(&"37.27.238.30"));
 
     // verify trainer keys
     assert_eq!(config.trainer_sk.len(), 64);
@@ -92,10 +94,11 @@ async fn test_config_from_sk() {
     assert_eq!(config.trainer_pop.len(), 96);
     assert_eq!(config.get_ver().to_string(), "1.1.8");
     assert_eq!(config.udp_port, 36969);
-    // verify that seed nodes list includes the essential nodes (now 30 nodes total)
+    // verify that seed nodes list includes the essential nodes (now 3 nodes total)
     assert!(config.seed_ips.contains(&"72.9.144.110".parse().unwrap()));
-    assert!(config.seed_ips.contains(&"72.9.146.98".parse().unwrap()));
-    assert_eq!(config.seed_ips.len(), 30, "Expected exactly 30 seed nodes, got {}", config.seed_ips.len());
+    assert!(config.seed_ips.contains(&"167.235.169.185".parse().unwrap()));
+    assert!(config.seed_ips.contains(&"37.27.238.30".parse().unwrap()));
+    assert_eq!(config.seed_ips.len(), 3, "Expected exactly 3 seed nodes, got {}", config.seed_ips.len());
 }
 
 #[tokio::test]

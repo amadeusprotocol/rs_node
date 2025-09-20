@@ -1,8 +1,10 @@
-use std::fmt;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// Version struct that represents a semantic version as three bytes [major, minor, patch]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, bincode::Encode, bincode::Decode)]
+#[derive(
+    Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, bincode::Encode, bincode::Decode,
+)]
 pub struct Ver([u8; 3]);
 
 impl Ver {

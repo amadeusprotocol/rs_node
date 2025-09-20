@@ -1,6 +1,10 @@
 //! Deterministic wrapper API over RocksDB v10.
 use once_cell::sync::OnceCell;
-use rust_rocksdb::{BlockBasedOptions, Cache, ColumnFamilyDescriptor, DBCompressionType, DBRecoveryMode, Direction, FlushOptions, IteratorMode, MultiThreaded, OptimisticTransactionDB, OptimisticTransactionOptions, Options, ReadOptions, SliceTransform, Transaction, WriteOptions};
+use rust_rocksdb::{
+    BlockBasedOptions, Cache, ColumnFamilyDescriptor, DBCompressionType, DBRecoveryMode, Direction, FlushOptions,
+    IteratorMode, MultiThreaded, OptimisticTransactionDB, OptimisticTransactionOptions, Options, ReadOptions,
+    SliceTransform, Transaction, WriteOptions,
+};
 use tokio::fs::create_dir_all;
 
 #[cfg(test)]

@@ -156,7 +156,7 @@ impl MessageV2 {
 
         let version_bytes = &bin[3..6];
         let version = Ver::new(version_bytes[0], version_bytes[1], version_bytes[2]);
-        
+
         if version < EARLIEST_SUPPORTED_VERSION {
             return Err(Error::VersionNotSupported);
         }
@@ -219,5 +219,4 @@ impl MessageV2 {
             Err(Error::InvalidFlags(flag_byte))
         }
     }
-
 }

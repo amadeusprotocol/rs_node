@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn pk_sign_verify_and_validate() {
-        let seed = seed32(1);
+        let seed = generate_sk();
         let pk = get_public_key(&seed).expect("pk");
         validate_public_key(&pk).expect("valid pk");
 
@@ -295,8 +295,8 @@ mod tests {
 
     #[test]
     fn shared_secret_symmetry() {
-        let a = seed32(2);
-        let b = seed32(3);
+        let a = generate_sk();
+        let b = generate_sk();
         let pk_a = get_public_key(&a).unwrap();
         let pk_b = get_public_key(&b).unwrap();
         let ab = get_shared_secret(&pk_b, &a).unwrap();
@@ -333,8 +333,8 @@ mod tests {
 
     #[test]
     fn aggregation_behaviour() {
-        let s1 = seed32(4);
-        let s2 = seed32(5);
+        let s1 = generate_sk();
+        let s2 = generate_sk();
         let pk1 = get_public_key(&s1).unwrap();
         let pk2 = get_public_key(&s2).unwrap();
 
@@ -590,7 +590,6 @@ mod tests {
             println!("✓ Public keys match perfectly!");
         } else {
             panic!("✗ Public key mismatch");
-            return;
         }
 
         // Test 2: Signature Verification - Case 1

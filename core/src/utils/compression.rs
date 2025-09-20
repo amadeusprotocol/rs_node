@@ -1,5 +1,5 @@
 /// Compression utilities to match Elixir reference implementation
-use flate2::{read::DeflateDecoder, write::DeflateEncoder, Compression};
+use flate2::{Compression, read::DeflateDecoder, write::DeflateEncoder};
 use std::io::{Read, Write};
 
 /// Compress data using raw deflate compression (compatible with Elixir's deflate_compress)

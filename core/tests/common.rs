@@ -20,7 +20,6 @@ impl TmpTestDir {
         Ok(Self { path })
     }
 
-
     /// Convenience to get &str path.
     pub fn to_str(&self) -> &str {
         self.path.to_str().unwrap_or("")

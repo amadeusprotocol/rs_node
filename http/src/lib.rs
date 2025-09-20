@@ -13,7 +13,7 @@ mod views {
 }
 
 use ama_core::Context;
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::routing::get;
 use std::process;
 use std::sync::Arc;
@@ -28,20 +28,12 @@ async fn favicon() -> impl axum::response::IntoResponse {
     match tokio::fs::read("http/static/favicon.ico").await {
         Ok(content) => (
             StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "image/x-icon"),
-                (header::CACHE_CONTROL, "public, max-age=86400"),
-            ],
+            [(header::CONTENT_TYPE, "image/x-icon"), (header::CACHE_CONTROL, "public, max-age=86400")],
             content,
         ),
-        Err(_) => (
-            StatusCode::NOT_FOUND,
-            [
-                (header::CONTENT_TYPE, "text/plain"),
-                (header::CACHE_CONTROL, "no-cache"),
-            ],
-            vec![],
-        ),
+        Err(_) => {
+            (StatusCode::NOT_FOUND, [(header::CONTENT_TYPE, "text/plain"), (header::CACHE_CONTROL, "no-cache")], vec![])
+        }
     }
 }
 
