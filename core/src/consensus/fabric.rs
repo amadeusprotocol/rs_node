@@ -6,7 +6,7 @@ use crate::utils::rocksdb;
 use crate::utils::safe_etf::encode_safe_deterministic;
 use eetf::{Atom, BigInteger, Binary, Term};
 use std::collections::HashMap;
-use tracing::{info, Instrument};
+use tracing::{Instrument, info};
 // TODO: make the database trait that the fabric will use
 
 #[derive(Debug, thiserror::Error)]
@@ -43,10 +43,13 @@ const CF_SYSCONF: &str = "sysconf";
 
 /// Initialize Fabric DB area (creates/open RocksDB with the required CFs)
 pub async fn init_kvdb(base: &str) -> Result<(), Error> {
-    let long_init_hint = tokio::spawn(async {
-        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-        info!("rocksdb needs time to seal memtables to SST and compact L0 files...");
-    }.instrument(tracing::Span::current()));
+    let long_init_hint = tokio::spawn(
+        async {
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            info!("rocksdb needs time to seal memtables to SST and compact L0 files...");
+        }
+        .instrument(tracing::Span::current()),
+    );
 
     // spawn_blocking + block_on is moving the init off the async runtime since
     // it never yields (nasty rocksdb) and the hint would never be scheduled
@@ -62,7 +65,7 @@ pub fn close() {
 }
 
 /// Insert an entry into RocksDB: default CF by hash, seen time, and index by height/slot
-pub fn insert_entry(hash: &[u8; 32], height: u64, slot: u64, entry_bin: &[u8], seen_millis: u64) -> Result<(), Error> {
+pub fn insert_entry(hash: &[u8; 32], height: u32, slot: u32, entry_bin: &[u8], seen_millis: u64) -> Result<(), Error> {
     // idempotent: if already present under default CF, do nothing
     if rocksdb::get(CF_DEFAULT, hash)?.is_none() {
         rocksdb::put(CF_DEFAULT, hash, entry_bin)?;
@@ -100,7 +103,7 @@ pub fn entries_by_height(height: u64) -> Result<Vec<Vec<u8>>, Error> {
 }
 
 /// Get all entries (ETF-encoded) for a specific slot
-pub fn entries_by_slot(slot: u64) -> Result<Vec<Vec<u8>>, Error> {
+pub fn entries_by_slot(slot: u32) -> Result<Vec<Vec<u8>>, Error> {
     let slot_prefix = format!("{:016}:", slot);
     let kvs = rocksdb::iter_prefix(CF_ENTRY_BY_SLOT, slot_prefix.as_bytes())?;
     let mut out = Vec::new();
@@ -336,13 +339,13 @@ pub fn best_consensus_by_entryhash(
     if let Some((k, s, v)) = best { Ok((Some(k), Some(s), Some(v))) } else { Ok((None, None, None)) }
 }
 
-pub fn set_temporal_height(height: u64) -> Result<(), Error> {
-    Ok(rocksdb::put(CF_SYSCONF, b"temporal_height", &height.to_be_bytes())?)
+pub fn set_temporal_height(height: u32) -> Result<(), Error> {
+    Ok(rocksdb::put(CF_SYSCONF, b"temporal_height", &(height as u64).to_be_bytes())?)
 }
 
-pub fn get_temporal_height() -> Result<Option<u64>, Error> {
+pub fn get_temporal_height() -> Result<Option<u32>, Error> {
     match rocksdb::get(CF_SYSCONF, b"temporal_height")? {
-        Some(hb) => Ok(Some(u64::from_be_bytes(hb.try_into().map_err(|_| Error::KvCell("temporal_height"))?))),
+        Some(hb) => Ok(Some(u64::from_be_bytes(hb.try_into().map_err(|_| Error::KvCell("temporal_height"))?) as u32)),
         None => Ok(None),
     }
 }

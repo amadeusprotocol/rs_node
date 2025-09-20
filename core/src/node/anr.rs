@@ -5,11 +5,11 @@ use crate::utils::misc::{TermExt, TermMap, get_unix_secs_now};
 use crate::utils::version::Ver;
 use eetf::{Atom, Binary, FixInteger, Term};
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use serde_with::serde_as;
 use tracing::debug;
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
@@ -331,7 +331,10 @@ impl Anr {
         map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
         map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
         map.insert(Term::Atom(Atom::from("ts")), Term::FixInteger(FixInteger::from(self.ts as i32)));
-        map.insert(Term::Atom(Atom::from("version")), Term::Binary(Binary::from(self.version.to_string().as_bytes().to_vec())));
+        map.insert(
+            Term::Atom(Atom::from("version")),
+            Term::Binary(Binary::from(self.version.to_string().as_bytes().to_vec())),
+        );
 
         map.into_term()
     }
@@ -460,6 +463,13 @@ impl NodeAnrs {
     }
 
     /// Get all anrs
+    pub async fn get_all_b3f4(&self) -> Vec<[u8; 4]> {
+        let map = self.store.read().await;
+        let anrs: Vec<[u8; 4]> = map.values().cloned().map(|a| a.pk_b3_f4).collect();
+        anrs
+    }
+
+    /// Get all anrs
     pub async fn get_all(&self) -> Vec<Anr> {
         let map = self.store.read().await;
         let anrs: Vec<Anr> = map.values().cloned().collect();
@@ -513,32 +523,14 @@ impl NodeAnrs {
     }
 
     /// Get random verified nodes
-    pub async fn get_random_verified(&self, count: usize) -> Vec<Anr> {
-        use rand::seq::IndexedRandom;
-
-        let pks = self.handshaked().await;
-        let mut rng = rand::rng();
-        let selected: Vec<_> = pks.choose_multiple(&mut rng, count).cloned().collect();
-
-        let mut anrs = Vec::new();
-        for pk in selected {
-            if let Some(anr) = self.get(&pk).await {
-                anrs.push(anr.pack());
-            }
-        }
-
-        anrs
-    }
-
-    /// Get random unverified nodes
-    pub async fn get_random_not_handshaked(&self, count: usize) -> Vec<Ipv4Addr> {
+    pub async fn get_random_verified(&self, count: usize) -> Vec<Ipv4Addr> {
         use rand::seq::IndexedRandom;
         use std::collections::HashSet;
 
         // deduplicate by ip4
         let mut seen_ips = HashSet::new();
         let mut unique_pairs = Vec::new();
-        for ip4 in self.get_all_not_handshaked_ip4().await {
+        for ip4 in self.get_all_handshaked_ip4().await {
             if seen_ips.insert(ip4) {
                 unique_pairs.push(ip4);
             }
@@ -550,17 +542,17 @@ impl NodeAnrs {
         selected
     }
 
-    /// Get random verified nodes
-    pub async fn get_random_handshaked_anrs(&self, count: usize) -> Vec<Anr> {
+    /// Get random unverified nodes
+    pub async fn get_random_not_verified(&self, count: usize) -> Vec<Ipv4Addr> {
         use rand::seq::IndexedRandom;
         use std::collections::HashSet;
 
         // deduplicate by ip4
         let mut seen_ips = HashSet::new();
         let mut unique_pairs = Vec::new();
-        for anr in self.get_all_handshaked_anrs().await {
-            if seen_ips.insert(anr.ip4) {
-                unique_pairs.push(anr);
+        for ip4 in self.get_all_not_handshaked_ip4().await {
+            if seen_ips.insert(ip4) {
+                unique_pairs.push(ip4);
             }
         }
 
@@ -587,30 +579,47 @@ impl NodeAnrs {
     }
 
     /// Get all handshaked (pk, ip4) pairs
-    pub async fn get_all_handshaked_anrs(&self) -> Vec<Anr> {
+    pub async fn get_all_excluding_b3f4(&self, b3f4: &[[u8; 4]]) -> Vec<Anr> {
         let map = self.store.read().await;
         let mut results = Vec::new();
         for (_, v) in map.iter() {
-            if v.handshaked {
+            if !b3f4.contains(&v.pk_b3_f4) {
                 results.push(v.clone());
             }
         }
         results
     }
 
+    /// Get all handshaked (pk, ip4) pairs
+    pub async fn get_all_handshaked_ip4(&self) -> Vec<Ipv4Addr> {
+        let map = self.store.read().await;
+        let mut results = Vec::new();
+
+        for (_, v) in map.iter() {
+            if v.handshaked {
+                results.push(v.ip4);
+            }
+        }
+
+        results
+    }
+
     /// Get ip addresses for given public keys
     pub async fn by_pks_ip<T: AsRef<[u8]>>(&self, pks: &[T]) -> Vec<Ipv4Addr> {
         // build a set of owned pk bytes for efficient lookup
-        let pk_set: std::collections::HashSet<[u8; 48]> = pks.iter().filter_map(|p| {
-            let bytes = p.as_ref();
-            if bytes.len() == 48 {
-                let mut array = [0u8; 48];
-                array.copy_from_slice(bytes);
-                Some(array)
-            } else {
-                None
-            }
-        }).collect();
+        let pk_set: std::collections::HashSet<[u8; 48]> = pks
+            .iter()
+            .filter_map(|p| {
+                let bytes = p.as_ref();
+                if bytes.len() == 48 {
+                    let mut array = [0u8; 48];
+                    array.copy_from_slice(bytes);
+                    Some(array)
+                } else {
+                    None
+                }
+            })
+            .collect();
         let mut ips = Vec::new();
 
         let map = self.store.read().await;
@@ -905,7 +914,7 @@ mod tests {
 
         // Test multiple calls to ensure randomness and correct count
         for run in 1..=10 {
-            let result = registry.get_random_not_handshaked(3).await;
+            let result = registry.get_random_not_verified(3).await;
             println!("Run {}: got {} results", run, result.len());
 
             // Should return 3 results since we have 5 candidates
@@ -920,7 +929,7 @@ mod tests {
         }
 
         // Test asking for more than available
-        let result = registry.get_random_not_handshaked(10).await;
+        let result = registry.get_random_not_verified(10).await;
         assert_eq!(result.len(), 5, "Should return all 5 when asking for 10");
 
         // cleanup

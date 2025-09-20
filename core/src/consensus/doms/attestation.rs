@@ -8,7 +8,7 @@ use crate::utils::misc::{TermExt, TermMap};
 use crate::utils::safe_etf::encode_safe;
 use eetf::DecodeError as EtfDecodeError;
 use eetf::EncodeError as EtfEncodeError;
-use eetf::{Atom, Binary, List, Term};
+use eetf::{Atom, Binary, Term};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::net::Ipv4Addr;
@@ -35,8 +35,8 @@ pub enum Error {
 }
 
 #[derive(Debug, Clone)]
-pub struct AttestationBulk {
-    pub attestations: Vec<Attestation>,
+pub struct EventAttestation {
+    pub attestation: Attestation,
 }
 
 #[derive(Clone)]
@@ -57,50 +57,41 @@ impl Debug for Attestation {
     }
 }
 
-impl crate::utils::misc::Typename for AttestationBulk {
+impl crate::utils::misc::Typename for EventAttestation {
     fn typename(&self) -> &'static str {
         Self::TYPENAME
     }
 }
 
 #[async_trait::async_trait]
-impl Protocol for AttestationBulk {
-    #[instrument(skip(map), name = "AttestationBulk::from_etf_map_validated")]
+impl Protocol for EventAttestation {
+    #[instrument(skip(map), name = "EventAttestation::from_etf_map_validated")]
     fn from_etf_map_validated(map: TermMap) -> Result<Self, protocol::Error> {
-        let list = map.get_list("attestations_packed").ok_or(Error::Missing("attestations_packed"))?;
+        let bin = map.get_binary("attestation_packed").ok_or(Error::Missing("attestations_packed"))?;
+        let attestation = Attestation::from_etf_bin(bin)?;
 
-        let mut attestations = Vec::with_capacity(list.len());
-        for item in list {
-            let bin = item.get_binary().ok_or(Error::WrongType("attestations_packed:binary"))?;
-            attestations.push(Attestation::from_etf_bin(bin)?);
-        }
-
-        Ok(Self { attestations })
+        Ok(Self { attestation })
     }
 
     fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        let attestation_terms: Result<Vec<Term>, Error> =
-            self.attestations.iter().map(|att| att.to_etf_bin().map(|bin| Term::from(Binary { bytes: bin }))).collect();
+        let attestation = self.attestation.to_etf_bin()?;
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
-        m.insert(
-            Term::Atom(Atom::from("attestations_packed")),
-            Term::from(List { elements: attestation_terms.map_err(protocol::Error::Att)? }),
-        );
+        m.insert(Term::Atom(Atom::from("attestation_packed")), Term::from(Binary { bytes: attestation }));
         let term = Term::from(eetf::Map { map: m });
         let etf_data = encode_safe(&term);
         Ok(etf_data)
     }
 
-    #[instrument(skip(self, _ctx), name = "AttestationBulk::handle", err)]
+    #[instrument(skip(self, _ctx), name = "EventAttestation::handle", err)]
     async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
-        // TODO: handle the attestation bulk
-        Ok(vec![protocol::Instruction::Noop { why: "attestation bulk handling not implemented".to_string() }])
+        // TODO: handle the event_attestation
+        Ok(vec![protocol::Instruction::Noop { why: "event_attestation handling not implemented".to_string() }])
     }
 }
 
-impl AttestationBulk {
-    pub const TYPENAME: &'static str = "attestation_bulk";
+impl EventAttestation {
+    pub const TYPENAME: &'static str = "event_attestation";
 }
 
 impl Attestation {

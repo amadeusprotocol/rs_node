@@ -57,9 +57,9 @@ pub struct PeerInfo {
     pub last_msg: String,
     pub handshake_status: HandshakeStatus,
     pub version: Option<Ver>,
-    pub height: u64, // Keep for backward compatibility
-    pub temporal_height: u64,
-    pub rooted_height: u64,
+    pub height: u32, // Keep for backward compatibility
+    pub temporal_height: u32,
+    pub rooted_height: u32,
     pub latency: u64,
 }
 
@@ -68,7 +68,7 @@ impl Context {
         config: config::Config,
         socket: Arc<dyn UdpSocketExt>,
     ) -> Result<Arc<Self>, Error> {
-        use crate::config::{BROADCAST_PERIOD_SECS, CLEANUP_PERIOD_SECS, HANDSHAKE_PERIOD_SECS};
+        use crate::config::{ANR_PERIOD_SECS, BROADCAST_PERIOD_SECS, CLEANUP_PERIOD_SECS};
         use crate::consensus::fabric::init_kvdb;
         use crate::utils::archiver::init_storage;
         use metrics::Metrics;
@@ -115,12 +115,12 @@ impl Context {
         tokio::spawn({
             let ctx = ctx.clone();
             async move {
-                let mut ticker = interval(Duration::from_secs(HANDSHAKE_PERIOD_SECS));
+                let mut ticker = interval(Duration::from_secs(ANR_PERIOD_SECS));
                 ticker.tick().await;
                 loop {
                     ticker.tick().await;
-                    if let Err(e) = ctx.handshake_task().await {
-                        warn!("handshake task error: {e}");
+                    if let Err(e) = ctx.anr_task().await {
+                        warn!("anr task error: {e}");
                         ctx.metrics.add_error(&e);
                     }
                 }
@@ -180,22 +180,26 @@ impl Context {
         }
     }
 
-    #[instrument(skip(self), name = "handshake_task")]
-    async fn handshake_task(&self) -> Result<(), Error> {
-        let unverified_anrs = self.node_anrs.get_random_not_handshaked(3).await;
-        if !unverified_anrs.is_empty() {
-            // v1.1.7+ simplified NewPhoneWhoDis - no fields needed
+    #[instrument(skip(self), name = "anr_task")]
+    async fn anr_task(&self) -> Result<(), Error> {
+        let unverified_ips = self.node_anrs.get_random_not_verified(3).await;
+        if !unverified_ips.is_empty() {
             let new_phone_who_dis = NewPhoneWhoDis::new();
-
-            let nodes_count = unverified_anrs.len();
-            for ip in &unverified_anrs {
-                // Use encrypted format - Elixir v1.1.8+ nodes require encrypted handshakes
+            for ip in &unverified_ips {
                 new_phone_who_dis.send_to_with_metrics(self, *ip).await?;
                 self.node_peers.set_handshake_status(*ip, HandshakeStatus::Initiated).await?;
             }
-
-            info!("sent new_phone_who_dis to {nodes_count} nodes");
         }
+
+        let verified_ips = self.node_anrs.get_random_verified(3).await;
+        if !verified_ips.is_empty() {
+            let get_peer_anrs = GetPeerAnrs { has_peers_b3f4: self.node_anrs.get_all_b3f4().await };
+            for ip in &verified_ips {
+                self.send_message_to(&get_peer_anrs, *ip).await?;
+            }
+        }
+
+        info!("sent new_phone_who_dis to {} and get_peer_anrs to {} nodes", unverified_ips.len(), verified_ips.len());
 
         Ok(())
     }
@@ -204,6 +208,7 @@ impl Context {
     async fn broadcast_task(&self) -> Result<(), Error> {
         // v1.1.7+ simplified Ping - just timestamp
         let ping = Ping::new();
+        let tip = EventTip::from_current_tips()?;
 
         let my_ip = self.config.get_public_ipv4();
         let peers = self.node_peers.all().await?;
@@ -212,11 +217,12 @@ impl Context {
             for peer in peers {
                 if peer.ip != my_ip {
                     self.send_message_to(&ping, peer.ip).await?;
+                    self.send_message_to(&tip, peer.ip).await?;
                     sent_count += 1;
                 }
             }
 
-            debug!("sent {sent_count} ping messages");
+            debug!("sent {sent_count} ping and tip messages");
         }
 
         Ok(())
@@ -341,11 +347,11 @@ impl Context {
 
     pub fn get_block_height(&self) -> u64 {
         // Use rooted height as the main block height metric
-        self.get_rooted_height()
+        self.get_rooted_height() as u64
     }
 
     /// Get temporal height from fabric
-    pub fn get_temporal_height(&self) -> u64 {
+    pub fn get_temporal_height(&self) -> u32 {
         // Get temporal height from temporal tip entry (same as block height)
         match consensus::consensus::get_chain_tip_entry() {
             Ok(entry) => entry.header.height,
@@ -360,7 +366,7 @@ impl Context {
     }
 
     /// Get rooted height from fabric
-    pub fn get_rooted_height(&self) -> u64 {
+    pub fn get_rooted_height(&self) -> u32 {
         // Get rooted height from rooted tip entry
         match consensus::consensus::get_rooted_tip_entry() {
             Ok(entry) => entry.header.height,
@@ -432,9 +438,6 @@ impl Context {
                 Ok(proto) => {
                     self.node_peers.update_peer_from_proto(src, proto.typename()).await;
                     self.metrics.add_incoming_proto(proto.typename());
-                    if packet.len() > 1300 {
-                        println!("received {} from {}", proto.typename(), src);
-                    }
                     return Some(proto);
                 }
                 Err(e) => self.metrics.add_error(&e),
@@ -475,35 +478,21 @@ impl Context {
                 // self.send_signed_message_to(&reply, dst).await?;
             }
 
-            Instruction::SendPong { ts_m, dst } => {
-                let seen_time_ms = get_unix_millis_now();
-                let pong = Pong { ts: ts_m, seen_time: seen_time_ms };
-                self.send_message_to(&pong, dst).await?;
+            Instruction::SendGetPeerAnrsReply { dst, anrs } => {
+                let peers_v2 = GetPeerAnrsReply { anrs };
+                self.send_message_to(&peers_v2, dst).await?;
             }
 
-            Instruction::SendPeersV2 { dst } => {
-                let anrs = self.node_anrs.get_random_handshaked_anrs(3).await;
-                if anrs.is_empty() {
-                    debug!("not sending peers_v2, no handshaked anrs");
-                    return Ok(());
-                }
-                let peers_v2 = PeersV2 { anrs };
-                self.send_message_to(&peers_v2, dst).await?;
+            Instruction::SendPong { ts_m, dst } => {
+                let seen_time_ms = get_unix_millis_now();
+                let pong = PingReply { ts: ts_m, seen_time: seen_time_ms };
+                self.send_message_to(&pong, dst).await?;
             }
 
             Instruction::ValidTxs { txs } => {
                 // Insert valid transactions into tx pool
                 info!("received {} valid transactions", txs.len());
                 // TODO: implement TXPool.insert(txs) equivalent
-            }
-
-            Instruction::Peers { ips } => {
-                // Handle received peer IPs
-                info!("received {} peer IPs", ips.len());
-                for ip in ips {
-                    // TODO: add peer to NodePeers or update peer list
-                    debug!("adding peer IP: {}", ip);
-                }
             }
 
             Instruction::ReceivedSol { sol: _ } => {
@@ -526,15 +515,6 @@ impl Context {
                 // - Check if entry already exists by hash
                 // - Validate entry
                 // - Insert into Fabric if height >= rooted_tip_height
-            }
-
-            Instruction::AttestationBulk { bulk } => {
-                // Handle bulk attestations
-                info!("received attestation bulk with {} attestations", bulk.attestations.len());
-                // TODO: process each attestation
-                // Following Elixir implementation:
-                // - Unpack and validate each attestation
-                // - Add to FabricCoordinatorGen or AttestationCache
             }
 
             Instruction::ConsensusesPacked { packed: _ } => {
@@ -715,7 +695,7 @@ mod tests {
     async fn test_get_random_unverified_anrs() {
         // test the ANR selection logic - create a test registry
         let registry = NodeAnrs::new();
-        let result = registry.get_random_not_handshaked(3).await;
+        let result = registry.get_random_not_verified(3).await;
 
         // should not panic and should return a vector
         // should return at most 3 results as requested
@@ -936,7 +916,7 @@ mod tests {
                 let mut buf = [0u8; 1024];
                 let target: Ipv4Addr = "127.0.0.1".parse().unwrap();
 
-                let pong = Pong { ts: 1234567890, seen_time: 1234567890123 };
+                let pong = PingReply { ts: 1234567890, seen_time: 1234567890123 };
                 // Test send_to convenience function - should return error with MockSocket but not panic
                 match context.send_message_to(&pong, target).await {
                     Ok(_) => {

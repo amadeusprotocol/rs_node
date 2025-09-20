@@ -6,11 +6,11 @@ pub use crate::utils::bls12_381::generate_sk as gen_sk;
 use crate::utils::ip_resolver::resolve_public_ipv4;
 use crate::utils::version::Ver;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use std::net::Ipv4Addr;
 use std::path::Path;
 use tokio::fs;
 use tracing::{debug, info, warn};
-use serde_with::serde_as;
 
 // constants from elixir config/config.exs
 pub const ENTRY_SIZE: usize = 524288; // 512 KiB
@@ -19,7 +19,7 @@ pub const ATTESTATION_SIZE: usize = 512;
 pub const QUORUM: usize = 3; // quorum size for AMA
 pub const QUORUM_SINGLE: usize = 1; // quorum size for single shard
 pub const CLEANUP_PERIOD_SECS: u64 = 8; // how often node does the cleanup
-pub const HANDSHAKE_PERIOD_SECS: u64 = 1; // how often node checks ANR status
+pub const ANR_PERIOD_SECS: u64 = 3; // how often node checks ANR status
 pub const BROADCAST_PERIOD_SECS: u64 = 1; // how often node broadcasts pings
 
 pub const VERSION: Ver = parse_version();
@@ -57,13 +57,36 @@ const fn parse_version() -> Ver {
 }
 
 pub const SEED_NODES: &[&str] = &[
-    "72.9.144.110", "72.9.146.98", "46.17.96.23", "72.9.146.95", "72.9.146.75",
-    "72.9.146.91", "72.9.146.99", "72.9.146.71", "72.9.146.86", "72.9.146.89",
-    "72.9.146.93", "72.9.146.81", "72.9.146.102", "72.9.146.114", "46.17.103.22",
-    "72.9.146.106", "72.9.146.100", "72.9.146.111", "37.27.238.30", "72.9.146.109",
-    "156.67.62.246", "90.11.201.149", "139.60.162.57", "80.209.242.171",
-    "67.222.138.150", "67.222.138.149", "185.130.227.22", "66.248.204.226",
-    "152.114.194.195", "194.180.188.146"
+    "72.9.144.110",
+    "72.9.146.98",
+    "46.17.96.23",
+    "72.9.146.95",
+    "72.9.146.75",
+    "72.9.146.91",
+    "72.9.146.99",
+    "72.9.146.71",
+    "72.9.146.86",
+    "72.9.146.89",
+    "72.9.146.93",
+    "72.9.146.81",
+    "72.9.146.102",
+    "72.9.146.114",
+    "46.17.103.22",
+    "72.9.146.106",
+    "72.9.146.100",
+    "72.9.146.111",
+    "37.27.238.30",
+    "72.9.146.109",
+    "156.67.62.246",
+    "90.11.201.149",
+    "139.60.162.57",
+    "80.209.242.171",
+    "67.222.138.150",
+    "67.222.138.149",
+    "185.130.227.22",
+    "66.248.204.226",
+    "152.114.194.195",
+    "194.180.188.146",
 ];
 
 // seed anr from elixir config/config.exs

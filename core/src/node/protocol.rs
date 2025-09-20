@@ -4,11 +4,13 @@ use crate::Ver;
 use crate::bic::sol;
 use crate::bic::sol::Solution;
 use crate::consensus::consensus;
-use crate::consensus::doms::attestation::AttestationBulk;
+use crate::consensus::consensus::{get_chain_tip_entry, get_rooted_tip_entry};
+use crate::consensus::doms::EntrySummary;
+use crate::consensus::doms::attestation::EventAttestation;
 use crate::consensus::doms::entry::Entry;
 use crate::node::anr::Anr;
 use crate::node::peers::HandshakeStatus;
-use crate::node::{anr, msg_v2, peers, EncryptedMessageReassembler};
+use crate::node::{EncryptedMessageReassembler, anr, msg_v2, peers};
 use crate::utils::bls12_381;
 use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now};
 use crate::utils::safe_etf::encode_safe;
@@ -19,7 +21,6 @@ use std::fmt::Debug;
 use std::io::Error as IoError;
 use std::net::{Ipv4Addr, SocketAddr};
 use tracing::{instrument, warn};
-
 
 /// Every object that has this trait must be convertible from an Erlang ETF
 /// Binary representation and must be able to handle itself as a message
@@ -99,13 +100,13 @@ impl Typename for Error {
 #[derive(Debug, strum_macros::IntoStaticStr)]
 pub enum Instruction {
     Noop { why: String },
+    SendNewPhoneWhoDisReply { dst: Ipv4Addr },
+    SendGetPeerAnrsReply { anrs: Vec<Anr>, dst: Ipv4Addr },
     SendPong { ts_m: u64, dst: Ipv4Addr },
-    SendPeersV2 { dst: Ipv4Addr },
+
     ValidTxs { txs: Vec<Vec<u8>> },
-    Peers { ips: Vec<String> },
     ReceivedSol { sol: Solution },
     ReceivedEntry { entry: Entry },
-    AttestationBulk { bulk: AttestationBulk },
     ConsensusesPacked { packed: Vec<u8> },
     CatchupEntryReq { heights: Vec<u64> },
     CatchupTriReq { heights: Vec<u64> },
@@ -115,7 +116,6 @@ pub enum Instruction {
     SpecialBusinessReply { business: Vec<u8> },
     SolicitEntry { hash: Vec<u8> },
     SolicitEntry2,
-    SendNewPhoneWhoDisReply { dst: Ipv4Addr },
 }
 
 impl Typename for Instruction {
@@ -135,13 +135,14 @@ pub fn parse_etf_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
     let op_atom = map.get_atom("op").ok_or(Error::BadEtf("op"))?;
     let proto: Box<dyn Protocol> = match op_atom.name.as_str() {
         Ping::TYPENAME => Box::new(Ping::from_etf_map_validated(map)?),
-        Pong::TYPENAME => Box::new(Pong::from_etf_map_validated(map)?),
+        PingReply::TYPENAME => Box::new(PingReply::from_etf_map_validated(map)?),
         Entry::TYPENAME => Box::new(Entry::from_etf_map_validated(map)?),
-        AttestationBulk::TYPENAME => Box::new(AttestationBulk::from_etf_map_validated(map)?),
+        EventTip::TYPENAME => Box::new(EventTip::from_etf_map_validated(map)?),
+        EventAttestation::TYPENAME => Box::new(EventAttestation::from_etf_map_validated(map)?),
         Solution::TYPENAME => Box::new(Solution::from_etf_map_validated(map)?),
-        TxPool::TYPENAME => Box::new(TxPool::from_etf_map_validated(map)?),
-        Peers::TYPENAME => Box::new(Peers::from_etf_map_validated(map)?),
-        PeersV2::TYPENAME => Box::new(PeersV2::from_etf_map_validated(map)?),
+        EventTx::TYPENAME => Box::new(EventTx::from_etf_map_validated(map)?),
+        GetPeerAnrs::TYPENAME => Box::new(GetPeerAnrs::from_etf_map_validated(map)?),
+        GetPeerAnrsReply::TYPENAME => Box::new(GetPeerAnrsReply::from_etf_map_validated(map)?),
         NewPhoneWhoDis::TYPENAME => Box::new(NewPhoneWhoDis::from_etf_map_validated(map)?),
         NewPhoneWhoDisReply::TYPENAME => Box::new(NewPhoneWhoDisReply::from_etf_map_validated(map)?),
         SpecialBusiness::TYPENAME => Box::new(SpecialBusiness::from_etf_map_validated(map)?),
@@ -156,12 +157,78 @@ pub fn parse_etf_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
 }
 
 #[derive(Debug)]
+pub struct EventTip {
+    pub temporal: EntrySummary,
+    pub rooted: EntrySummary,
+}
+
+impl Typename for EventTip {
+    fn typename(&self) -> &'static str {
+        Self::TYPENAME
+    }
+}
+
+#[async_trait::async_trait]
+impl Protocol for EventTip {
+    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
+        let temporal_term = map.get_term_map("temporal").ok_or(Error::BadEtf("temporal"))?;
+        let rooted_term = map.get_term_map("rooted").ok_or(Error::BadEtf("rooted"))?;
+        let temporal = EntrySummary::from_etf_term(&temporal_term)?;
+        let rooted = EntrySummary::from_etf_term(&rooted_term)?;
+
+        Ok(Self { temporal, rooted })
+    }
+    fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
+        let mut m = HashMap::new();
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("ping")));
+        m.insert(Term::Atom(Atom::from("temporal")), self.temporal.to_etf_term()?);
+        m.insert(Term::Atom(Atom::from("rooted")), self.rooted.to_etf_term()?);
+        let term = Term::from(Map { map: m });
+        let etf_data = encode_safe(&term);
+
+        Ok(etf_data)
+    }
+
+    #[instrument(skip(self, ctx), fields(src = %src), name = "EventTip::handle")]
+    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
+        // TODO: validate temporal and rooted entry signatures like in Elixir
+
+        let signer = self.temporal.header.signer.to_vec();
+        let is_trainer = match crate::consensus::trainers_for_height(crate::consensus::chain_height()) {
+            Some(trainers) => trainers.iter().any(|pk| pk.as_slice() == signer),
+            None => false,
+        };
+
+        if is_trainer || ctx.is_peer_handshaked(src).await {
+            ctx.node_peers.update_peer_from_tip(ctx, src, self).await;
+        }
+
+        Ok(vec![Instruction::Noop { why: "event_tip handling not implemented".to_string() }])
+    }
+}
+
+impl EventTip {
+    pub const TYPENAME: &'static str = "event_tip";
+
+    pub fn new(temporal: EntrySummary, rooted: EntrySummary) -> Self {
+        Self { temporal, rooted }
+    }
+
+    pub fn from_current_tips() -> Result<Self, Error> {
+        let temporal = get_chain_tip_entry()?;
+        let rooted = get_rooted_tip_entry()?;
+
+        Ok(Self::new(temporal.into(), rooted.into()))
+    }
+}
+
+#[derive(Debug)]
 pub struct Ping {
     pub ts_m: u64,
 }
 
 #[derive(Debug)]
-pub struct Pong {
+pub struct PingReply {
     pub ts: u64,
     pub seen_time: u64,
 }
@@ -170,17 +237,17 @@ pub struct Pong {
 pub struct WhoAreYou;
 
 #[derive(Debug)]
-pub struct TxPool {
+pub struct EventTx {
     pub valid_txs: Vec<Vec<u8>>,
 }
 
 #[derive(Debug)]
-pub struct Peers {
-    pub ips: Vec<String>,
+pub struct GetPeerAnrs {
+    pub has_peers_b3f4: Vec<[u8; 4]>,
 }
 
 #[derive(Debug)]
-pub struct PeersV2 {
+pub struct GetPeerAnrsReply {
     pub anrs: Vec<Anr>,
 }
 
@@ -263,12 +330,7 @@ impl Protocol for Ping {
         // In v1.1.7+ ping is simplified - just respond with pong
         if ctx.is_peer_handshaked(src).await {
             ctx.node_peers.update_peer_ping_timestamp(src, self.ts_m).await;
-
-            let mut instructions = Vec::new();
-            instructions.push(Instruction::SendPeersV2 { dst: src });
-            instructions.push(Instruction::SendPong { ts_m: self.ts_m, dst: src });
-
-            Ok(instructions)
+            Ok(vec![Instruction::SendPong { ts_m: self.ts_m, dst: src }])
         } else {
             warn!("{src} sent ping but is not handshaked");
             Ok(vec![Instruction::Noop { why: "ping from non-handshaked peer".to_string() }])
@@ -290,14 +352,14 @@ impl Ping {
     }
 }
 
-impl Typename for Pong {
+impl Typename for PingReply {
     fn typename(&self) -> &'static str {
         Self::TYPENAME
     }
 }
 
 #[async_trait::async_trait]
-impl Protocol for Pong {
+impl Protocol for PingReply {
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
         let ts_m = map.get_integer("ts_m").ok_or(Error::BadEtf("ts_m"))?;
         let seen_time_ms = get_unix_millis_now();
@@ -324,22 +386,22 @@ impl Protocol for Pong {
     }
 }
 
-impl Pong {
-    pub const TYPENAME: &'static str = "pong";
+impl PingReply {
+    pub const TYPENAME: &'static str = "ping_reply";
 }
 
-impl Typename for TxPool {
+impl Typename for EventTx {
     fn typename(&self) -> &'static str {
         Self::TYPENAME
     }
 }
 
 #[async_trait::async_trait]
-impl Protocol for TxPool {
+impl Protocol for EventTx {
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
         // txs_packed is a list of binary transaction packets, not a single binary
         let txs_list = map.get_list("txs_packed").ok_or(Error::BadEtf("txs_packed"))?;
-        let valid_txs = TxPool::get_valid_txs_from_list(txs_list)?;
+        let valid_txs = EventTx::get_valid_txs_from_list(txs_list)?;
         Ok(Self { valid_txs })
     }
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
@@ -356,12 +418,12 @@ impl Protocol for TxPool {
 
     async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
         // TODO: update ETS-like tx pool with valid_txs
-        Ok(vec![Instruction::Noop { why: "txpool handling not implemented".to_string() }])
+        Ok(vec![Instruction::Noop { why: "event_tx handling not implemented".to_string() }])
     }
 }
 
-impl TxPool {
-    pub const TYPENAME: &'static str = "txpool";
+impl EventTx {
+    pub const TYPENAME: &'static str = "event_tx";
 
     fn get_valid_txs_from_list(txs_list: &[Term]) -> Result<Vec<Vec<u8>>, Error> {
         let mut good: Vec<Vec<u8>> = Vec::with_capacity(txs_list.len());
@@ -376,8 +438,9 @@ impl TxPool {
             };
 
             // validate basic tx rules, special-meeting context is false in gossip path
-            if crate::consensus::doms::tx::validate(bin, false).is_ok() {
-                good.push(bin.to_vec());
+            match crate::consensus::doms::tx::validate(bin, false) {
+                Ok(_) => good.push(bin.to_vec()),
+                Err(e) => warn!("invalid tx in event_tx: {}", e),
             }
         }
 
@@ -385,53 +448,58 @@ impl TxPool {
     }
 }
 
-impl Typename for Peers {
+impl Typename for GetPeerAnrs {
     fn typename(&self) -> &'static str {
         Self::TYPENAME
     }
 }
 
 #[async_trait::async_trait]
-impl Protocol for Peers {
+impl Protocol for GetPeerAnrs {
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let list = map.get_list("ips").ok_or(Error::BadEtf("ips"))?;
-        let ips = list
-            .iter()
-            .map(|t| t.get_string().map(|s| s.to_string()))
-            .collect::<Option<Vec<_>>>()
-            .ok_or(Error::BadEtf("ips"))?;
-        Ok(Self { ips })
+        let list = map.get_list("hasPeersb3f4").ok_or(Error::BadEtf("hasPeersb3f4"))?;
+        let mut has_peers_b3f4 = Vec::<[u8; 4]>::new();
+        for t in list {
+            use std::convert::TryInto;
+            let b = t.get_binary().ok_or(Error::BadEtf("hasPeersb3f4"))?;
+            let b3f4 = b.try_into().map_err(|_| Error::BadEtf("hasPeersb3f4_length"))?;
+            has_peers_b3f4.push(b3f4);
+        }
+
+        Ok(Self { has_peers_b3f4 })
     }
+
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
-        // create list of IP strings
-        let ip_terms: Vec<Term> =
-            self.ips.iter().map(|ip| Term::from(Binary { bytes: ip.as_bytes().to_vec() })).collect();
+        let b3f4_terms: Vec<Term> =
+            self.has_peers_b3f4.iter().map(|b3f4| Term::from(Binary { bytes: b3f4.to_vec() })).collect();
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
-        m.insert(Term::Atom(Atom::from("ips")), Term::from(List { elements: ip_terms }));
+        m.insert(Term::Atom(Atom::from("hasPeersb3f4")), Term::from(List { elements: b3f4_terms }));
         let term = Term::from(Map { map: m });
         let etf_data = encode_safe(&term);
+
         Ok(etf_data)
     }
 
-    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
-        // TODO: update ETS-like peer table with new IPs
-        Ok(vec![Instruction::Noop { why: "peers handling not implemented".to_string() }])
+    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
+        let anrs = ctx.node_anrs.get_all_excluding_b3f4(&self.has_peers_b3f4).await;
+
+        Ok(vec![Instruction::SendGetPeerAnrsReply { anrs, dst: src }])
     }
 }
 
-impl Peers {
-    pub const TYPENAME: &'static str = "peers";
+impl GetPeerAnrs {
+    pub const TYPENAME: &'static str = "get_peer_anrs";
 }
 
-impl Typename for PeersV2 {
+impl Typename for GetPeerAnrsReply {
     fn typename(&self) -> &'static str {
         Self::TYPENAME
     }
 }
 
 #[async_trait::async_trait]
-impl Protocol for PeersV2 {
+impl Protocol for GetPeerAnrsReply {
     fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
         let list = map.get_list("anrs").ok_or(Error::BadEtf("anrs"))?;
         let mut anrs = Vec::new();
@@ -463,8 +531,8 @@ impl Protocol for PeersV2 {
     }
 }
 
-impl PeersV2 {
-    pub const TYPENAME: &'static str = "peers_v2";
+impl GetPeerAnrsReply {
+    pub const TYPENAME: &'static str = "get_peer_anrs_reply";
 }
 
 impl Ping {}
@@ -549,6 +617,7 @@ impl Protocol for NewPhoneWhoDisReply {
 
         // Insert ANR and mark as handshaked
         ctx.node_anrs.insert(self.anr.clone()).await;
+        ctx.node_anrs.set_handshaked(&self.anr.pk).await;
         ctx.update_peer_from_anr(src, &self.anr.pk, &self.anr.version, Some(HandshakeStatus::Completed)).await;
 
         Ok(vec![Instruction::Noop { why: "handshake completed".to_string() }])
@@ -662,7 +731,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pong_etf_roundtrip() {
-        let pong = Pong { ts: 1234567890, seen_time: 9876543210 };
+        let pong = PingReply { ts: 1234567890, seen_time: 9876543210 };
 
         let bin = pong.to_etf_bin().expect("should serialize");
         let result = parse_etf_bin(&bin).expect("should deserialize");
@@ -673,17 +742,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_txpool_etf_roundtrip() {
-        let txpool = TxPool { valid_txs: vec![vec![1, 2, 3], vec![4, 5, 6]] };
+        let event_tx = EventTx { valid_txs: vec![vec![1, 2, 3], vec![4, 5, 6]] };
 
-        let bin = txpool.to_etf_bin().expect("should serialize");
+        let bin = event_tx.to_etf_bin().expect("should serialize");
         let result = parse_etf_bin(&bin).expect("should deserialize");
 
-        assert_eq!(result.typename(), "txpool");
+        assert_eq!(result.typename(), "event_tx");
     }
 
     #[tokio::test]
     async fn test_peers_etf_roundtrip() {
-        let peers = Peers { ips: vec!["192.168.1.1".to_string(), "10.0.0.1".to_string()] };
+        let peers = GetPeerAnrs { ips: vec!["192.168.1.1".to_string(), "10.0.0.1".to_string()] };
 
         let bin = peers.to_etf_bin().expect("should serialize");
         let result = parse_etf_bin(&bin).expect("should deserialize");
@@ -821,7 +890,7 @@ mod tests {
         match Context::with_config_and_socket(config, dummy_socket).await {
             Ok(ctx) => {
                 // Create a Pong message to test with
-                let pong = Pong { ts: 12345, seen_time: 67890 };
+                let pong = PingReply { ts: 12345, seen_time: 67890 };
 
                 // Check metrics before sending
                 let metrics_json_before = ctx.metrics.get_json();
@@ -863,4 +932,3 @@ mod tests {
         }
     }
 }
-

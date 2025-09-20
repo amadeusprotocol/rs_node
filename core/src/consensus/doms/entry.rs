@@ -11,7 +11,7 @@ use crate::utils::misc::{TermExt, TermMap, bitvec_to_bools, bools_to_bitvec, get
 use crate::utils::safe_etf::{encode_safe, encode_safe_deterministic};
 use crate::utils::{archiver, blake3};
 use crate::{bic, consensus};
-use eetf::{Atom, BigInteger, Binary, Map, Term};
+use eetf::{Atom, Binary, FixInteger, Map, Term};
 use std::collections::HashMap;
 use std::fmt;
 use std::net::Ipv4Addr;
@@ -52,7 +52,7 @@ pub enum Error {
 }
 
 /// Shared summary of an entry’s tip.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EntrySummary {
     pub header: EntryHeader,
     pub signature: [u8; 96],
@@ -108,9 +108,9 @@ impl EntrySummary {
 
 #[derive(Clone)]
 pub struct EntryHeader {
-    pub height: u64, // no need in u128 for next centuries
-    pub slot: u64,
-    pub prev_slot: i64, // is negative 1 in genesis entry
+    pub height: u32, // no need in u128 for next centuries
+    pub slot: u32,
+    pub prev_slot: i32, // is negative 1 in genesis entry
     pub prev_hash: [u8; 32],
     pub dr: [u8; 32], // deterministic random value
     pub vr: [u8; 96], // verifiable random value
@@ -150,11 +150,12 @@ impl EntryHeader {
         Ok(EntryHeader { height, slot, prev_slot, prev_hash, dr, vr, signer, txs_hash })
     }
 
+    // Always deterministic
     pub fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut map = HashMap::new();
-        map.insert(Term::Atom(Atom::from("height")), Term::from(BigInteger { value: self.height.into() }));
-        map.insert(Term::Atom(Atom::from("slot")), Term::from(BigInteger { value: self.slot.into() }));
-        map.insert(Term::Atom(Atom::from("prev_slot")), Term::from(BigInteger { value: self.prev_slot.into() }));
+        map.insert(Term::Atom(Atom::from("height")), Term::from(FixInteger { value: self.height as i32 }));
+        map.insert(Term::Atom(Atom::from("slot")), Term::from(FixInteger { value: self.slot as i32 }));
+        map.insert(Term::Atom(Atom::from("prev_slot")), Term::from(FixInteger { value: self.prev_slot as i32 }));
         map.insert(Term::Atom(Atom::from("prev_hash")), Term::from(Binary { bytes: self.prev_hash.to_vec() }));
         map.insert(Term::Atom(Atom::from("dr")), Term::from(Binary { bytes: self.dr.to_vec() }));
         map.insert(Term::Atom(Atom::from("vr")), Term::from(Binary { bytes: self.vr.to_vec() }));
@@ -301,7 +302,7 @@ impl fmt::Debug for Entry {
 }
 
 impl Entry {
-    pub const TYPENAME: &'static str = "entry";
+    pub const TYPENAME: &'static str = "event_entry";
 
     pub fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
         // encode entry using ETF deterministic format
@@ -365,7 +366,7 @@ impl Entry {
 
     /// Build next header skeleton similar to Entry.build_next/2.
     /// This requires chain state (pk/sk), so we only provide a helper to derive next header fields given inputs.
-    pub fn build_next_header(&self, slot: u64, signer_pk: &[u8; 48], signer_sk: &[u8]) -> Result<EntryHeader, Error> {
+    pub fn build_next_header(&self, slot: u32, signer_pk: &[u8; 48], signer_sk: &[u8]) -> Result<EntryHeader, Error> {
         // dr' = blake3(dr)
         let dr = blake3::hash(&self.header.dr);
         // vr' = sign(sk, prev_vr, DST_VRF)
@@ -374,7 +375,7 @@ impl Entry {
         Ok(EntryHeader {
             slot,
             height: self.header.height + 1,
-            prev_slot: self.header.slot as i64,
+            prev_slot: self.header.slot as i32,
             prev_hash: self.hash,
             dr,
             vr,
@@ -383,7 +384,7 @@ impl Entry {
         })
     }
 
-    pub fn get_epoch(&self) -> u64 {
+    pub fn get_epoch(&self) -> u32 {
         self.header.height / 100_000
     }
 

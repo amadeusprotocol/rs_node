@@ -119,12 +119,12 @@ pub fn is_trainer(config: &crate::config::Config) -> bool {
 }
 
 /// Select trainer for a slot from the roster for the corresponding height
-pub fn trainer_for_slot(height: u64, slot: u64) -> Option<[u8; 48]> {
+pub fn trainer_for_slot(height: u32, slot: u32) -> Option<[u8; 48]> {
     let trainers = consensus::trainers_for_height(height)?;
     if trainers.is_empty() {
         return None;
     }
-    let idx = (slot.rem_euclid(trainers.len() as u64)) as usize;
+    let idx = ((slot as u64).rem_euclid(trainers.len() as u64)) as usize;
     trainers.get(idx).copied()
 }
 
@@ -161,7 +161,7 @@ pub fn get_rooted_tip_entry() -> Result<Entry, Error> {
     }
 }
 
-pub fn get_chain_height() -> Result<u64, Error> {
+pub fn get_chain_height() -> Result<u32, Error> {
     fabric::get_temporal_height()?.ok_or(Error::Missing("temporal_height"))
 }
 

@@ -38,7 +38,7 @@ pub fn seed_to_f64(seed: &[u8; 32]) -> f64 {
     f64::from_le_bytes(first8)
 }
 
-pub fn exec_cost(_epoch: u64, txu: &TxU) -> u64 {
+pub fn exec_cost(_epoch: u32, txu: &TxU) -> u64 {
     exec_cost_from_len(txu.tx_encoded.len())
 }
 

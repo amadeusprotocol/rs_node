@@ -1972,8 +1972,31 @@ pub fn page(
                         bVal = typeof b.peerInfo.height === 'number' ? b.peerInfo.height : -1;
                         break;
                     case 'version':
-                        aVal = a.peerInfo.version || '';
-                        bVal = b.peerInfo.version || '';
+                        // Handle version strings with semantic versioning
+                        const parseVersion = (version) => {{
+                            if (!version || typeof version !== 'string') return [0, 0, 0];
+                            const cleaned = version.replace(/^v/, ''); // Remove 'v' prefix
+                            const parts = cleaned.split('.').map(n => parseInt(n) || 0);
+                            return [parts[0] || 0, parts[1] || 0, parts[2] || 0];
+                        }};
+
+                        const aVersion = parseVersion(a.peerInfo.version);
+                        const bVersion = parseVersion(b.peerInfo.version);
+
+                        // Compare major.minor.patch
+                        for (let i = 0; i < 3; i++) {{
+                            if (aVersion[i] !== bVersion[i]) {{
+                                aVal = aVersion[i];
+                                bVal = bVersion[i];
+                                break;
+                            }}
+                        }}
+
+                        // If versions are identical, fall back to string comparison
+                        if (aVal === undefined) {{
+                            aVal = String(a.peerInfo.version || '');
+                            bVal = String(b.peerInfo.version || '');
+                        }}
                         break;
                     default:
                         return 0;

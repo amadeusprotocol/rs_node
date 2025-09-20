@@ -295,7 +295,7 @@ impl Epoch {
         // Read trainers from KV or use provided ones
         let trainers = match trainers_opt {
             Some(t) => t,
-            None => crate::consensus::trainers_for_height(env.entry_height).ok_or(EpochError::InvalidEpoch)?,
+            None => crate::consensus::trainers_for_height(env.entry_height as u32).ok_or(EpochError::InvalidEpoch)?,
         };
 
         if !trainers.iter().any(|pk| pk == malicious_pk) {

@@ -42,7 +42,7 @@ impl FabricCleaner {
         }
     }
 
-    async fn clean_finality(&self, epoch: u64) {
+    async fn clean_finality(&self, epoch: u32) {
         info!("Cleaning finality for epoch: {}", epoch);
 
         let start_height = epoch * 100_000;
@@ -51,7 +51,7 @@ impl FabricCleaner {
         // Process in parallel batches of 10k heights
         let mut handles = vec![];
         for idx in 0..10 {
-            let start_index = start_height + idx * 10_000;
+            let start_index = start_height + idx as u32 * 10_000;
             let end_index = start_index + 9_999;
 
             let handle = tokio::spawn(async move {
@@ -69,9 +69,9 @@ impl FabricCleaner {
         self.set_finality_clean_next_epoch(epoch + 1);
     }
 
-    fn get_finality_clean_next_epoch(&self) -> Option<u64> {
+    fn get_finality_clean_next_epoch(&self) -> Option<u32> {
         match rocksdb::get("sysconf", b"finality_clean_next_epoch") {
-            Ok(Some(bytes)) => match bincode::decode_from_slice::<u64, _>(&bytes, bincode::config::standard()) {
+            Ok(Some(bytes)) => match bincode::decode_from_slice::<u32, _>(&bytes, bincode::config::standard()) {
                 Ok((epoch, _)) => Some(epoch),
                 Err(_) => None,
             },
@@ -79,7 +79,7 @@ impl FabricCleaner {
         }
     }
 
-    fn set_finality_clean_next_epoch(&self, epoch: u64) {
+    fn set_finality_clean_next_epoch(&self, epoch: u32) {
         let bytes = bincode::encode_to_vec(&epoch, bincode::config::standard()).unwrap();
         let _ = rocksdb::put("sysconf", b"finality_clean_next_epoch", &bytes);
     }
@@ -89,7 +89,7 @@ impl FabricCleaner {
     }
 }
 
-async fn clean_muts_rev(_epoch: u64, start: u64, end: u64) {
+async fn clean_muts_rev(_epoch: u32, start: u32, end: u32) {
     // Create a transaction for batch operations
     let txn = match rocksdb::begin_transaction() {
         Ok(txn) => txn,

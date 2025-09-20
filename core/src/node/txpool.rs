@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 
 #[derive(Debug, Clone)]
 pub struct ValidateTxArgs {
-    pub epoch: u64,
+    pub epoch: u32,
     pub segment_vr_hash: [u8; 32],
     pub diff_bits: u32,
     pub batch_state: BatchState,
@@ -102,7 +102,7 @@ impl TxPool {
             if action.function == "submit_sol" && !action.args.is_empty() {
                 let sol_bytes = &action.args[0];
                 if sol_bytes.len() >= 36 {
-                    let sol_epoch = u32::from_le_bytes([sol_bytes[0], sol_bytes[1], sol_bytes[2], sol_bytes[3]]) as u64;
+                    let sol_epoch = u32::from_le_bytes([sol_bytes[0], sol_bytes[1], sol_bytes[2], sol_bytes[3]]);
                     let sol_svrh = &sol_bytes[4..36];
 
                     if sol_epoch != args.epoch

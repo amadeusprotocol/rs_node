@@ -1,7 +1,8 @@
 use crate::config::Config;
+use crate::consensus::doms::EntrySummary;
 use crate::node::anr;
-use crate::node::protocol::{Ping, Pong};
-use crate::utils::misc::get_unix_millis_now;
+use crate::node::protocol::{EventTip, PingReply};
+use crate::utils::misc::{Typename, get_unix_millis_now};
 use crate::{Context, Ver, consensus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -96,8 +97,8 @@ pub struct Peer {
     pub last_ping: Option<u64>,
     pub last_pong: Option<u64>,
     pub shared_secret: Option<Vec<u8>>,
-    pub temporal: Option<TemporalInfo>,
-    pub rooted: Option<RootedInfo>,
+    pub temporal: Option<TipInfo>,
+    pub rooted: Option<TipInfo>,
     pub last_seen: u64,
     pub last_msg_type: Option<String>,
     pub handshake_status: HandshakeStatus,
@@ -111,19 +112,20 @@ impl Peer {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TemporalInfo {
+pub struct TipInfo {
     pub header_unpacked: HeaderInfo,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RootedInfo {
-    pub header_unpacked: HeaderInfo,
+impl From<EntrySummary> for TipInfo {
+    fn from(summary: EntrySummary) -> Self {
+        Self { header_unpacked: HeaderInfo { height: summary.header.height, prev_hash: summary.header.prev_hash } }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeaderInfo {
-    pub height: u64,
-    pub prev_hash: Option<Vec<u8>>,
+    pub height: u32,
+    pub prev_hash: [u8; 32],
 }
 
 /// NodePeers structure managing the peer database
@@ -168,7 +170,7 @@ impl NodePeers {
         let validator_anr_ips = node_registry.by_pks_ip(&validators).await;
         let validators_map: std::collections::HashSet<Vec<u8>> = validators.into_iter().collect();
 
-        let handshaked_ips = node_registry.get_all_handshaked_anrs().await;
+        let handshaked_ips = node_registry.get_all_handshaked_ip4().await;
 
         let mut cur_ips = Vec::new();
         let mut cur_val_ips = Vec::new();
@@ -204,8 +206,7 @@ impl NodePeers {
         // Find missing validators and handshaked peers
         let missing_vals: Vec<_> = validator_anr_ips.iter().filter(|ip| !cur_val_ips.contains(ip)).cloned().collect();
 
-        let missing_ips: Vec<_> =
-            handshaked_ips.into_iter().map(|a| a.ip4).filter(|ip| !cur_ips.contains(ip)).collect();
+        let missing_ips: Vec<_> = handshaked_ips.into_iter().filter(|ip| !cur_ips.contains(ip)).collect();
 
         // Get max_peers config
         let add_size = self
@@ -370,7 +371,7 @@ impl NodePeers {
     }
 
     /// Get all trainer peers for given height
-    pub async fn all_trainers(&self, height: Option<u64>) -> Result<Vec<Peer>, Error> {
+    pub async fn all_trainers(&self, height: Option<u32>) -> Result<Vec<Peer>, Error> {
         let height = height.unwrap_or_else(|| consensus::chain_height());
         let pks = consensus::trainers_for_height(height + 1).unwrap_or_default();
         let pks: Vec<Vec<u8>> = pks.iter().map(|pk| pk.to_vec()).collect();
@@ -392,7 +393,7 @@ impl NodePeers {
     }
 
     /// Get summary of all peers
-    pub async fn summary(&self) -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u64>, Option<u64>)>, Error> {
+    pub async fn summary(&self) -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u32>, Option<u32>)>, Error> {
         let mut summary = Vec::new();
 
         self.peers
@@ -411,7 +412,7 @@ impl NodePeers {
     }
 
     /// Get summary of online peers only
-    pub async fn summary_online(&self) -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u64>, Option<u64>)>, Error> {
+    pub async fn summary_online(&self) -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u32>, Option<u32>)>, Error> {
         let online_peers = self.online().await?;
         let mut summary = Vec::new();
 
@@ -509,7 +510,7 @@ impl NodePeers {
     }
 
     /// Get peers for a specific height (trainers)
-    pub async fn for_height(&self, height: u64) -> Result<Vec<Peer>, Error> {
+    pub async fn for_height(&self, height: u32) -> Result<Vec<Peer>, Error> {
         let trainers = consensus::trainers_for_height(height).unwrap_or_default();
         let trainers: Vec<Vec<u8>> = trainers.iter().map(|pk| pk.to_vec()).collect();
 
@@ -586,7 +587,7 @@ impl NodePeers {
     }
 
     /// Get highest heights from online peers with filtering
-    pub async fn highest_height(&self, filter: HeightFilter) -> Result<Vec<u64>, Error> {
+    pub async fn highest_height(&self, filter: HeightFilter) -> Result<Vec<u32>, Error> {
         let summary = self.summary_online().await?;
 
         let min_temporal = filter.min_temporal.unwrap_or(0);
@@ -618,9 +619,9 @@ impl NodePeers {
     }
 
     fn highest_height_filter(
-        mut filtered: Vec<(Ipv4Addr, Option<u64>, Option<u64>, Option<u64>)>,
+        mut filtered: Vec<(Ipv4Addr, Option<u64>, Option<u32>, Option<u32>)>,
         filter: HeightFilter,
-    ) -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u64>, Option<u64>)>, Error> {
+    ) -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u32>, Option<u32>)>, Error> {
         let take = filter.take.unwrap_or(3);
 
         // Apply latency2 filter first
@@ -674,46 +675,44 @@ impl NodePeers {
             .await;
     }
 
-    pub async fn update_peer_from_ping(&self, _ctx: &Context, ip: Ipv4Addr, ping: &Ping) {
-        // v1.1.7+ simplified ping - just update timestamp
-        self.update_peer_ping_timestamp(ip, ping.ts_m).await;
+    pub async fn update_peer_from_tip(&self, _ctx: &Context, ip: Ipv4Addr, tip: &EventTip) {
         let current_time = get_unix_millis_now();
+        let temporal: TipInfo = tip.temporal.clone().into();
+        let rooted: TipInfo = tip.rooted.clone().into();
 
         let updated = self
             .peers
             .update(&ip, |_key, peer| {
-                peer.last_ping = Some(current_time);
                 peer.last_seen = current_time;
                 peer.last_msg = current_time;
-                peer.last_msg_type = Some("ping".to_string());
-                // ping timestamp already updated in update_peer_ping_timestamp
+                peer.last_msg_type = Some(tip.typename().to_string());
+                peer.temporal = Some(temporal.clone());
+                peer.rooted = Some(rooted.clone());
             })
             .await
             .is_some();
 
         if !updated {
-            // Create new peer if it doesn't exist (v1.1.7+ simplified)
             let new_peer = Peer {
                 ip,
                 pk: None, // Will be set during handshake
                 version: None,
                 latency: None,
                 last_msg: current_time,
-                last_ping: Some(current_time),
+                last_seen: current_time,
+                last_ping: None,
                 last_pong: None,
                 shared_secret: None,
-                temporal: None, // No longer used in v1.1.7+
-                rooted: None,   // No longer used in v1.1.7+
-                last_seen: current_time,
-                last_msg_type: Some("ping".to_string()),
+                temporal: Some(temporal),
+                rooted: Some(rooted),
+                last_msg_type: Some(tip.typename().to_string()),
                 handshake_status: HandshakeStatus::None,
-                // ping timestamp set via separate method call
             };
             self.insert_new_peer(new_peer).await;
         }
     }
 
-    pub async fn update_peer_from_pong(&self, ip: Ipv4Addr, pong: &Pong) {
+    pub async fn update_peer_from_pong(&self, ip: Ipv4Addr, pong: &PingReply) {
         let current_time = get_unix_millis_now();
         let latency = current_time.saturating_sub(pong.ts);
 
@@ -913,8 +912,8 @@ pub enum Who {
 
 #[derive(Debug, Clone)]
 pub struct HeightFilter {
-    pub min_temporal: Option<u64>,
-    pub min_rooted: Option<u64>,
+    pub min_temporal: Option<u32>,
+    pub min_rooted: Option<u32>,
     pub take: Option<usize>,
     pub sort: Option<String>,
     pub latency: Option<u64>,

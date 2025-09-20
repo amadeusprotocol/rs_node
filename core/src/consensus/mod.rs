@@ -18,7 +18,7 @@ use eetf::Term;
 /// Return trainers for the given height, reading from contractstate CF.
 /// Keys: "bic:epoch:trainers:height:{:012}" (ASCII), values: ETF list of 48-byte PKs.
 /// Special case: heights in 3195570..=3195575 map to fixed key "000000319557".
-pub fn trainers_for_height(height: u64) -> Option<Vec<[u8; 48]>> {
+pub fn trainers_for_height(height: u32) -> Option<Vec<[u8; 48]>> {
     let cf = "contractstate";
     let value: Option<Vec<u8>> = if (3_195_570..=3_195_575).contains(&height) {
         match rocksdb::get(cf, b"bic:epoch:trainers:height:000000319557") {
@@ -52,16 +52,16 @@ pub fn trainers_for_height(height: u64) -> Option<Vec<[u8; 48]>> {
 
 /// Chain epoch accessor (Elixir: Consensus.chain_epoch/0)
 /// Returns current epoch calculated as height / 100_000
-pub fn chain_epoch() -> u64 {
+pub fn chain_epoch() -> u32 {
     chain_height() / 100_000
 }
 
 /// Chain height accessor - gets current blockchain height
-pub fn chain_height() -> u64 {
+pub fn chain_height() -> u32 {
     match rocksdb::get("sysconf", b"temporal_height") {
         Ok(Some(bytes)) => {
             // deserialize the height stored as erlang term
-            match bincode::decode_from_slice::<u64, _>(&bytes, bincode::config::standard()) {
+            match bincode::decode_from_slice::<u32, _>(&bytes, bincode::config::standard()) {
                 Ok((height, _)) => height,
                 Err(_) => 0, // fallback if deserialization fails
             }
