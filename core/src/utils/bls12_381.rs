@@ -19,25 +19,18 @@ pub enum Error {
     ZeroSizedInput,
 }
 
-/// Parse a secret key from raw bytes, accepts either 64 or 32 bytes
 /// For 64-byte keys, uses Scalar::from_bytes_wide exactly like Elixir BlsEx
 fn parse_secret_key(sk_bytes: &[u8]) -> Result<BlsSecretKey, Error> {
-    // For 64-byte secret keys: reduce using key_gen to ensure valid BLST key
-    // while maintaining compatibility with Elixir's scalar derivation
+    // Follow Elixir bls_ex approach exactly:
+    // 1. Use Scalar::from_bytes_wide for 64-byte keys
+    // 2. Convert scalar to bytes and reverse them
+    // 3. Create BLST SecretKey from reversed bytes
     if let Ok(bytes_64) = <&[u8; 64]>::try_from(sk_bytes) {
-        // Use BLST's key_gen which internally does proper scalar reduction
-        // This ensures the result is always a valid BlsSecretKey
-        return BlsSecretKey::key_gen(bytes_64, &[]).map_err(|e| {
-            eprintln!("BLST key_gen rejected 64-byte key material: {:?}, first_8_bytes: {:?}", e, &bytes_64[..8]);
-            Error::InvalidSecretKey
-        });
-    }
-    // For 32-byte secret keys: use directly as scalar
-    if let Ok(bytes_32) = <&[u8; 32]>::try_from(sk_bytes) {
-        return BlsSecretKey::from_bytes(bytes_32).map_err(|e| {
-            eprintln!("BLST rejected 32-byte secret key: {:?}", e);
-            Error::InvalidSecretKey
-        });
+        let sk_scalar = Scalar::from_bytes_wide(bytes_64);
+        let mut sk_be = sk_scalar.to_bytes();
+        sk_be.reverse(); // Critical: reverse bytes like Elixir does
+
+        return BlsSecretKey::from_bytes(&sk_be).map_err(|_| Error::InvalidSecretKey);
     }
     Err(Error::InvalidSecretKey)
 }
@@ -97,28 +90,19 @@ fn sign_from_secret_key(sk: BlsSecretKey, msg: &[u8], dst: &[u8]) -> Result<BlsS
 
 // public API
 
-/// Derive compressed G1 public key (48 bytes) from secret key (32 or 64 bytes)
 /// Uses Scalar::from_bytes_wide for 64-byte keys to match Elixir exactly
 pub fn get_public_key(sk_bytes: &[u8]) -> Result<[u8; 48], Error> {
-    if sk_bytes.len() == 64 {
-        // For 64-byte keys: use bls12_381 directly for full Elixir compatibility
-        let bytes_64: [u8; 64] = sk_bytes.try_into().map_err(|_| Error::InvalidSecretKey)?;
-        let sk_scalar = Scalar::from_bytes_wide(&bytes_64);
+    // For 64-byte keys: use bls12_381 directly for full Elixir compatibility
+    let bytes_64: [u8; 64] = sk_bytes.try_into().map_err(|_| Error::InvalidSecretKey)?;
+    let sk_scalar = Scalar::from_bytes_wide(&bytes_64);
 
-        // Compute public key: G1 generator * scalar (exactly like Elixir)
-        let pk_g1 = G1Projective::generator() * sk_scalar;
-        Ok(pk_g1.to_affine().to_compressed())
-    } else {
-        // For 32-byte keys and other operations: use BLST
-        let sk = parse_secret_key(sk_bytes)?;
-        let pk = sk.sk_to_pk();
-        Ok(pk.to_bytes())
-    }
+    // Compute public key: G1 generator * scalar (exactly like Elixir)
+    let pk_g1 = G1Projective::generator() * sk_scalar;
+    Ok(pk_g1.to_affine().to_compressed())
 }
 
 pub fn generate_sk() -> [u8; 64] {
     // Generate a valid 64-byte secret key that works with our scalar approach
-    // We do this by generating valid 32-byte keys and extending them to 64 bytes
     loop {
         let sk_64: [u8; 64] = rand::random();
 
@@ -138,33 +122,10 @@ pub fn generate_sk() -> [u8; 64] {
 /// Sign a message with secret key, returns signature bytes (96 bytes in min_pk)
 /// For 64-byte keys, uses the same scalar derivation as public key generation
 pub fn sign(sk_bytes: &[u8], message: &[u8], dst: &[u8]) -> Result<[u8; 96], Error> {
-    if sk_bytes.len() == 64 {
-        // For 64-byte keys: try BLST first, fall back to bls12_381 for full Elixir compatibility
-        let bytes_64: [u8; 64] = sk_bytes.try_into().map_err(|_| Error::InvalidSecretKey)?;
-        let sk_scalar = Scalar::from_bytes_wide(&bytes_64);
-
-        // Try to convert to BlsSecretKey using the scalar bytes
-        let scalar_bytes = sk_scalar.to_bytes();
-        match BlsSecretKey::from_bytes(&scalar_bytes) {
-            Ok(sk) => {
-                // BLST path: use BLST for signing (works with our generate_sk() keys)
-                let signature = sign_from_secret_key(sk, message, dst)?;
-                Ok(signature.to_bytes())
-            }
-            Err(_) => {
-                // Fallback path: the scalar is not a valid BLST secret key
-                // This happens with some test keys. Since bls12_381 and BLST might be incompatible,
-                // we cannot sign with bls12_381 and verify with BLST.
-                // Return an error to indicate this key cannot be used for signing
-                Err(Error::InvalidSecretKey)
-            }
-        }
-    } else {
-        // For 32-byte keys: use the standard approach
-        let sk = parse_secret_key(sk_bytes)?;
-        let signature = sign_from_secret_key(sk, message, dst)?;
-        Ok(signature.to_bytes())
-    }
+    // Use exactly the same approach as parse_secret_key to ensure consistency
+    let sk = parse_secret_key(sk_bytes)?;
+    let signature = sign_from_secret_key(sk, message, dst)?;
+    Ok(signature.to_bytes())
 }
 
 /// Verify a signature using a compressed G1 public key (48 bytes) and signature (96 bytes)
@@ -233,10 +194,6 @@ pub fn get_shared_secret(public_key: &[u8], sk_bytes: &[u8]) -> Result<[u8; 48],
         // For 64-byte keys: use bls12_381 directly (exactly like get_public_key)
         let bytes_64: [u8; 64] = sk_bytes.try_into().map_err(|_| Error::InvalidSecretKey)?;
         Scalar::from_bytes_wide(&bytes_64)
-    } else if sk_bytes.len() == 32 {
-        // For 32-byte keys: try to convert to scalar
-        let bytes_32: [u8; 32] = sk_bytes.try_into().map_err(|_| Error::InvalidSecretKey)?;
-        Scalar::from_bytes(&bytes_32).into_option().ok_or(Error::InvalidSecretKey)?
     } else {
         return Err(Error::InvalidSecretKey);
     };
@@ -252,19 +209,17 @@ pub fn validate_public_key(public_key: &[u8]) -> Result<(), Error> {
 
 /// AES-256-GCM encryption compatible with Elixir node implementation
 pub fn encrypt_message(data: &[u8], shared_secret: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
     use aes_gcm::aead::Aead;
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
     use rand::RngCore;
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     // Generate random IV (12 bytes for GCM)
     let mut iv = [0u8; 12];
     rand::rng().fill_bytes(&mut iv);
 
     // Generate timestamp (nanoseconds)
-    let ts_n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_nanos() as u64;
+    let ts_n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos() as u64;
 
     // Derive key: SHA256(shared_secret || timestamp || iv)
     let mut hasher = Sha256::new();
@@ -289,11 +244,12 @@ pub fn encrypt_message(data: &[u8], shared_secret: &[u8]) -> Result<Vec<u8>, Box
 
 /// AES-256-GCM decryption compatible with Elixir node implementation
 pub fn decrypt_message(encrypted_data: &[u8], shared_secret: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
     use aes_gcm::aead::Aead;
-    use sha2::{Sha256, Digest};
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+    use sha2::{Digest, Sha256};
 
-    if encrypted_data.len() < 20 { // 8 + 12 minimum
+    if encrypted_data.len() < 20 {
+        // 8 + 12 minimum
         return Err("Encrypted data too short".into());
     }
 
@@ -430,13 +386,6 @@ mod tests {
 
     #[test]
     fn elixir_key_compatibility_test() {
-        // REPLACE THESE VALUES WITH OUTPUT FROM IEX COMMANDS
-        // const SK_B58: &str = "PASTE_SK_B58_HERE";
-        // const PK_B58: &str = "PASTE_PK_B58_HERE";
-        // const OTHER_PK_B58: &str = "PASTE_OTHER_PK_B58_HERE";
-        // const EXPECTED_SIG_B58: &str = "PASTE_EXPECTED_SIG_B58_HERE";
-        // const EXPECTED_SHARED_SECRET_B58: &str = "PASTE_EXPECTED_SHARED_SECRET_B58_HERE";
-
         const SK_B58: &str = "QPHHRpzuJ8nBKnrY9hcT8DuaWX8ev42QWHMPtpWtg11Rkbq37cpE5BGD8RTBe6NrfQqboKusvz119rUMDjoMXQ2";
         const PK_B58: &str = "7HBdTuiVETYS9bWgZt2ZQ2edrmUYVW9gMPJuVRA2PEFXUvTt62ZxP1juPbHpUS8M1k";
         const OTHER_PK_B58: &str = "7KUntjPCFEmTtG9NBLNjqaaXourYDjBASwLtXFcPr1DmDNPCLVKRznppysMMyAcVa7";
@@ -461,7 +410,7 @@ mod tests {
         println!("SK length: {}", sk_bytes.len());
         println!("Expected PK length: {}", expected_pk.len());
         println!("SK first 8 bytes: {:?}", &sk_bytes[..8]);
-        println!("SK last 8 bytes: {:?}", &sk_bytes[sk_bytes.len()-8..]);
+        println!("SK last 8 bytes: {:?}", &sk_bytes[sk_bytes.len() - 8..]);
 
         // Test 1: Key parsing
         println!("\n--- Test 1: Secret Key Parsing ---");
@@ -475,13 +424,11 @@ mod tests {
                 if rust_pk.to_vec() == expected_pk {
                     println!("✓ Public keys match perfectly!");
                 } else {
-                    println!("✗ Public key mismatch - different BLS implementations");
+                    panic!("✗ Public key mismatch - different BLS implementations");
                 }
             }
             Err(e) => {
-                println!("✗ Rust failed to parse Elixir secret key: {:?}", e);
-                println!("This confirms the incompatibility issue");
-                return;
+                panic!("✗ Rust failed to parse Elixir secret key: {:?}", e);
             }
         }
 
@@ -506,7 +453,7 @@ mod tests {
                 if verify(&expected_pk, &rust_sig, test_data, dst).is_ok() {
                     println!("✓ Rust signature verifies with Elixir public key");
                 } else {
-                    println!("✗ Rust signature doesn't verify with Elixir public key");
+                    panic!("✗ Rust signature doesn't verify with Elixir public key");
                 }
 
                 // Try to verify Elixir signature with Rust
@@ -515,12 +462,12 @@ mod tests {
                     if verify(&expected_pk, &elixir_sig, test_data, dst).is_ok() {
                         println!("✓ Elixir signature verifies in Rust");
                     } else {
-                        println!("✗ Elixir signature doesn't verify in Rust");
+                        panic!("✗ Elixir signature doesn't verify in Rust");
                     }
                 }
             }
             Err(e) => {
-                println!("✗ Rust signature generation failed: {:?}", e);
+                panic!("✗ Rust signature generation failed: {:?}", e);
             }
         }
 
@@ -535,7 +482,7 @@ mod tests {
                 if rust_shared_secret.to_vec() == expected_shared_secret {
                     println!("✓ Shared secrets match perfectly!");
                 } else {
-                    println!("✗ Shared secret mismatch");
+                    panic!("✗ Shared secret mismatch");
                 }
             }
             Err(e) => {
@@ -560,11 +507,11 @@ mod tests {
                             if decrypted == test_message {
                                 println!("✓ Round-trip encryption/decryption successful");
                             } else {
-                                println!("✗ Decrypted message doesn't match original");
+                                panic!("✗ Decrypted message doesn't match original");
                             }
                         }
                         Err(e) => {
-                            println!("✗ Decryption failed: {:?}", e);
+                            panic!("✗ Decryption failed: {:?}", e);
                         }
                     }
 
@@ -587,13 +534,14 @@ mod tests {
                     println!("key = :crypto.hash(:sha256, [shared_secret, :binary.encode_unsigned(ts_n), iv])");
                     println!("");
                     println!("# Decrypt with AES-256-GCM");
-                    println!("{{:ok, plaintext}} = :crypto.crypto_one_time_aead(:aes_256_gcm, key, iv, ciphertext, <<>>, 16, false)");
+                    println!(
+                        "{{:ok, plaintext}} = :crypto.crypto_one_time_aead(:aes_256_gcm, key, iv, ciphertext, <<>>, 16, false)"
+                    );
                     println!("IO.puts(\"Decrypted: #{{plaintext}}\")");
                     println!("# Should output: Decrypted: {}", String::from_utf8_lossy(test_message));
-
                 }
                 Err(e) => {
-                    println!("✗ Encryption failed: {:?}", e);
+                    panic!("✗ Encryption failed: {:?}", e);
                 }
             }
         }
@@ -603,19 +551,12 @@ mod tests {
 
     #[test]
     fn elixir_signature_compatibility_test() {
-        // REPLACE THESE VALUES WITH OUTPUT FROM IEX COMMANDS BELOW
-        // const SK_B58: &str = "PASTE_SK_B58_HERE";
-        // const PK_B58: &str = "PASTE_PK_B58_HERE";
-        // const TEST_DATA_1_B58: &str = "PASTE_TEST_DATA_1_B58_HERE";
-        // const ELIXIR_SIG_1_B58: &str = "PASTE_ELIXIR_SIG_1_B58_HERE";
-        // const TEST_DATA_2_B58: &str = "PASTE_TEST_DATA_2_B58_HERE";
-        // const ELIXIR_SIG_2_B58: &str = "PASTE_ELIXIR_SIG_2_B58_HERE";
-
         const SK_B58: &str = "559mzNeU7itDyHs2yUzZurTvoaLHi3nJeGjCQSi44PwcJzdqBVymRdh9G25Hg6u9pi59avrqcPpeq6DBQQVEqPxV";
         const PK_B58: &str = "7gX58gLTX7WUGUq3PQTNYcbwfH18b3SeRTgfJ6mM5badEvbhjRXxNEBYSyfH6RjnoP";
         const TEST_DATA_1_B58: &str = "89YouX2vBz5FKYQZueX6744sBPHjZ8AgFAmN1ySS61KebyrhdkcUk5jY2vqsqgZ8XatbkL";
         const ELIXIR_SIG_1_B58: &str = "riqRrRupu5KuaimWbSjS8NKfV8eMYTVKt5xhTkKo9FVDzP7kKhQLmT2VJu15r9GDbkZTk1N78uMGYa6yG7NzboEHet7Xv9wtf7cn86is5GH2PzvH95Kt8RbtqC9iRr13fAZ";
-        const TEST_DATA_2_B58: &str = "2moGA7MbJet3qHLaSA9kN9eFy5fTr7TdHqJGoaq5hEbt5kGEVnFxCKkC8kNE2nfrnhWtVTtaVoUWeP1GEmKs";
+        const TEST_DATA_2_B58: &str =
+            "2moGA7MbJet3qHLaSA9kN9eFy5fTr7TdHqJGoaq5hEbt5kGEVnFxCKkC8kNE2nfrnhWtVTtaVoUWeP1GEmKs";
         const ELIXIR_SIG_2_B58: &str = "oGRbCRrCwMVKXqHebyDsF2JTMcWghbkrHszG6oU4t4FGGp351p5L5ud7XFhrhDixVS38NWgUdmr4qprsoCe1SPq8q8FKkfGLFPjPzb6BH8Lhk3zKjWoDjmCJqUp66rwEp4c";
 
         // Skip test if values not filled in
@@ -648,7 +589,7 @@ mod tests {
         if rust_pk.to_vec() == expected_pk {
             println!("✓ Public keys match perfectly!");
         } else {
-            println!("✗ Public key mismatch");
+            panic!("✗ Public key mismatch");
             return;
         }
 
@@ -664,7 +605,7 @@ mod tests {
         // Verify Rust signature
         match verify(&expected_pk, &rust_sig_1, &test_data_1, dst) {
             Ok(_) => println!("✓ Rust signature 1 verifies"),
-            Err(e) => println!("✗ Rust signature 1 verification failed: {:?}", e),
+            Err(e) => panic!("✗ Rust signature 1 verification failed: {:?}", e),
         }
 
         // Verify Elixir signature with Rust
@@ -672,7 +613,7 @@ mod tests {
             let elixir_sig_1_array: [u8; 96] = elixir_sig_1.try_into().unwrap();
             match verify(&expected_pk, &elixir_sig_1_array, &test_data_1, dst) {
                 Ok(_) => println!("✓ Elixir signature 1 verifies in Rust"),
-                Err(e) => println!("✗ Elixir signature 1 verification failed: {:?}", e),
+                Err(e) => panic!("✗ Elixir signature 1 verification failed: {:?}", e),
             }
         }
 
@@ -688,7 +629,7 @@ mod tests {
         // Verify Rust signature
         match verify(&expected_pk, &rust_sig_2, &test_data_2, dst) {
             Ok(_) => println!("✓ Rust signature 2 verifies"),
-            Err(e) => println!("✗ Rust signature 2 verification failed: {:?}", e),
+            Err(e) => panic!("✗ Rust signature 2 verification failed: {:?}", e),
         }
 
         // Verify Elixir signature with Rust
@@ -696,7 +637,7 @@ mod tests {
             let elixir_sig_2_array: [u8; 96] = elixir_sig_2.try_into().unwrap();
             match verify(&expected_pk, &elixir_sig_2_array, &test_data_2, dst) {
                 Ok(_) => println!("✓ Elixir signature 2 verifies in Rust"),
-                Err(e) => println!("✗ Elixir signature 2 verification failed: {:?}", e),
+                Err(e) => panic!("✗ Elixir signature 2 verification failed: {:?}", e),
             }
         }
 
