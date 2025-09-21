@@ -1,5 +1,4 @@
 [alias]
-log = ["run", "-p", "client", "--bin", "log"]
 node = ["run", "-p", "client", "--bin", "node"]
 cli = ["run", "-p", "client", "--bin", "cli"]
 test-all = ["test", "--workspace", "--all-targets"]

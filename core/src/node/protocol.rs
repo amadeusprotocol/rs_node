@@ -102,7 +102,7 @@ pub enum Instruction {
     Noop { why: String },
     SendNewPhoneWhoDisReply { dst: Ipv4Addr },
     SendGetPeerAnrsReply { anrs: Vec<Anr>, dst: Ipv4Addr },
-    SendPong { ts_m: u64, dst: Ipv4Addr },
+    SendPingReply { ts_m: u64, dst: Ipv4Addr },
 
     ValidTxs { txs: Vec<Vec<u8>> },
     ReceivedSol { sol: Solution },
@@ -295,9 +295,7 @@ pub struct SolicitEntry {
 pub struct SolicitEntry2;
 
 #[derive(Debug)]
-pub struct NewPhoneWhoDis {
-    // v1.1.7+ simplified - no fields needed
-}
+pub struct NewPhoneWhoDis {}
 
 #[derive(Debug)]
 pub struct NewPhoneWhoDisReply {
@@ -316,9 +314,10 @@ impl Protocol for Ping {
         let ts_m = map.get_integer("ts_m").ok_or(Error::BadEtf("ts_m"))?;
         Ok(Self { ts_m })
     }
+
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("ping")));
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
         m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: self.ts_m.into() }));
         let term = Term::from(Map { map: m });
         let etf_data = encode_safe(&term);
@@ -327,14 +326,8 @@ impl Protocol for Ping {
 
     #[instrument(skip(self, ctx), fields(src = %src), name = "Ping::handle")]
     async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
-        // In v1.1.7+ ping is simplified - just respond with pong
-        if ctx.is_peer_handshaked(src).await {
-            ctx.node_peers.update_peer_ping_timestamp(src, self.ts_m).await;
-            Ok(vec![Instruction::SendPong { ts_m: self.ts_m, dst: src }])
-        } else {
-            warn!("{src} sent ping but is not handshaked");
-            Ok(vec![Instruction::Noop { why: "ping from non-handshaked peer".to_string() }])
-        }
+        ctx.node_peers.update_peer_ping_timestamp(src, self.ts_m).await;
+        Ok(vec![Instruction::SendPingReply { ts_m: self.ts_m, dst: src }])
     }
 }
 
@@ -366,6 +359,7 @@ impl Protocol for PingReply {
         // check what else must be validated
         Ok(Self { ts: ts_m, seen_time: seen_time_ms })
     }
+
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
@@ -375,14 +369,10 @@ impl Protocol for PingReply {
         Ok(etf_data)
     }
 
+    #[instrument(skip(self, ctx), fields(src = %src), name = "PingReply::handle")]
     async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
-        if ctx.is_peer_handshaked(src).await {
-            ctx.node_peers.update_peer_from_pong(src, self).await;
-            Ok(vec![Instruction::Noop { why: "pong processed".to_string() }])
-        } else {
-            warn!("{src} is not handshaked");
-            Ok(vec![Instruction::Noop { why: "pong without slip".to_string() }])
-        }
+        ctx.node_peers.update_peer_from_pong(src, self).await;
+        Ok(vec![Instruction::Noop { why: "pong processed".to_string() }])
     }
 }
 
@@ -843,6 +833,19 @@ mod tests {
         } else {
             panic!("Failed to deserialize simplified NewPhoneWhoDis");
         }
+    }
+
+    #[tokio::test]
+    async fn test_ping_ts_m_field_validation() {
+        let ping = Ping::with_timestamp(1234567890);
+        let valid_bin = ping.to_etf_bin().expect("should serialize");
+        let result = parse_etf_bin(&valid_bin);
+        assert!(result.is_ok(), "Valid ping should parse successfully");
+
+        let ping_reply = PingReply { ts: 1234567890, seen_time: 9876543210 };
+        let valid_bin = ping_reply.to_etf_bin().expect("should serialize");
+        let result = parse_etf_bin(&valid_bin);
+        assert!(result.is_ok(), "Valid ping_reply should parse successfully");
     }
 
     #[tokio::test]

@@ -434,11 +434,17 @@ impl Context {
 
         // Fall back to old MessageV2 format for backward compatibility
         match self.encrypted_reassembler.add_shard(buf, &self.config.get_sk()).await {
-            Ok(Some(packet)) => match parse_etf_bin(&packet) {
+            Ok(Some((packet, pk))) => match parse_etf_bin(&packet) {
                 Ok(proto) => {
                     self.node_peers.update_peer_from_proto(src, proto.typename()).await;
-                    self.metrics.add_incoming_proto(proto.typename());
-                    return Some(proto);
+                    if matches!(proto.typename(), NewPhoneWhoDis::TYPENAME | NewPhoneWhoDisReply::TYPENAME)
+                        || self.node_anrs.handshaked_and_valid_ip4(&pk, &src).await
+                    {
+                        self.metrics.add_incoming_proto(proto.typename());
+                        return Some(proto);
+                    }
+                    self.node_anrs.unset_handshaked(&pk).await;
+                    self.metrics.add_error(&Error::String(format!("handshake needed {src}")));
                 }
                 Err(e) => self.metrics.add_error(&e),
             },
@@ -483,7 +489,7 @@ impl Context {
                 self.send_message_to(&peers_v2, dst).await?;
             }
 
-            Instruction::SendPong { ts_m, dst } => {
+            Instruction::SendPingReply { ts_m, dst } => {
                 let seen_time_ms = get_unix_millis_now();
                 let pong = PingReply { ts: ts_m, seen_time: seen_time_ms };
                 self.send_message_to(&pong, dst).await?;

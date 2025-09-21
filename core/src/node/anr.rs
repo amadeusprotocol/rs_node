@@ -476,6 +476,14 @@ impl NodeAnrs {
         anrs
     }
 
+    /// Reset handshaked status (will silently return if pk not found)
+    pub async fn unset_handshaked(&self, pk: &[u8]) {
+        let mut map = self.store.write().await;
+        if let Some(anr) = map.get_mut(pk) {
+            anr.handshaked = false;
+        }
+    }
+
     /// Set handshaked status (will silently return if pk not found)
     pub async fn set_handshaked(&self, pk: &[u8]) {
         let mut map = self.store.write().await;

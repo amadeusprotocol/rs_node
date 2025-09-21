@@ -302,7 +302,7 @@ impl EncryptedMessageReassembler {
 
     /// Add a shard to the reassembly, return complete message if ready
     /// Takes binary data and parses it as EncryptedMessage
-    pub async fn add_shard(&self, bin: &[u8], config_sk: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+    pub async fn add_shard(&self, bin: &[u8], config_sk: &[u8]) -> Result<Option<(Vec<u8>, [u8; 48])>, Error> {
         let encrypted_msg = EncryptedMessage::try_from(bin)?;
         let key = EncryptedReassemblyKey::from(&encrypted_msg);
 
@@ -312,7 +312,7 @@ impl EncryptedMessageReassembler {
             // Decrypt and then decompress (reverse of build_shards process)
             let decrypted_compressed = encrypted_msg.decrypt_raw(&shared_secret)?;
             let payload = crate::utils::compression::decompress_with_zlib(&decrypted_compressed)?;
-            return Ok(Some(payload));
+            return Ok(Some((payload, key.pk)));
         }
 
         let data_shards = (key.shard_total / 2) as usize;
@@ -372,7 +372,7 @@ impl EncryptedMessageReassembler {
             // Decrypt and then decompress (reverse of build_shards process)
             let decrypted_compressed = temp_msg.decrypt_raw(&shared_secret)?;
             let payload = crate::utils::compression::decompress_with_zlib(&decrypted_compressed)?;
-            return Ok(Some(payload));
+            return Ok(Some((payload, key.pk)));
         }
 
         Ok(None)
@@ -524,7 +524,7 @@ mod tests {
         if encrypted_messages.len() == 1 {
             let serialized = encrypted_messages[0].to_bytes();
             let result = reassembler.add_shard(&serialized, &sk_bob).await.expect("reassembly should succeed");
-            assert_eq!(result, Some(test_message.to_vec()));
+            assert_eq!(result.map(|(msg, _)| msg), Some(test_message.to_vec()));
         }
 
         println!("✓ EncryptedMessageReassembler test passed");
