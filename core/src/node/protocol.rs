@@ -849,6 +849,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ping_complete_roundtrip_with_encryption() {
+        // test creates ping, encrypts it as UDP packet, decrypts it, parses and compares with initial
+        use crate::node::msg_encrypted::EncryptedMessage;
+        use crate::utils::bls12_381 as bls;
+
+        // create sender and receiver key pairs
+        let sender_sk = bls::generate_sk();
+        let sender_pk = bls::get_public_key(&sender_sk).expect("sender pk");
+
+        let receiver_sk = bls::generate_sk();
+        let receiver_pk = bls::get_public_key(&receiver_sk).expect("receiver pk");
+
+        // create original ping message
+        let original_ping = Ping::with_timestamp(1234567890);
+        let original_payload = original_ping.to_etf_bin().expect("serialize ping");
+
+        // compute shared secret for encryption
+        let shared_secret = bls::get_shared_secret(&receiver_pk, &sender_sk).expect("shared secret");
+
+        // encrypt the payload
+        let version = Ver::new(1, 1, 7);
+        let encrypted_messages = EncryptedMessage::encrypt(&sender_pk, &shared_secret, &original_payload, version)
+            .expect("encrypt message");
+
+        // should be single message for small payload
+        assert_eq!(encrypted_messages.len(), 1, "should create single encrypted message for small payload");
+        let encrypted_msg = &encrypted_messages[0];
+
+        // convert EncryptedMessage to UDP packet format (MessageV2)
+        let udp_packet_bytes = encrypted_msg.to_bytes();
+
+        // verify UDP packet starts with "AMA" magic
+        assert_eq!(&udp_packet_bytes[0..3], b"AMA", "UDP packet should start with AMA magic");
+
+        // parse UDP packet back to EncryptedMessage (simulating network reception)
+        let received_encrypted_msg = EncryptedMessage::try_from(udp_packet_bytes.as_slice())
+            .expect("deserialize encrypted message from UDP packet");
+
+        // verify the received message matches the original encrypted message
+        assert_eq!(received_encrypted_msg.version, encrypted_msg.version);
+        assert_eq!(received_encrypted_msg.pk, encrypted_msg.pk);
+        assert_eq!(received_encrypted_msg.shard_index, encrypted_msg.shard_index);
+        assert_eq!(received_encrypted_msg.shard_total, encrypted_msg.shard_total);
+        assert_eq!(received_encrypted_msg.ts_nano, encrypted_msg.ts_nano);
+        assert_eq!(received_encrypted_msg.original_size, encrypted_msg.original_size);
+        assert_eq!(received_encrypted_msg.payload, encrypted_msg.payload);
+
+        // decrypt payload at receiver side
+        let decrypted_payload = received_encrypted_msg.decrypt(&shared_secret).expect("decrypt payload");
+
+        // parse the decrypted payload back to ping
+        let parsed_proto = parse_etf_bin(&decrypted_payload).expect("parse decrypted payload");
+
+        // verify it's a ping with correct typename
+        assert_eq!(parsed_proto.typename(), "ping");
+
+        // parse again to get the actual ping struct for comparison
+        let decrypted_ping = Ping::from_etf_map_validated(
+            Term::decode(decrypted_payload.as_slice()).expect("decode").get_term_map().expect("map")
+        ).expect("parse ping");
+
+        // compare original and decrypted ping
+        assert_eq!(original_ping.ts_m, decrypted_ping.ts_m, "ping timestamp should match after roundtrip");
+    }
+
+    #[tokio::test]
     async fn test_protocol_send_to() {
         // Test that Protocol trait's send_to method works with Context convenience functions
         use crate::socket::MockSocket;

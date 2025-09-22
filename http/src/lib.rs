@@ -1,15 +1,8 @@
-pub mod models;
 mod routes;
 pub mod utils;
 mod views {
     pub mod advanced;
-    pub mod dashboard;
-    pub mod entries;
-    pub mod errors;
-    pub mod incoming;
-    pub mod network;
-    pub mod outgoing;
-    pub mod peers;
+    pub mod not_found;
 }
 
 use ama_core::Context;

@@ -1016,37 +1016,3 @@ mod tests {
     }
 }
 
-/// Collection of Blake3-based ANR lookup functions (v1.1.8 compatibility)
-/// These functions replicate the Elixir NodeANR module's Blake3 indexing
-
-/// Get all Blake3 first-4-bytes hashes from a collection of ANRs
-pub fn extract_b3_f4_from_anrs(anrs: &[Anr]) -> Vec<[u8; 4]> {
-    anrs.iter().map(|anr| anr.pk_b3_f4).collect()
-}
-
-/// Filter ANRs by Blake3 first-4-bytes prefix for fast lookup
-pub fn filter_anrs_by_b3_f4(anrs: &[Anr], target_prefixes: &[[u8; 4]]) -> Vec<Anr> {
-    anrs.iter().filter(|anr| target_prefixes.contains(&anr.pk_b3_f4)).cloned().collect()
-}
-
-/// Find ANR by Blake3 prefix (first match)
-pub fn find_anr_by_b3_f4<'a>(anrs: &'a [Anr], prefix: &[u8; 4]) -> Option<&'a Anr> {
-    anrs.iter().find(|anr| &anr.pk_b3_f4 == prefix)
-}
-
-/// Group ANRs by Blake3 first-4-bytes for efficient lookup
-pub fn group_anrs_by_b3_f4(anrs: &[Anr]) -> HashMap<[u8; 4], Vec<Anr>> {
-    let mut groups = HashMap::new();
-    for anr in anrs {
-        groups.entry(anr.pk_b3_f4).or_insert_with(Vec::new).push(anr.clone());
-    }
-    groups
-}
-
-/// Compute Blake3 hash for any public key (utility function)
-pub fn compute_pk_blake3(pk: &[u8]) -> ([u8; 32], [u8; 4]) {
-    let pk_b3 = blake3::hash(pk);
-    let mut pk_b3_f4 = [0u8; 4];
-    pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
-    (pk_b3, pk_b3_f4)
-}

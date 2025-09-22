@@ -10,26 +10,14 @@ use serde_json::Value;
 use std::sync::Arc;
 
 pub mod advanced;
-pub mod dashboard;
-pub mod entries;
-pub mod errors;
-pub mod incoming;
-pub mod network;
-pub mod outgoing;
-pub mod peers;
+pub mod not_found;
 
 pub fn app(ctx: Arc<Context>) -> Router {
     Router::new()
-        .merge(dashboard::router(ctx.clone()))
-        .nest("/advanced", advanced::router(ctx.clone()))
-        .nest("/peers", peers::router(ctx.clone()))
-        .nest("/incoming", incoming::router(ctx.clone()))
-        .nest("/outgoing", outgoing::router(ctx.clone()))
-        .nest("/network", network::router(ctx.clone()))
-        .nest("/errors", errors::router(ctx.clone()))
-        .nest("/entries", entries::router(ctx.clone()))
+        .merge(advanced::router(ctx.clone()))
         .nest("/api", api_router(ctx.clone()))
         .merge(system_router(ctx))
+        .fallback(not_found::not_found_handler)
 }
 
 async fn api_peers(State(ctx): State<Arc<Context>>) -> Json<Value> {

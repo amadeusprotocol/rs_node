@@ -3,7 +3,6 @@ use eetf::{Atom, Binary, List, Term};
 use num_traits::ToPrimitive;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
-use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Trait for types that can provide their type name as a static string
@@ -63,17 +62,6 @@ pub fn hexdump(data: &[u8]) -> String {
     out
 }
 
-/// Safely quote a string for simple bash usage. Removes single quotes and wraps in single quotes.
-pub fn sbash(term: &str) -> String {
-    let mut s = term.replace('\'', "");
-    if s.is_empty() {
-        String::new()
-    } else {
-        s.insert(0, '\'');
-        s.push('\'');
-        s
-    }
-}
 
 /// Keep only ASCII characters considered printable for our use-case.
 pub fn ascii(input: &str) -> String {
@@ -104,21 +92,6 @@ pub fn is_alphanumeric(input: &str) -> bool {
     alphanumeric(input) == input
 }
 
-/// Keep ASCII letters, digits, '_' and '-'
-pub fn ascii_dash_underscore(input: &str) -> String {
-    input.chars().filter(|&c| c.is_ascii_alphanumeric() || c == '_' || c == '-').collect()
-}
-
-/// Hostname-friendly subset: lowercase letters, digits, and '-'
-pub fn alphanumeric_hostname(input: &str) -> String {
-    input.chars().filter(|&c| matches!(c, 'a'..='z' | '0'..='9' | '-')).collect()
-}
-
-/// Safe extension: returns ".ext" where ext is alphanumeric-only, derived from the given path
-pub fn sext(path: &str) -> String {
-    let ext = Path::new(path).extension().and_then(|os| os.to_str()).map(alphanumeric).unwrap_or_default();
-    format!(".{}", ext)
-}
 
 /// Trim trailing slash from url
 pub fn url(url: &str) -> String {
@@ -130,17 +103,6 @@ pub fn url_with(url: &str, path: &str) -> String {
     format!("{}{}", url, path)
 }
 
-/// Convert http(s) to ws(s) and append path
-pub fn url_to_ws(url: &str, path: &str) -> String {
-    let u = url_with(url, path);
-    if let Some(rest) = u.strip_prefix("https://") {
-        format!("wss://{}", rest)
-    } else if let Some(rest) = u.strip_prefix("http://") {
-        format!("ws://{}", rest)
-    } else {
-        u
-    }
-}
 
 /// Lightweight helpers so you can keep calling `.atom()`, `.integer()`, etc.
 pub trait TermExt {
@@ -279,14 +241,6 @@ pub fn bitvec_to_bools(bytes: Vec<u8>) -> Vec<bool> {
 // }
 
 /// Creates string representation as bytes, compatible with Erlang's :erlang.integer_to_binary/1
-pub fn pk_challenge_into_bin(pk: &[u8], challenge: i32) -> Vec<u8> {
-    // challenge_binary = :erlang.integer_to_binary(challenge)
-    // signature_data = <<pk::binary, challenge_binary::binary>>
-    let challenge_binary = challenge.to_string().as_bytes().to_vec();
-    let mut signature_data = pk.to_vec();
-    signature_data.extend_from_slice(&challenge_binary);
-    signature_data
-}
 
 /// Format a duration into human-readable form following the requirements:
 /// - seconds if less than a minute
@@ -348,27 +302,18 @@ mod tests {
 
     #[test]
     fn string_helpers() {
-        assert_eq!(sbash("O'Reilly"), "'OReilly'");
-        assert_eq!(sbash(""), "");
         assert!(is_ascii_clean("AZaz09_-!"));
         assert!(!is_ascii_clean("hi🙂"));
         assert_eq!(alphanumeric("Abc-123"), "Abc123");
         assert!(is_alphanumeric("abc123"));
         assert!(!is_alphanumeric("a_b"));
-        assert_eq!(ascii_dash_underscore("A-b_C!"), "A-b_C");
-        assert_eq!(alphanumeric_hostname("AbC-123_X"), "b-123");
     }
 
     #[test]
     fn ext_and_urls() {
-        assert_eq!(sext("/tmp/file.tar.gz"), ".gz");
-        assert_eq!(sext("file"), ".");
         assert_eq!(url("http://a/b/"), "http://a/b");
         assert_eq!(url("http://a/b"), "http://a/b");
         assert_eq!(url_with("http://a/b", "/c"), "http://a/b/c");
-        assert_eq!(url_to_ws("https://a", "/x"), "wss://a/x");
-        assert_eq!(url_to_ws("http://a", "/x"), "ws://a/x");
-        assert_eq!(url_to_ws("ws://a", "/x"), "ws://a/x");
     }
 
     #[test]

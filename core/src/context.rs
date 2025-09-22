@@ -68,7 +68,7 @@ impl Context {
         config: config::Config,
         socket: Arc<dyn UdpSocketExt>,
     ) -> Result<Arc<Self>, Error> {
-        use crate::config::{ANR_PERIOD_SECS, BROADCAST_PERIOD_SECS, CLEANUP_PERIOD_SECS};
+        use crate::config::{ANR_PERIOD_MILLIS, BROADCAST_PERIOD_MILLIS, CLEANUP_PERIOD_MILLIS};
         use crate::consensus::fabric::init_kvdb;
         use crate::utils::archiver::init_storage;
         use metrics::Metrics;
@@ -104,10 +104,10 @@ impl Context {
         tokio::spawn({
             let ctx = ctx.clone();
             async move {
-                let mut ticker = interval(Duration::from_secs(CLEANUP_PERIOD_SECS));
+                let mut ticker = interval(Duration::from_millis(CLEANUP_PERIOD_MILLIS));
                 loop {
                     ticker.tick().await;
-                    ctx.cleanup_task(CLEANUP_PERIOD_SECS).await;
+                    ctx.cleanup_task(CLEANUP_PERIOD_MILLIS / 1000).await;
                 }
             }
         });
@@ -115,7 +115,7 @@ impl Context {
         tokio::spawn({
             let ctx = ctx.clone();
             async move {
-                let mut ticker = interval(Duration::from_secs(ANR_PERIOD_SECS));
+                let mut ticker = interval(Duration::from_millis(ANR_PERIOD_MILLIS));
                 ticker.tick().await;
                 loop {
                     ticker.tick().await;
@@ -130,7 +130,7 @@ impl Context {
         tokio::spawn({
             let ctx = ctx.clone();
             async move {
-                let mut ticker = interval(Duration::from_secs(BROADCAST_PERIOD_SECS));
+                let mut ticker = interval(Duration::from_millis(BROADCAST_PERIOD_MILLIS));
                 loop {
                     ticker.tick().await;
                     if let Err(e) = ctx.broadcast_task().await {

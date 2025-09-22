@@ -207,71 +207,6 @@ pub fn validate_public_key(public_key: &[u8]) -> Result<(), Error> {
     parse_public_key(public_key).map(|_| ())
 }
 
-/// AES-256-GCM encryption compatible with Elixir node implementation
-pub fn encrypt_message(data: &[u8], shared_secret: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    use aes_gcm::aead::Aead;
-    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-    use rand::RngCore;
-    use sha2::{Digest, Sha256};
-
-    // Generate random IV (12 bytes for GCM)
-    let mut iv = [0u8; 12];
-    rand::rng().fill_bytes(&mut iv);
-
-    // Generate timestamp (nanoseconds)
-    let ts_n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos() as u64;
-
-    // Derive key: SHA256(shared_secret || timestamp || iv)
-    let mut hasher = Sha256::new();
-    hasher.update(shared_secret);
-    hasher.update(ts_n.to_be_bytes());
-    hasher.update(&iv);
-    let key_bytes = hasher.finalize();
-
-    // Encrypt with AES-256-GCM
-    let cipher = Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| format!("Key init error: {:?}", e))?;
-    let nonce = Nonce::from_slice(&iv);
-    let ciphertext = cipher.encrypt(nonce, data).map_err(|e| format!("Encryption error: {:?}", e))?;
-
-    // Return: timestamp (8 bytes) + iv (12 bytes) + ciphertext + tag
-    let mut result = Vec::with_capacity(8 + 12 + ciphertext.len());
-    result.extend_from_slice(&ts_n.to_be_bytes());
-    result.extend_from_slice(&iv);
-    result.extend_from_slice(&ciphertext);
-
-    Ok(result)
-}
-
-/// AES-256-GCM decryption compatible with Elixir node implementation
-pub fn decrypt_message(encrypted_data: &[u8], shared_secret: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    use aes_gcm::aead::Aead;
-    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-    use sha2::{Digest, Sha256};
-
-    if encrypted_data.len() < 20 {
-        // 8 + 12 minimum
-        return Err("Encrypted data too short".into());
-    }
-
-    // Extract timestamp and IV
-    let ts_bytes = &encrypted_data[0..8];
-    let iv = &encrypted_data[8..20];
-    let ciphertext = &encrypted_data[20..];
-
-    // Derive key: SHA256(shared_secret || timestamp || iv)
-    let mut hasher = Sha256::new();
-    hasher.update(shared_secret);
-    hasher.update(ts_bytes);
-    hasher.update(iv);
-    let key_bytes = hasher.finalize();
-
-    // Decrypt with AES-256-GCM
-    let cipher = Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| format!("Key init error: {:?}", e))?;
-    let nonce = Nonce::from_slice(iv);
-    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|e| format!("Decryption error: {:?}", e))?;
-
-    Ok(plaintext)
-}
 
 #[cfg(test)]
 mod tests {
@@ -490,61 +425,6 @@ mod tests {
             }
         }
 
-        // Test 4: Encryption/Decryption
-        println!("\n--- Test 4: Encryption Compatibility ---");
-        let test_message = b"Secret message for encryption test";
-
-        if let Ok(rust_shared_secret) = get_shared_secret(&other_pk, &sk_64) {
-            match encrypt_message(test_message, &rust_shared_secret) {
-                Ok(encrypted) => {
-                    println!("✓ Encryption successful");
-                    println!("Encrypted length: {}", encrypted.len());
-                    println!("Encrypted (hex): {}", hex::encode(&encrypted));
-
-                    // Test decryption
-                    match decrypt_message(&encrypted, &rust_shared_secret) {
-                        Ok(decrypted) => {
-                            if decrypted == test_message {
-                                println!("✓ Round-trip encryption/decryption successful");
-                            } else {
-                                panic!("✗ Decrypted message doesn't match original");
-                            }
-                        }
-                        Err(e) => {
-                            panic!("✗ Decryption failed: {:?}", e);
-                        }
-                    }
-
-                    // Print iex commands for Elixir verification
-                    println!("\n=== IEX COMMANDS TO VERIFY ENCRYPTION IN ELIXIR ===");
-                    println!("# Decode the encrypted data");
-                    println!("encrypted_hex = \"{}\"", hex::encode(&encrypted));
-                    println!("encrypted_data = Base.decode16!(encrypted_hex, case: :lower)");
-                    println!("");
-                    println!("# Get your shared secret");
-                    println!("my_sk = Base58.decode(\"{}\")", SK_B58);
-                    println!("other_pk = Base58.decode(\"{}\")", OTHER_PK_B58);
-                    println!("shared_secret = BlsEx.get_shared_secret!(other_pk, my_sk)");
-                    println!("");
-                    println!("# Extract timestamp and IV (first 20 bytes)");
-                    println!("<<ts_bytes::binary-size(8), iv::binary-size(12), ciphertext::binary>> = encrypted_data");
-                    println!("ts_n = :binary.decode_unsigned(ts_bytes)");
-                    println!("");
-                    println!("# Derive decryption key");
-                    println!("key = :crypto.hash(:sha256, [shared_secret, :binary.encode_unsigned(ts_n), iv])");
-                    println!("");
-                    println!("# Decrypt with AES-256-GCM");
-                    println!(
-                        "{{:ok, plaintext}} = :crypto.crypto_one_time_aead(:aes_256_gcm, key, iv, ciphertext, <<>>, 16, false)"
-                    );
-                    println!("IO.puts(\"Decrypted: #{{plaintext}}\")");
-                    println!("# Should output: Decrypted: {}", String::from_utf8_lossy(test_message));
-                }
-                Err(e) => {
-                    panic!("✗ Encryption failed: {:?}", e);
-                }
-            }
-        }
 
         println!("\n=== COMPATIBILITY TEST COMPLETE ===");
     }

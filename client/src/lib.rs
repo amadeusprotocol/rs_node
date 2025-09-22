@@ -1,5 +1,4 @@
 use jemallocator::Jemalloc;
-use std::net::Ipv4Addr;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 mod dump_replay;
@@ -48,9 +47,6 @@ fn memory_stats_task() {
     }
 }
 
-pub fn get_peer_addr() -> Ipv4Addr {
-    std::env::var("UDP_ADDR").ok().and_then(|s| s.parse().ok()).unwrap_or_else(|| "127.0.0.1".parse().unwrap())
-}
 
 pub fn get_http_port() -> u16 {
     std::env::var("HTTP_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(3000)
