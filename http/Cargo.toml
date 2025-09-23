@@ -19,3 +19,6 @@ tracing = "0.1.41"
 tower-http = { version = "0.6", features = ["fs", "trace", "timeout"] }
 bs58 = "0.5"
 ama_core = { workspace = true }
+utoipa = { version = "5.2", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "8.0", features = ["axum"] }
+serde_yaml = "0.9"

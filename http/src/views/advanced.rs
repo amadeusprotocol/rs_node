@@ -126,8 +126,8 @@ pub fn page(
     let total_errors: u64 = snapshot.errors.values().sum();
 
     // Placeholder system resource values - will be updated by JavaScript
-    let cpu_usage = 0; // Will be updated from /api/metrics
-    let memory_usage = 0; // Will be updated from /api/metrics
+    let cpu_usage = 0; // Will be updated from /v2/metrics
+    let memory_usage = 0; // Will be updated from /v2/metrics
     let disk_usage = std::cmp::min(60, std::cmp::max(10, (snapshot.uptime / 7200) as i32 + 25)); // Still simulated for now
 
     format!(
@@ -2135,7 +2135,7 @@ pub fn page(
         // Refresh peers data specifically for peers tab
         async function refreshPeersData() {{
             try {{
-                const peersRes = await fetch('/api/peers');
+                const peersRes = await fetch('/v2/peers');
                 if (peersRes.ok) {{
                     const peers = await peersRes.json();
                     updatePeersTable(peers);
@@ -2154,8 +2154,8 @@ pub fn page(
             
             try {{
                 const [metricsRes, peersRes] = await Promise.all([
-                    fetch('/api/metrics'),
-                    fetch('/api/peers')
+                    fetch('/v2/metrics'),
+                    fetch('/v2/peers')
                 ]);
 
                 if (metricsRes.ok && peersRes.ok) {{

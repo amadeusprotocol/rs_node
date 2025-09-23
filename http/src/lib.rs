@@ -1,5 +1,7 @@
 mod routes;
 pub mod utils;
+pub mod models;
+pub mod openapi;
 mod views {
     pub mod advanced;
     pub mod not_found;

@@ -8,71 +8,21 @@ use axum::{
 };
 use serde_json::Value;
 use std::sync::Arc;
+use crate::openapi;
 
 pub mod advanced;
 pub mod not_found;
+pub mod api;
 
 pub fn app(ctx: Arc<Context>) -> Router {
     Router::new()
         .merge(advanced::router(ctx.clone()))
-        .nest("/api", api_router(ctx.clone()))
+        .nest("/api", api::api_router(ctx.clone()).merge(openapi::openapi_route()))
+        .nest("/v2", api::v2_router(ctx.clone()))
         .merge(system_router(ctx))
         .fallback(not_found::not_found_handler)
 }
 
-async fn api_peers(State(ctx): State<Arc<Context>>) -> Json<Value> {
-    let peers = ctx.get_peers().await;
-    Json(serde_json::to_value(peers).unwrap_or_default())
-}
-
-async fn api_metrics(State(ctx): State<Arc<Context>>) -> Json<Value> {
-    let metrics = ctx.get_metrics_snapshot();
-    let mut metrics_value = serde_json::to_value(metrics).unwrap_or_default();
-
-    // Get system stats
-    let system_stats = ctx.get_system_stats();
-
-    // Add additional fields for the advanced dashboard
-    if let Some(obj) = metrics_value.as_object_mut() {
-        obj.insert(
-            "block_height".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(ctx.get_block_height())),
-        );
-        obj.insert(
-            "temporal_height".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(ctx.get_temporal_height())),
-        );
-        obj.insert(
-            "rooted_height".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(ctx.get_rooted_height())),
-        );
-        obj.insert("uptime_formatted".to_string(), serde_json::Value::String(ctx.get_uptime()));
-        obj.insert(
-            "cpu_usage".to_string(),
-            serde_json::Value::Number(
-                serde_json::Number::from_f64(system_stats.cpu_usage as f64).unwrap_or(serde_json::Number::from(0)),
-            ),
-        );
-        obj.insert(
-            "memory_usage".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(system_stats.memory_usage)),
-        );
-        obj.insert(
-            "total_memory".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(system_stats.total_memory)),
-        );
-        obj.insert(
-            "cores_available".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(system_stats.cores_available)),
-        );
-    }
-
-    Json(metrics_value)
-}
-
-fn api_router(ctx: Arc<Context>) -> Router {
-    Router::new().route("/peers", get(api_peers)).route("/metrics", get(api_metrics)).with_state(ctx)
-}
 
 async fn prometheus_metrics(State(ctx): State<Arc<Context>>) -> Response<String> {
     Response::builder()

@@ -427,6 +427,35 @@ impl Context {
         self.node_peers.update_peer_from_anr(ip, pk, version, status).await
     }
 
+    /// Get all ANRs
+    pub async fn get_all_anrs(&self) -> Vec<anr::Anr> {
+        self.node_anrs.get_all().await
+    }
+
+    /// Get ANR by public key (Base58 encoded)
+    pub async fn get_anr_by_pk_b58(&self, pk_b58: &str) -> Option<anr::Anr> {
+        if let Ok(pk_bytes) = bs58::decode(pk_b58).into_vec() {
+            if pk_bytes.len() == 48 {
+                let mut pk_array = [0u8; 48];
+                pk_array.copy_from_slice(&pk_bytes);
+                return self.get_anr_by_pk(&pk_array).await;
+            }
+        }
+        None
+    }
+
+    /// Get ANR by public key bytes
+    pub async fn get_anr_by_pk(&self, pk: &[u8; 48]) -> Option<anr::Anr> {
+        let all_anrs = self.node_anrs.get_all().await;
+        all_anrs.into_iter().find(|anr| anr.pk == *pk)
+    }
+
+    /// Get all handshaked ANRs (validators)
+    pub async fn get_validator_anrs(&self) -> Vec<anr::Anr> {
+        let all_anrs = self.node_anrs.get_all().await;
+        all_anrs.into_iter().filter(|anr| anr.handshaked).collect()
+    }
+
     /// Reads UDP datagram and silently does parsing, validation and reassembly
     /// If the protocol message is complete, returns Some(Protocol)
     pub async fn parse_udp(&self, buf: &[u8], src: Ipv4Addr) -> Option<Box<dyn Protocol>> {

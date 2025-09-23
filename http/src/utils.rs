@@ -23,7 +23,7 @@ pub fn format_bytes(bytes: u64) -> String {
 }
 
 /// Get top N items from a hashmap, sorted by count descending
-pub fn get_top_items<T: Clone>(map: &std::collections::HashMap<String, T>, n: usize) -> Vec<(String, T)>
+pub fn get_top_items<T>(map: &std::collections::HashMap<String, T>, n: usize) -> Vec<(String, T)>
 where
     T: Ord + Copy,
 {
