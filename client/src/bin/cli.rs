@@ -4,6 +4,7 @@ use ama_core::consensus::doms::tx;
 use anyhow::{Error, Result};
 use bs58;
 use clap::{Parser, Subcommand};
+use reqwest;
 use serde_json::Value as JsonValue;
 use std::fs;
 
@@ -17,8 +18,9 @@ Notes:
       • {"b58": "..."} => Base58-decoded bytes
       • {"hex": "..."} => hex-decoded bytes (with or without 0x)
       • {"utf8": "..."} => UTF-8 bytes
-  - Secret key: use --sk env variable for secret key.
-  - deploytx validates the WASM by compiling it with wasmer before building the tx."#)]
+  - Secret key: use --sk parameter for path to secret key file
+  - Transactions: provide --url to send via HTTP, otherwise prints base58-encoded tx
+  - Contract deployment validates WASM before building the tx"#)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -52,9 +54,9 @@ enum Commands {
         attach_symbol: Option<String>,
         /// Optional attachment amount (required if attach_symbol is provided)
         attach_amount: Option<String>,
-        /// Send the transaction to the network instead of just printing it
-        #[arg(long = "send")]
-        send: bool,
+        /// HTTP endpoint URL for sending transaction (if not provided, prints base58-encoded tx)
+        #[arg(long = "url")]
+        url: Option<String>,
     },
     /// Build a transaction to deploy WASM contract
     ContractTx {
@@ -63,9 +65,9 @@ enum Commands {
         sk: String,
         /// Path to WASM file
         wasm_path: String,
-        /// Send the transaction to the network instead of just printing it
-        #[arg(long = "send")]
-        send: bool,
+        /// HTTP endpoint URL for sending transaction (if not provided, prints base58-encoded tx)
+        #[arg(long = "url")]
+        url: Option<String>,
     },
 }
 
@@ -76,7 +78,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::GenSk { out_file } => handle_gen_sk(&out_file).await?,
         Commands::GetPk { sk } => handle_get_pk(&config_from_sk(&sk).await?),
-        Commands::Tx { sk, contract, function, args_json, attach_symbol, attach_amount, send } => {
+        Commands::Tx { sk, contract, function, args_json, attach_symbol, attach_amount, url } => {
             if attach_symbol.is_some() != attach_amount.is_some() {
                 return Err(Error::msg("attach_amount and attach_symbol must go together"));
             }
@@ -88,12 +90,12 @@ async fn main() -> Result<()> {
                 &args_json,
                 attach_symbol.as_deref(),
                 attach_amount.as_deref(),
-                send,
+                url.as_deref(),
             )
             .await?;
         }
-        Commands::ContractTx { sk, wasm_path, send } => {
-            handle_contract_tx(&config_from_sk(&sk).await?, &wasm_path, send).await?;
+        Commands::ContractTx { sk, wasm_path, url } => {
+            handle_contract_tx(&config_from_sk(&sk).await?, &wasm_path, url.as_deref()).await?;
         }
     }
 
@@ -123,7 +125,7 @@ async fn handle_tx(
     args_json: &str,
     attach_symbol: Option<&str>,
     attach_amount: Option<&str>,
-    send: bool,
+    url: Option<&str>,
 ) -> Result<()> {
     // contract: if Base58 decodes successfully, use decoded bytes, else use raw bytes
     let contract_bytes = match bs58::decode(contract).into_vec() {
@@ -158,12 +160,13 @@ async fn handle_tx(
         attach_amount_bytes.as_deref(),
     );
 
-    if !send {
-        println!("{}", bs58::encode(tx_packed).into_string());
-        return Ok(());
+    match url {
+        Some(url) => send_transaction(tx_packed, url).await,
+        None => {
+            println!("{}", bs58::encode(&tx_packed).into_string());
+            Ok(())
+        }
     }
-
-    send_transaction(config, tx_packed).await
 }
 
 fn parse_json_arg_elem(v: &JsonValue) -> Result<Vec<u8>> {
@@ -191,7 +194,7 @@ fn parse_json_arg_elem(v: &JsonValue) -> Result<Vec<u8>> {
     }
 }
 
-async fn handle_contract_tx(config: &Config, wasm_path: &str, send: bool) -> Result<()> {
+async fn handle_contract_tx(config: &Config, wasm_path: &str, url: Option<&str>) -> Result<()> {
     let wasm_bytes = fs::read(wasm_path)?;
 
     // Validate WASM
@@ -199,14 +202,54 @@ async fn handle_contract_tx(config: &Config, wasm_path: &str, send: bool) -> Res
     let args_vec = vec![wasm_bytes];
     let tx_packed = tx::build(config, b"Contract", "deploy", &args_vec, None, None, None);
 
-    if !send {
-        println!("{}", bs58::encode(tx_packed).into_string());
-        return Ok(());
+    match url {
+        Some(url) => send_transaction(tx_packed, url).await,
+        None => {
+            println!("{}", bs58::encode(&tx_packed).into_string());
+            Ok(())
+        }
     }
-
-    send_transaction(config, tx_packed).await
 }
 
-pub async fn send_transaction(_config: &Config, _tx_packed: Vec<u8>) -> Result<()> {
-    unimplemented!("the pure cli tool must send the transaction using https, not udp");
+pub async fn send_transaction(tx_packed: Vec<u8>, url: &str) -> Result<()> {
+    // encode transaction as base58
+    let tx_base58 = bs58::encode(&tx_packed).into_string();
+
+    // build the HTTP client
+    let client = reqwest::Client::new();
+
+    // send POST request to /api/tx/submit with base58-encoded transaction as text/plain body
+    let endpoint = format!("{}/api/tx/submit", url.trim_end_matches('/'));
+
+    let response = client
+        .post(&endpoint)
+        .header("Content-Type", "text/plain")
+        .body(tx_base58)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        let result: JsonValue = response.json().await?;
+
+        // check if there's an error field
+        if let Some(error) = result.get("error") {
+            if error == "ok" {
+                if let Some(tx_hash) = result.get("tx_hash") {
+                    println!("Transaction submitted successfully. Hash: {}", tx_hash);
+                } else {
+                    println!("Transaction submitted successfully.");
+                }
+            } else {
+                return Err(Error::msg(format!("Transaction failed: {:?}", error)));
+            }
+        } else {
+            return Err(Error::msg(format!("Unexpected response: {}", result)));
+        }
+    } else {
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(Error::msg(format!("HTTP error {}: {}", status, error_text)));
+    }
+
+    Ok(())
 }

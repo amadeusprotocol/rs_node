@@ -20,6 +20,7 @@ async-trait = "0.1.89"
 tracing = "0.1.41"
 jemallocator = "0.5.4"
 jemalloc-ctl = { version = "0.5.4", optional = true }
+reqwest = { version = "0.12", features = ["json"] }
 
 [features]
 default = ["system-metrics"]

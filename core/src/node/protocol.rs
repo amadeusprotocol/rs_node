@@ -229,20 +229,8 @@ pub struct PingReply {
     pub seen_time: u64,
 }
 
-#[derive(Debug)]
-pub struct EventTx {
-    pub valid_txs: Vec<Vec<u8>>,
-}
 
-#[derive(Debug)]
-pub struct GetPeerAnrs {
-    pub has_peers_b3f4: Vec<[u8; 4]>,
-}
 
-#[derive(Debug)]
-pub struct GetPeerAnrsReply {
-    pub anrs: Vec<Anr>,
-}
 
 #[derive(Debug)]
 pub struct ConsensusBulk {
@@ -269,15 +257,7 @@ pub struct CatchupAttestation {
     pub hashes: Vec<Vec<u8>>,
 }
 
-#[derive(Debug)]
-pub struct SpecialBusiness {
-    pub business: Vec<u8>,
-}
 
-#[derive(Debug)]
-pub struct SpecialBusinessReply {
-    pub business: Vec<u8>,
-}
 
 #[derive(Debug)]
 pub struct SolicitEntry {
@@ -287,13 +267,6 @@ pub struct SolicitEntry {
 #[derive(Debug)]
 pub struct SolicitEntry2;
 
-#[derive(Debug)]
-pub struct NewPhoneWhoDis {}
-
-#[derive(Debug)]
-pub struct NewPhoneWhoDisReply {
-    pub anr: Anr,
-}
 
 impl Typename for Ping {
     fn typename(&self) -> &'static str {
@@ -373,6 +346,11 @@ impl PingReply {
     pub const TYPENAME: &'static str = "ping_reply";
 }
 
+#[derive(Debug)]
+pub struct EventTx {
+    pub valid_txs: Vec<Vec<u8>>,
+}
+
 impl Typename for EventTx {
     fn typename(&self) -> &'static str {
         Self::TYPENAME
@@ -431,6 +409,11 @@ impl EventTx {
     }
 }
 
+#[derive(Debug)]
+pub struct GetPeerAnrs {
+    pub has_peers_b3f4: Vec<[u8; 4]>,
+}
+
 impl Typename for GetPeerAnrs {
     fn typename(&self) -> &'static str {
         Self::TYPENAME
@@ -473,6 +456,11 @@ impl Protocol for GetPeerAnrs {
 
 impl GetPeerAnrs {
     pub const TYPENAME: &'static str = "get_peer_anrs";
+}
+
+#[derive(Debug)]
+pub struct GetPeerAnrsReply {
+    pub anrs: Vec<Anr>,
 }
 
 impl Typename for GetPeerAnrsReply {
@@ -518,6 +506,9 @@ impl GetPeerAnrsReply {
     pub const TYPENAME: &'static str = "get_peer_anrs_reply";
 }
 
+#[derive(Debug)]
+pub struct NewPhoneWhoDis {}
+
 impl Typename for NewPhoneWhoDis {
     fn typename(&self) -> &'static str {
         Self::TYPENAME
@@ -552,6 +543,11 @@ impl NewPhoneWhoDis {
     pub fn new() -> Self {
         Self {}
     }
+}
+
+#[derive(Debug)]
+pub struct NewPhoneWhoDisReply {
+    pub anr: Anr,
 }
 
 impl Typename for NewPhoneWhoDisReply {
@@ -613,6 +609,11 @@ impl NewPhoneWhoDisReply {
     }
 }
 
+#[derive(Debug)]
+pub struct SpecialBusiness {
+    pub business: Vec<u8>,
+}
+
 impl Typename for SpecialBusiness {
     fn typename(&self) -> &'static str {
         Self::TYPENAME
@@ -644,6 +645,11 @@ impl Protocol for SpecialBusiness {
 
 impl SpecialBusiness {
     pub const TYPENAME: &'static str = "special_business";
+}
+
+#[derive(Debug)]
+pub struct SpecialBusinessReply {
+    pub business: Vec<u8>,
 }
 
 impl Typename for SpecialBusinessReply {

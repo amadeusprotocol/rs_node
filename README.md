@@ -1,18 +1,24 @@
 # Rust rewrite of the Amadeus Node
 
-This initiative aims to create a Rust implementation of the [Amadeus Node](https://github.com/amadeus-robot/node.git).
+This initiative aims to create a Rust implementation of
+the [Amadeus Node](https://github.com/amadeus-robot/node.git).
 
-- [core (ama_core)](./core/README.md): Core library, needed by every project in Amadeus ecosystem
-- [client](./client/README.md): The library with examples of using the core library (cli, node, etc.)
-- [http](./http/README.md): Web dashboard of the Amadeus Node, by default runs on port 3000
+- [core (ama_core)](./core/README.md): Core library, needed by every project in
+  Amadeus ecosystem
+- [client](./client/README.md): The library with examples of using the core
+  library (cli, node, etc.)
+- [http](./http/README.md): Web dashboard of the Amadeus Node, by default runs
+  on port 3000
 
 ## Prerequisites
 
 ### Amadeus Elixir Node (Optional)
 
 You need to have rust environment and a running node somewhere to connect to.
-It is best to run the offline node on the same machine (it requires a lot of storage).
-To setup the machine, refer the Dockerfile from https://github.com/amadeus-robot/node.git
+It is best to run the offline node on the same machine (it requires a lot of
+storage).
+To setup the machine, refer the Dockerfile
+from https://github.com/amadeus-robot/node.git
 
 ```bash
 mix deps.get
@@ -55,13 +61,26 @@ cargo test-all
 
 ### CLI
 
-CLI is a client that can deploy a contract or send transactions.
+CLI is a client that can deploy contracts and send transactions via HTTP.
 
 ```bash
+# Generate a new secret key
 cargo cli gen-sk sk.local
+
+# Get public key from secret key file
 cargo cli get-pk --sk sk.local
-cargo cli tx Contract test "[]" --sk sk.local --send
-UDP_ADDR=167.99.137.218:36969 cargo cli contract-tx contracts/simple_counter.wasm --sk sk.local --send
+
+# Build a transaction (prints base58-encoded tx, doesn't send)
+cargo cli tx --sk sk.local Contract test "[]"
+
+# Build and send a transaction via HTTP
+cargo cli tx --sk sk.local Contract test "[]" --url http://localhost
+
+# Deploy a contract (prints base58-encoded tx)
+cargo cli contract-tx --sk sk.local contracts/simple_counter.wasm
+
+# Deploy a contract and send via HTTP to a specific node
+cargo cli contract-tx --sk sk.local contracts/simple_counter.wasm --url http://72.9.144.110
 ```
 
 ### Node debugging
@@ -156,7 +175,8 @@ rm pcaps/*.local && ./scripts/rewrite-pcaps.sh en0
 
 ## Debugging the RocksDB
 
-If installed on MacOS using brew, the commands are `rocksdb_ldb` and `rocksdb_sst_dump`,
+If installed on MacOS using brew, the commands are `rocksdb_ldb` and
+`rocksdb_sst_dump`,
 if manually - then the commands are `ldb` and `sst_dump` respectively.
 
 ```bash
@@ -175,22 +195,12 @@ API.Peer.all_for_web()
 
 ## Performance considerations
 
-The handling of parsed and validated incoming messages are happening through the
-`HandleExt` trait, which is `#[async_trait]`, which is very flexible and allow
-for having trait objects. Further performance improvements could include making
-it more explicit, for example by using:
+> Profiling of the node shows the biggest bottleneck as the
+> `get_shared_secret` function that takes >82% of the CPU time.
+> From it about 60% is BLS Scalar and 35% is parse public key.
 
-```rust
-pub trait HandleExt {
-    type Fut<'a>: Future<Output=Result<..>> + 'a
-    where
-        Self: 'a;
-    fn handle<'a>(&'a self) -> Self::Fut<'a>;
-}
-```
-
-Another direction of improvement is to avoid using synchronisation, like mutexes,
-and instead to use channels for communication between the threads.
+Another direction of improvement is to avoid using synchronisation, like
+mutexes, and instead to use channels for communication between the threads.
 
 ## Adding core library to other project
 

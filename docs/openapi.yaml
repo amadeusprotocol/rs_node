@@ -11,6 +11,10 @@ info:
     - Interact with smart contracts
     - Monitor network peers and validators
 
+    ## RPC Wrapper
+    The node includes an RPC.API module that provides convenient wrapper functions
+    for common operations like wallet transfers, balance queries, and transaction lookups.
+
     ## Authentication
     Most endpoints are publicly accessible for reading blockchain data.
     Transaction submission requires proper cryptographic signatures.
@@ -112,7 +116,7 @@ paths:
           label: cURL
           source: |
             curl -X GET \
-              "http://72.9.144.110/api/peer/anr/5J8QvHRQ2fKfKfKfKfKfKfKfKfKfKfKfKfKfKfKfKfKfKfKfKfKf"
+              "http://72.9.144.110/api/peer/anr/7EVUJfpnEqK32KrzUAaR4Yf26KgT66AWwW63xSHw5mbgdQhV8iwL1NkHMAqTi5Hv3h"
         - lang: javascript
           label: JavaScript
           source: |
@@ -422,6 +426,7 @@ paths:
           description: Base58-encoded public key
           schema:
             type: string
+          example: "7EVUJfpnEqK32KrzUAaR4Yf26KgT66AWwW63xSHw5mbgdQhV8iwL1NkHMAqTi5Hv3h"
       responses:
         '200':
           description: Balance retrieved successfully
@@ -448,6 +453,7 @@ paths:
           description: Base58-encoded public key
           schema:
             type: string
+          example: "7EVUJfpnEqK32KrzUAaR4Yf26KgT66AWwW63xSHw5mbgdQhV8iwL1NkHMAqTi5Hv3h"
         - name: symbol
           in: path
           required: true
@@ -476,6 +482,7 @@ paths:
           description: Base58-encoded public key
           schema:
             type: string
+          example: "7EVUJfpnEqK32KrzUAaR4Yf26KgT66AWwW63xSHw5mbgdQhV8iwL1NkHMAqTi5Hv3h"
       responses:
         '200':
           description: All balances retrieved successfully
@@ -645,6 +652,7 @@ paths:
           description: Validator public key
           schema:
             type: string
+          example: "7EVUJfpnEqK32KrzUAaR4Yf26KgT66AWwW63xSHw5mbgdQhV8iwL1NkHMAqTi5Hv3h"
       responses:
         '200':
           description: Epoch score retrieved successfully
@@ -666,6 +674,7 @@ paths:
           description: Validator public key
           schema:
             type: string
+          example: "7EVUJfpnEqK32KrzUAaR4Yf26KgT66AWwW63xSHw5mbgdQhV8iwL1NkHMAqTi5Hv3h"
       responses:
         '200':
           description: Emission address retrieved successfully
@@ -917,7 +926,7 @@ components:
           description: Token symbol
         fee:
           type: string
-          description: Transaction fee
+          description: Transaction fee (calculated as 1 + bytes/1024 AMA cents for epoch >= 295)
         nonce:
           type: integer
           description: Transaction nonce
@@ -1106,7 +1115,7 @@ components:
         transaction:
           hash: "abc123def456..."
           from: "7EVUJfpnEqK32KrzUAaR4Yf26KgT66AWwW63xSHw5mbgdQhV8iwL1NkHMAqTi5Hv3h"
-          to: "6K9RwSR3gKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKg"
+          to: "7UTNGrLTnL6HLZ5Gp3qVMtJvUVVHocKewN2y2cpstSh6oib9y4yZtWaWALg1j62CDH"
           amount: "100.0"
           symbol: "AMA"
           fee: "0.1"
