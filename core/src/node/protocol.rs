@@ -10,7 +10,7 @@ use crate::consensus::doms::attestation::EventAttestation;
 use crate::consensus::doms::entry::Entry;
 use crate::node::anr::Anr;
 use crate::node::peers::HandshakeStatus;
-use crate::node::{ReedSolomonReassembler, anr, peers};
+use crate::node::{anr, peers};
 use crate::utils::bls12_381;
 use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now};
 use crate::utils::safe_etf::encode_safe;
@@ -40,7 +40,7 @@ pub trait Protocol: Typename + Debug + Send + Sync {
         let dst_anr = ctx.node_anrs.get_by_ip4(dst).await.ok_or(Error::NoAnrForDestination(dst))?;
         let payload = self.to_etf_bin().inspect_err(|e| ctx.metrics.add_error(e))?;
 
-        let shards = ReedSolomonReassembler::build_shards(&ctx.config, &payload, &dst_anr.pk)?;
+        let shards = ctx.reassembler.build_shards(&ctx.config, &payload, &dst_anr.pk).await?;
         for shard in &shards {
             ctx.socket.send_to_with_metrics(shard, dst_addr, &ctx.metrics).await?;
         }
@@ -229,9 +229,6 @@ pub struct PingReply {
     pub seen_time: u64,
 }
 
-
-
-
 #[derive(Debug)]
 pub struct ConsensusBulk {
     pub consensuses_packed: Vec<u8>,
@@ -257,8 +254,6 @@ pub struct CatchupAttestation {
     pub hashes: Vec<Vec<u8>>,
 }
 
-
-
 #[derive(Debug)]
 pub struct SolicitEntry {
     pub hash: Vec<u8>,
@@ -266,7 +261,6 @@ pub struct SolicitEntry {
 
 #[derive(Debug)]
 pub struct SolicitEntry2;
-
 
 impl Typename for Ping {
     fn typename(&self) -> &'static str {

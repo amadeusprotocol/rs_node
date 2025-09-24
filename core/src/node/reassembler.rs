@@ -1,5 +1,5 @@
-use crate::Ver;
-use crate::utils::{bls12_381, misc::get_unix_nanos_now};
+use crate::utils::{bls12_381, misc::get_unix_millis_now, misc::get_unix_nanos_now};
+use crate::{Config, Ver};
 use aes_gcm::aead::{Aead, AeadCore, OsRng};
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use std::collections::HashMap;
@@ -236,7 +236,20 @@ impl TryFrom<&[u8]> for Message {
 
 /// Reassembler for encrypted message shards with Reed-Solomon error correction
 pub struct ReedSolomonReassembler {
-    reorg: RwLock<HashMap<ReassemblyKey, EntryState>>,
+    reorg: RwLock<HashMap<ReassemblyKey, TimedEntryState>>,
+    cache: RwLock<HashMap<[u8; 48], TimedSharedSecret>>,
+}
+
+struct TimedSharedSecret {
+    shared_secret: [u8; 48],
+    ts_m: u64,
+}
+
+impl TimedSharedSecret {
+    fn new(shared_secret: [u8; 48]) -> Self {
+        let ts_m = get_unix_millis_now();
+        Self { shared_secret, ts_m }
+    }
 }
 
 #[derive(Clone, Debug, Eq)]
@@ -280,6 +293,18 @@ enum EntryState {
     Spent,
 }
 
+struct TimedEntryState {
+    ts_m: u64,
+    state: EntryState,
+}
+
+impl TimedEntryState {
+    fn new(state: EntryState) -> Self {
+        let ts_m = get_unix_millis_now();
+        Self { ts_m, state }
+    }
+}
+
 impl Default for ReedSolomonReassembler {
     fn default() -> Self {
         Self::new()
@@ -288,17 +313,20 @@ impl Default for ReedSolomonReassembler {
 
 impl ReedSolomonReassembler {
     pub fn new() -> Self {
-        Self { reorg: RwLock::new(HashMap::new()) }
+        Self { reorg: RwLock::new(HashMap::new()), cache: RwLock::new(HashMap::new()) }
     }
 
     /// Clean up stale incomplete reassembly entries older than `seconds`
     pub async fn clear_stale(&self, seconds: u64) -> usize {
-        let threshold_nanos = get_unix_nanos_now().saturating_sub(seconds as u128 * 1_000_000_000);
+        let threshold = get_unix_millis_now().saturating_sub(seconds * 1_000_000);
         let mut map = self.reorg.write().await;
         let size_before = map.len();
-        map.retain(|k, _v| (k.ts_nano as u128) > threshold_nanos);
-        let size_after = map.len();
-        size_before - size_after
+        map.retain(|_k, v| v.ts_m > threshold);
+        let cleared = size_before - map.len();
+        let mut map = self.cache.write().await;
+        map.retain(|_k, v| v.ts_m > threshold);
+
+        cleared
     }
 
     /// Add a shard to the reassembly, return complete message if ready
@@ -327,20 +355,20 @@ impl ReedSolomonReassembler {
                 Entry::Vacant(v) => {
                     let mut state_map = HashMap::new();
                     state_map.insert(encrypted_msg.shard_index, encrypted_msg.payload.clone());
-                    v.insert(EntryState::Collecting(state_map));
+                    v.insert(TimedEntryState::new(EntryState::Collecting(state_map)));
                 }
                 Entry::Occupied(mut occ) => {
                     match occ.get_mut() {
-                        EntryState::Spent => {
+                        TimedEntryState { state: EntryState::Spent, .. } => {
                             // nothing to do
                         }
-                        EntryState::Collecting(shards_map) => {
+                        TimedEntryState { state: EntryState::Collecting(shards_map), .. } => {
                             shards_map.insert(encrypted_msg.shard_index, encrypted_msg.payload.clone());
                             if shards_map.len() >= data_shards {
                                 let shards: Vec<(usize, Vec<u8>)> =
                                     shards_map.iter().map(|(idx, bytes)| (*idx as usize, bytes.clone())).collect();
                                 // Mark as spent to avoid reuse and release memory
-                                *occ.get_mut() = EntryState::Spent;
+                                *occ.get_mut() = TimedEntryState::new(EntryState::Spent);
                                 maybe_shards = Some(shards);
                             }
                         }
@@ -381,22 +409,17 @@ impl ReedSolomonReassembler {
 
     /// Creates encrypted message shards from payload and target public key
     /// This is the main method for sending encrypted messages to specific recipients
-    pub fn build_shards(
-        config: &crate::config::Config,
+    pub async fn build_shards(
+        &self,
+        config: &Config,
         payload: &[u8],
         target_pk: &[u8; 48],
     ) -> Result<Vec<Vec<u8>>, Error> {
-        let sender_pk = config.get_pk();
-        let sender_sk = config.get_sk();
         let version = config.get_ver();
-
-        // Compute shared secret for encryption
-        let shared_secret = bls12_381::get_shared_secret(target_pk, &sender_sk)?;
-
-        // Create encrypted messages using the existing encrypt method
+        let sender_pk = config.get_pk();
+        let shared_secret = self.get_shared_secret(config, target_pk).await?;
         let encrypted_messages = Message::encrypt(&sender_pk, &shared_secret, payload, version)?;
 
-        // Convert to binary format for transmission
         let mut shards = Vec::new();
         for encrypted_msg in encrypted_messages {
             shards.push(encrypted_msg.to_bytes());
@@ -405,6 +428,19 @@ impl ReedSolomonReassembler {
         Ok(shards)
     }
 
+    async fn get_shared_secret(&self, config: &Config, pk: &[u8; 48]) -> Result<[u8; 48], Error> {
+        use std::collections::hash_map::Entry;
+
+        let mut map = self.cache.write().await;
+        match map.entry(pk.clone()) {
+            Entry::Vacant(v) => {
+                let shared_secret = bls12_381::get_shared_secret(pk, &config.get_sk())?;
+                v.insert(TimedSharedSecret::new(shared_secret));
+                Ok(shared_secret)
+            }
+            Entry::Occupied(e) => Ok(e.get().shared_secret),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -510,8 +546,8 @@ mod tests {
         let test_message = b"Test message for reassembler";
         let version = Ver::new(1, 1, 8);
 
-        let encrypted_messages = Message::encrypt(&pk_alice, &shared_secret, test_message, version)
-            .expect("encryption should succeed");
+        let encrypted_messages =
+            Message::encrypt(&pk_alice, &shared_secret, test_message, version).expect("encryption should succeed");
 
         let reassembler = ReedSolomonReassembler::new();
 
@@ -525,8 +561,8 @@ mod tests {
         println!("✓ MessageReassembler test passed");
     }
 
-    #[test]
-    fn test_build_shards() {
+    #[tokio::test]
+    async fn test_build_shards() {
         use crate::config::Config;
 
         // Create test config
@@ -541,9 +577,10 @@ mod tests {
         // Test payload
         let test_payload = b"Test payload for build_shards functionality";
 
-        // Build shards
-        let shards = ReedSolomonReassembler::build_shards(&config, test_payload, &target_pk)
-            .expect("build_shards should succeed");
+        // Build shards via instance method
+        let reassembler = ReedSolomonReassembler::new();
+        let shards =
+            reassembler.build_shards(&config, test_payload, &target_pk).await.expect("build_shards should succeed");
 
         assert!(!shards.is_empty(), "Should create at least one shard");
 
@@ -556,8 +593,8 @@ mod tests {
         println!("✓ build_shards test passed - created {} shards", shards.len());
     }
 
-    #[test]
-    fn test_build_broadcast_shards() {
+    #[tokio::test]
+    async fn test_build_broadcast_shards() {
         use crate::config::Config;
 
         // Create test config
@@ -570,8 +607,9 @@ mod tests {
 
         // Test broadcast shards (using own key as target)
         let sender_pk = config.get_pk();
-        let shards = ReedSolomonReassembler::build_shards(&config, test_payload, &sender_pk)
-            .expect("build_shards should succeed");
+        let reassembler = ReedSolomonReassembler::new();
+        let shards =
+            reassembler.build_shards(&config, test_payload, &sender_pk).await.expect("build_shards should succeed");
 
         assert!(!shards.is_empty(), "Should create at least one shard");
 
