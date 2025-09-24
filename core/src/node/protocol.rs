@@ -176,7 +176,7 @@ impl Protocol for EventTip {
     }
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("ping")));
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
         m.insert(Term::Atom(Atom::from("temporal")), self.temporal.to_etf_term()?);
         m.insert(Term::Atom(Atom::from("rooted")), self.rooted.to_etf_term()?);
         let term = Term::from(Map { map: m });
@@ -225,10 +225,9 @@ pub struct Ping {
 
 #[derive(Debug)]
 pub struct PingReply {
-    pub ts: u64,
+    pub ts_m: u64,
     pub seen_time: u64,
 }
-
 
 #[derive(Debug)]
 pub struct EventTx {
@@ -351,13 +350,13 @@ impl Protocol for PingReply {
         let ts_m = map.get_integer("ts_m").ok_or(Error::BadEtf("ts_m"))?;
         let seen_time_ms = get_unix_millis_now();
         // check what else must be validated
-        Ok(Self { ts: ts_m, seen_time: seen_time_ms })
+        Ok(Self { ts_m: ts_m, seen_time: seen_time_ms })
     }
 
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
-        m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: self.ts.into() }));
+        m.insert(Term::Atom(Atom::from("ts_m")), Term::from(eetf::BigInteger { value: self.ts_m.into() }));
         let term = Term::from(Map { map: m });
         let etf_data = encode_safe(&term);
         Ok(etf_data)
@@ -518,8 +517,6 @@ impl Protocol for GetPeerAnrsReply {
 impl GetPeerAnrsReply {
     pub const TYPENAME: &'static str = "get_peer_anrs_reply";
 }
-
-impl Ping {}
 
 impl Typename for NewPhoneWhoDis {
     fn typename(&self) -> &'static str {
@@ -707,7 +704,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pong_etf_roundtrip() {
-        let pong = PingReply { ts: 1234567890, seen_time: 9876543210 };
+        let pong = PingReply { ts_m: 1234567890, seen_time: 9876543210 };
 
         let bin = pong.to_etf_bin().expect("should serialize");
         let result = parse_etf_bin(&bin).expect("should deserialize");
@@ -828,7 +825,7 @@ mod tests {
         let result = parse_etf_bin(&valid_bin);
         assert!(result.is_ok(), "Valid ping should parse successfully");
 
-        let ping_reply = PingReply { ts: 1234567890, seen_time: 9876543210 };
+        let ping_reply = PingReply { ts_m: 1234567890, seen_time: 9876543210 };
         let valid_bin = ping_reply.to_etf_bin().expect("should serialize");
         let result = parse_etf_bin(&valid_bin);
         assert!(result.is_ok(), "Valid ping_reply should parse successfully");
@@ -856,8 +853,8 @@ mod tests {
 
         // encrypt the payload
         let version = Ver::new(1, 1, 7);
-        let encrypted_messages = Message::encrypt(&sender_pk, &shared_secret, &original_payload, version)
-            .expect("encrypt message");
+        let encrypted_messages =
+            Message::encrypt(&sender_pk, &shared_secret, &original_payload, version).expect("encrypt message");
 
         // should be single message for small payload
         assert_eq!(encrypted_messages.len(), 1, "should create single encrypted message for small payload");
@@ -870,8 +867,8 @@ mod tests {
         assert_eq!(&udp_packet_bytes[0..3], b"AMA", "UDP packet should start with AMA magic");
 
         // parse UDP packet back to Message (simulating network reception)
-        let received_encrypted_msg = Message::try_from(udp_packet_bytes.as_slice())
-            .expect("deserialize encrypted message from UDP packet");
+        let received_encrypted_msg =
+            Message::try_from(udp_packet_bytes.as_slice()).expect("deserialize encrypted message from UDP packet");
 
         // verify the received message matches the original encrypted message
         assert_eq!(received_encrypted_msg.version, encrypted_msg.version);
@@ -893,8 +890,9 @@ mod tests {
 
         // parse again to get the actual ping struct for comparison
         let decrypted_ping = Ping::from_etf_map_validated(
-            Term::decode(decrypted_payload.as_slice()).expect("decode").get_term_map().expect("map")
-        ).expect("parse ping");
+            Term::decode(decrypted_payload.as_slice()).expect("decode").get_term_map().expect("map"),
+        )
+        .expect("parse ping");
 
         // compare original and decrypted ping
         assert_eq!(original_ping.ts_m, decrypted_ping.ts_m, "ping timestamp should match after roundtrip");
@@ -945,7 +943,7 @@ mod tests {
         match Context::with_config_and_socket(config, dummy_socket).await {
             Ok(ctx) => {
                 // Create a Pong message to test with
-                let pong = PingReply { ts: 12345, seen_time: 67890 };
+                let pong = PingReply { ts_m: 12345, seen_time: 67890 };
 
                 // Check metrics before sending
                 let metrics_json_before = ctx.metrics.get_json();

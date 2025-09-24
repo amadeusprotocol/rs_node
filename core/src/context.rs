@@ -251,8 +251,6 @@ impl Context {
         message.send_to_with_metrics(self, dst).await.map_err(Into::into)
     }
 
-
-
     /// Convenience function to receive UDP data with metrics tracking
     pub async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
         self.socket.recv_from_with_metrics(buf, &self.metrics).await
@@ -506,7 +504,7 @@ impl Context {
 
             Instruction::SendPingReply { ts_m, dst } => {
                 let seen_time_ms = get_unix_millis_now();
-                let pong = PingReply { ts: ts_m, seen_time: seen_time_ms };
+                let pong = PingReply { ts_m: ts_m, seen_time: seen_time_ms };
                 self.send_message_to(&pong, dst).await?;
             }
 
@@ -936,7 +934,7 @@ mod tests {
                 let mut buf = [0u8; 1024];
                 let target: Ipv4Addr = "127.0.0.1".parse().unwrap();
 
-                let pong = PingReply { ts: 1234567890, seen_time: 1234567890123 };
+                let pong = PingReply { ts_m: 1234567890, seen_time: 1234567890123 };
                 // Test send_to convenience function - should return error with MockSocket but not panic
                 match context.send_message_to(&pong, target).await {
                     Ok(_) => {

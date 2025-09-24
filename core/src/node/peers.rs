@@ -714,7 +714,7 @@ impl NodePeers {
 
     pub async fn update_peer_from_pong(&self, ip: Ipv4Addr, pong: &PingReply) {
         let current_time = get_unix_millis_now();
-        let latency = current_time.saturating_sub(pong.ts);
+        let latency = current_time.saturating_sub(pong.ts_m);
 
         let updated = self
             .peers
