@@ -240,8 +240,7 @@ impl Epoch {
 
     fn submit_sol(&self, env: &CallEnv, sol_bytes: &[u8]) -> Result<(), EpochError> {
         let hash = blake3::hash(sol_bytes);
-        let _segments = crate::bic::sol_bloom::segs(&hash);
-        // TODO: for each segment: kv_set_bit("bic:epoch:solbloom:{page}", bit_offset)
+        // TODO: compute bloom segments from hash and set bits in KV: kv_set_bit("bic:epoch:solbloom:{page}", bit_offset)
 
         // unpack and verify epoch
         let parsed = Solution::unpack(sol_bytes).map_err(|_| EpochError::InvalidSol)?;

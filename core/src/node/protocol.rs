@@ -10,7 +10,7 @@ use crate::consensus::doms::attestation::EventAttestation;
 use crate::consensus::doms::entry::Entry;
 use crate::node::anr::Anr;
 use crate::node::peers::HandshakeStatus;
-use crate::node::{EncryptedMessageReassembler, anr, msg_v2, peers};
+use crate::node::{ReedSolomonReassembler, anr, peers};
 use crate::utils::bls12_381;
 use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now};
 use crate::utils::safe_etf::encode_safe;
@@ -40,7 +40,7 @@ pub trait Protocol: Typename + Debug + Send + Sync {
         let dst_anr = ctx.node_anrs.get_by_ip4(dst).await.ok_or(Error::NoAnrForDestination(dst))?;
         let payload = self.to_etf_bin().inspect_err(|e| ctx.metrics.add_error(e))?;
 
-        let shards = EncryptedMessageReassembler::build_shards(&ctx.config, &payload, &dst_anr.pk)?;
+        let shards = ReedSolomonReassembler::build_shards(&ctx.config, &payload, &dst_anr.pk)?;
         for shard in &shards {
             ctx.socket.send_to_with_metrics(shard, dst_addr, &ctx.metrics).await?;
         }
@@ -76,12 +76,8 @@ pub enum Error {
     Sol(#[from] sol::Error),
     #[error(transparent)]
     Att(#[from] crate::consensus::doms::attestation::Error),
-    // #[error(transparent)]
-    // ReedSolomon(#[from] reassembler::Error),
     #[error(transparent)]
-    MsgV2(#[from] msg_v2::Error),
-    #[error(transparent)]
-    MsgEncrypted(#[from] crate::node::msg_encrypted::Error),
+    Reassembler(#[from] crate::node::reassembler::Error),
     #[error(transparent)]
     Anr(#[from] anr::Error),
     #[error("bad etf: {0}")]
@@ -233,8 +229,6 @@ pub struct PingReply {
     pub seen_time: u64,
 }
 
-#[derive(Debug)]
-pub struct WhoAreYou;
 
 #[derive(Debug)]
 pub struct EventTx {
@@ -685,14 +679,6 @@ impl Protocol for SpecialBusinessReply {
 
 impl SpecialBusinessReply {
     pub const TYPENAME: &'static str = "special_business_reply";
-    pub fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
-        m.insert(Term::Atom(Atom::from("business")), Term::from(Binary { bytes: self.business.clone() }));
-        let term = Term::from(Map { map: m });
-        let etf_data = encode_safe(&term);
-        Ok(etf_data)
-    }
 }
 
 #[cfg(test)]
@@ -851,7 +837,7 @@ mod tests {
     #[tokio::test]
     async fn test_ping_complete_roundtrip_with_encryption() {
         // test creates ping, encrypts it as UDP packet, decrypts it, parses and compares with initial
-        use crate::node::msg_encrypted::EncryptedMessage;
+        use crate::node::reassembler::Message;
         use crate::utils::bls12_381 as bls;
 
         // create sender and receiver key pairs
@@ -870,21 +856,21 @@ mod tests {
 
         // encrypt the payload
         let version = Ver::new(1, 1, 7);
-        let encrypted_messages = EncryptedMessage::encrypt(&sender_pk, &shared_secret, &original_payload, version)
+        let encrypted_messages = Message::encrypt(&sender_pk, &shared_secret, &original_payload, version)
             .expect("encrypt message");
 
         // should be single message for small payload
         assert_eq!(encrypted_messages.len(), 1, "should create single encrypted message for small payload");
         let encrypted_msg = &encrypted_messages[0];
 
-        // convert EncryptedMessage to UDP packet format (MessageV2)
+        // convert Message to UDP packet format (MessageV2)
         let udp_packet_bytes = encrypted_msg.to_bytes();
 
         // verify UDP packet starts with "AMA" magic
         assert_eq!(&udp_packet_bytes[0..3], b"AMA", "UDP packet should start with AMA magic");
 
-        // parse UDP packet back to EncryptedMessage (simulating network reception)
-        let received_encrypted_msg = EncryptedMessage::try_from(udp_packet_bytes.as_slice())
+        // parse UDP packet back to Message (simulating network reception)
+        let received_encrypted_msg = Message::try_from(udp_packet_bytes.as_slice())
             .expect("deserialize encrypted message from UDP packet");
 
         // verify the received message matches the original encrypted message
