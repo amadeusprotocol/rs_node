@@ -14,13 +14,21 @@ pub enum Error {
 }
 
 pub async fn init_storage(base: &str) -> Result<(), Error> {
-    if ARCHIVER_DIR.get().is_some() {
+    // Fast path if already initialized
+    if let Some(_) = ARCHIVER_DIR.get() {
         return Ok(());
     }
 
+    // Compute desired path
     let path = format!("{}/log", base);
-    create_dir_all(&path).await?;
-    ARCHIVER_DIR.set(path).map_err(|_| Error::OnceCell("archiver_dir_set"))?;
+
+    // Try to set the OnceCell but do not treat "already set" as an error.
+    // This avoids races when multiple tests/contexts initialize concurrently.
+    let _ = ARCHIVER_DIR.set(path);
+
+    // Ensure the chosen path exists
+    let chosen = ARCHIVER_DIR.get().ok_or(Error::OnceCell("archiver_dir_get"))?;
+    create_dir_all(chosen).await?;
 
     Ok(())
 }

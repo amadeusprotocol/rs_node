@@ -14,8 +14,7 @@ pub struct MetricsSnapshot {
     pub outgoing_protos: HashMap<String, u64>,
     pub errors: HashMap<String, u64>,
     pub udp: UdpStats,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub udpps: Option<UdpStats>, // stats per second
+    pub udpps: UdpStats, // stats per second
     pub uptime: u32,
     pub tasks: u64,
 }
@@ -67,10 +66,8 @@ amadeus_tasks_active {}"#,
             self.tasks
         );
 
-        let mut udpps = "".to_string();
-        if let Some(snapshot_udpps) = &self.udpps {
-            udpps = format!(
-                r#"
+        let udpps = format!(
+            r#"
 
 # HELP amadeus_udp_packets_per_second Total number of UDP packets
 # TYPE amadeus_udp_packets_per_second gauge
@@ -81,12 +78,11 @@ amadeus_udp_packets_per_second{{type="outgoing"}} {}
 # TYPE amadeus_udp_bytes_per_second gauge
 amadeus_udp_bytes_per_second{{type="incoming"}} {}
 amadeus_udp_bytes_per_second{{type="outgoing"}} {}"#,
-                snapshot_udpps.incoming_packets,
-                snapshot_udpps.outgoing_packets,
-                snapshot_udpps.incoming_bytes,
-                snapshot_udpps.outgoing_bytes
-            );
-        }
+            self.udpps.incoming_packets,
+            self.udpps.outgoing_packets,
+            self.udpps.incoming_bytes,
+            self.udpps.outgoing_bytes
+        );
 
         let mut protos = Vec::new();
         protos.push("\n\n# HELP amadeus_incoming_protos_total Total number of proto messages handled by type".into());
@@ -250,7 +246,7 @@ impl Metrics {
         now.saturating_sub(self.start_time)
     }
 
-    fn get_udp_stats(&self, uptime_seconds: u32) -> (UdpStats, Option<UdpStats>) {
+    fn get_udp_stats(&self, uptime_seconds: u32) -> (UdpStats, UdpStats) {
         static LAST_INCOMING_BYTES: AtomicU64 = AtomicU64::new(0);
         static LAST_INCOMING_PACKETS: AtomicU64 = AtomicU64::new(0);
         static LAST_OUTGOING_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -268,18 +264,24 @@ impl Metrics {
         let lop = LAST_OUTGOING_PACKETS.swap(outgoing_packets, Ordering::Relaxed);
         let lob = LAST_OUTGOING_BYTES.swap(outgoing_bytes, Ordering::Relaxed);
 
-        let udp = UdpStats { incoming_packets, incoming_bytes, outgoing_packets, outgoing_bytes };
-        let mut udpps = None;
-
-        if lus != 0 {
-            let seconds = if uptime_seconds != lus { (uptime_seconds - lus) as u64 } else { 1 };
-            udpps = Some(UdpStats {
-                incoming_packets: (incoming_packets - lip) / seconds,
-                incoming_bytes: (incoming_bytes - lib) / seconds,
-                outgoing_packets: (outgoing_packets - lop) / seconds,
-                outgoing_bytes: (outgoing_bytes - lob) / seconds,
-            });
+        // Use saturating arithmetic to avoid underflow when previous snapshot
+        // belongs to another Metrics instance or counters reset between runs.
+        let mut seconds = (uptime_seconds.saturating_sub(lus)) as u64;
+        if seconds == 0 {
+            seconds = 1;
         }
+        let dp_in = incoming_packets.saturating_sub(lip);
+        let db_in = incoming_bytes.saturating_sub(lib);
+        let dp_out = outgoing_packets.saturating_sub(lop);
+        let db_out = outgoing_bytes.saturating_sub(lob);
+
+        let udp = UdpStats { incoming_packets, incoming_bytes, outgoing_packets, outgoing_bytes };
+        let udpps = UdpStats {
+            incoming_packets: dp_in / seconds,
+            incoming_bytes: db_in / seconds,
+            outgoing_packets: dp_out / seconds,
+            outgoing_bytes: db_out / seconds,
+        };
 
         (udp, udpps)
     }

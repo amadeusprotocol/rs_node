@@ -67,7 +67,7 @@ pub fn page(
     let temporal_height = ctx.get_temporal_height();
 
     // Get uptime in seconds from metrics snapshot
-    let uptime_seconds = snapshot.uptime as f64;
+    let _uptime_seconds = snapshot.uptime as f64;
 
     // Helper function to format bytes with flexible units
     let format_bytes_per_sec = |bytes_per_sec: f64| -> String {
@@ -94,33 +94,14 @@ pub fn page(
     };
 
     // Use udpps (UDP per second) values directly from metrics snapshot
-    let (network_in_bytes_str, network_out_bytes_str, network_in_pps_str, network_out_pps_str) =
-        if let Some(ref udpps) = snapshot.udpps {
-            // Use the pre-calculated per-second values
-            let in_bytes_str = format_bytes_per_sec(udpps.incoming_bytes as f64);
-            let out_bytes_str = format_bytes_per_sec(udpps.outgoing_bytes as f64);
-            let in_pps_str = format_packets_per_sec(udpps.incoming_packets as f64);
-            let out_pps_str = format_packets_per_sec(udpps.outgoing_packets as f64);
-            (in_bytes_str, out_bytes_str, in_pps_str, out_pps_str)
-        } else {
-            // Fallback to calculating from totals if udpps not available
-            let incoming_bytes = snapshot.udp.incoming_bytes as f64;
-            let outgoing_bytes = snapshot.udp.outgoing_bytes as f64;
-            let incoming_packets = snapshot.udp.incoming_packets;
-            let outgoing_packets = snapshot.udp.outgoing_packets;
-
-            let in_bytes_per_sec = if uptime_seconds > 0.0 { incoming_bytes / uptime_seconds } else { 0.0 };
-            let out_bytes_per_sec = if uptime_seconds > 0.0 { outgoing_bytes / uptime_seconds } else { 0.0 };
-            let in_pps = if uptime_seconds > 0.0 { incoming_packets as f64 / uptime_seconds } else { 0.0 };
-            let out_pps = if uptime_seconds > 0.0 { outgoing_packets as f64 / uptime_seconds } else { 0.0 };
-
-            (
-                format_bytes_per_sec(in_bytes_per_sec),
-                format_bytes_per_sec(out_bytes_per_sec),
-                format_packets_per_sec(in_pps),
-                format_packets_per_sec(out_pps),
-            )
-        };
+    let (network_in_bytes_str, network_out_bytes_str, network_in_pps_str, network_out_pps_str) = {
+        // Use the pre-calculated per-second values
+        let in_bytes_str = format_bytes_per_sec(snapshot.udpps.incoming_bytes as f64);
+        let out_bytes_str = format_bytes_per_sec(snapshot.udpps.outgoing_bytes as f64);
+        let in_pps_str = format_packets_per_sec(snapshot.udpps.incoming_packets as f64);
+        let out_pps_str = format_packets_per_sec(snapshot.udpps.outgoing_packets as f64);
+        (in_bytes_str, out_bytes_str, in_pps_str, out_pps_str)
+    };
 
     // Calculate total errors from all error types
     let total_errors: u64 = snapshot.errors.values().sum();
@@ -2314,7 +2295,7 @@ pub fn page(
             // Update network I/O using udpps values directly from metrics
             const networkValues = document.querySelectorAll('.network-value');
             if (networkValues.length >= 4) {{
-                if (metrics.udpps) {{
+                if (metrics.uptime && metrics.uptime > 0) {{
                     // Use the pre-calculated per-second values from udpps
                     const inBytesStr = formatBytesPerSec(metrics.udpps.incoming_bytes || 0);
                     const outBytesStr = formatBytesPerSec(metrics.udpps.outgoing_bytes || 0);
@@ -2325,18 +2306,6 @@ pub fn page(
                     networkValues[1].textContent = inPpsStr;
                     networkValues[2].textContent = outBytesStr;
                     networkValues[3].textContent = outPpsStr;
-                }} else if (metrics.uptime && metrics.uptime > 0) {{
-                    // Fallback to calculating from totals if udpps not available
-                    const uptime = metrics.uptime;
-                    const inBytesPerSec = (metrics.udp?.incoming_bytes || 0) / uptime;
-                    const outBytesPerSec = (metrics.udp?.outgoing_bytes || 0) / uptime;
-                    const inPps = (metrics.udp?.incoming_packets || 0) / uptime;
-                    const outPps = (metrics.udp?.outgoing_packets || 0) / uptime;
-
-                    networkValues[0].textContent = formatBytesPerSec(inBytesPerSec);
-                    networkValues[1].textContent = formatPacketsPerSec(inPps);
-                    networkValues[2].textContent = formatBytesPerSec(outBytesPerSec);
-                    networkValues[3].textContent = formatPacketsPerSec(outPps);
                 }} else {{
                     // Node is offline - show zero values
                     networkValues[0].textContent = '0 B/s';    // DATA IN

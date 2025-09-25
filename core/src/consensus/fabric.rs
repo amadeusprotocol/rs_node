@@ -41,7 +41,7 @@ const CF_CONSENSUS_BY_ENTRYHASH: &str = "consensus_by_entryhash|Map<mutationshas
 const CF_SYSCONF: &str = "sysconf";
 
 /// Initialize Fabric DB area (creates/open RocksDB with the required CFs)
-pub async fn init_kvdb(base: &str) -> Result<RocksDb, Error> {
+async fn init_kvdb(base: &str) -> Result<RocksDb, Error> {
     let long_init_hint = tokio::spawn(
         async {
             tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
@@ -58,9 +58,6 @@ pub async fn init_kvdb(base: &str) -> Result<RocksDb, Error> {
 
     Ok(db)
 }
-
-
-
 
 /// Insert the genesis entry and initial state markers if not present yet
 // pub fn insert_genesis() -> Result<(), Error> {
@@ -87,13 +84,6 @@ pub async fn init_kvdb(base: &str) -> Result<RocksDb, Error> {
 //
 //     Ok(())
 // }
-
-#[derive(Debug, Clone)]
-pub struct EntryStub {
-    pub hash: [u8; 32],
-    pub header_height: u64,
-}
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredConsensus {
@@ -138,10 +128,6 @@ fn unpack_consensus_map(bin: &[u8]) -> Result<HashMap<[u8; 32], StoredConsensus>
     Ok(out)
 }
 
-
-
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,8 +136,7 @@ mod tests {
     async fn test_height_slot_indexing() {
         // initialize db for testing
         let test_path = format!("target/test_fabric_{}", std::process::id());
-        let db = init_kvdb(&test_path).await.unwrap();
-        let fab = Fabric::new(db);
+        let fab = Fabric::new(&test_path).await.unwrap();
 
         // create test entry data
         let entry_hash1: [u8; 32] = [1; 32];
@@ -200,7 +185,15 @@ pub struct Fabric {
 }
 
 impl Fabric {
-    pub fn new(db: RocksDb) -> Self {
+    /// Create Fabric by opening RocksDb at base/fabric
+    pub async fn new(base: &str) -> Result<Self, Error> {
+        // Previously init_kvdb(base) + Fabric::new(db)
+        let db = init_kvdb(base).await?;
+        Ok(Self { db })
+    }
+
+    /// Create Fabric from an already opened RocksDb handle
+    pub fn with_db(db: RocksDb) -> Self {
         Self { db }
     }
 
@@ -252,7 +245,14 @@ impl Fabric {
     }
 
     // Methods migrated from free functions
-    pub fn insert_entry(&self, hash: &[u8; 32], height: u32, slot: u32, entry_bin: &[u8], seen_millis: u64) -> Result<(), Error> {
+    pub fn insert_entry(
+        &self,
+        hash: &[u8; 32],
+        height: u32,
+        slot: u32,
+        entry_bin: &[u8],
+        seen_millis: u64,
+    ) -> Result<(), Error> {
         // idempotent: if already present under default CF, do nothing
         if self.db.get(CF_DEFAULT, hash)?.is_none() {
             self.db.put(CF_DEFAULT, hash, entry_bin)?;
@@ -325,7 +325,11 @@ impl Fabric {
         Ok(None)
     }
 
-    pub fn get_or_resign_my_attestation(&self, config: &crate::config::Config, entry_hash: &[u8; 32]) -> Result<Option<Attestation>, Error> {
+    pub fn get_or_resign_my_attestation(
+        &self,
+        config: &crate::config::Config,
+        entry_hash: &[u8; 32],
+    ) -> Result<Option<Attestation>, Error> {
         let packed = self.db.get(CF_MY_ATTESTATION_FOR_ENTRY, entry_hash)?;
         let Some(bin) = packed else { return Ok(None) };
         let att = Attestation::from_etf_bin(&bin)?;
@@ -341,7 +345,14 @@ impl Fabric {
         Ok(Some(new_a))
     }
 
-    pub fn insert_consensus(&self, entry_hash: [u8; 32], mutations_hash: [u8; 32], consensus_mask: Vec<bool>, consensus_agg_sig: [u8; 96], score: f64) -> Result<(), Error> {
+    pub fn insert_consensus(
+        &self,
+        entry_hash: [u8; 32],
+        mutations_hash: [u8; 32],
+        consensus_mask: Vec<bool>,
+        consensus_agg_sig: [u8; 96],
+        score: f64,
+    ) -> Result<(), Error> {
         if score < 0.67 {
             return Ok(());
         }
@@ -365,7 +376,11 @@ impl Fabric {
         Ok(())
     }
 
-    pub fn best_consensus_by_entryhash(&self, trainers: &[[u8; 48]], entry_hash: &[u8]) -> Result<(Option<[u8; 32]>, Option<f64>, Option<StoredConsensus>), Error> {
+    pub fn best_consensus_by_entryhash(
+        &self,
+        trainers: &[[u8; 48]],
+        entry_hash: &[u8],
+    ) -> Result<(Option<[u8; 32]>, Option<f64>, Option<StoredConsensus>), Error> {
         let Some(bin) = self.db.get(CF_CONSENSUS_BY_ENTRYHASH, entry_hash)? else { return Ok((None, None, None)) };
         let map = unpack_consensus_map(&bin)?;
         let max_score = trainers.len() as f64;
@@ -393,7 +408,9 @@ impl Fabric {
 
     pub fn get_temporal_height(&self) -> Result<Option<u32>, Error> {
         match self.db.get(CF_SYSCONF, b"temporal_height")? {
-            Some(hb) => Ok(Some(u64::from_be_bytes(hb.try_into().map_err(|_| Error::KvCell("temporal_height"))?) as u32)),
+            Some(hb) => {
+                Ok(Some(u64::from_be_bytes(hb.try_into().map_err(|_| Error::KvCell("temporal_height"))?) as u32))
+            }
             None => Ok(None),
         }
     }
@@ -418,6 +435,16 @@ impl Fabric {
             Some(rt) => Ok(Some(rt.try_into().map_err(|_| Error::KvCell("temporal_tip"))?)),
             None => Ok(None),
         }
+    }
+
+    // Convenience wrappers for NodePeers and other components to avoid direct RocksDb usage
+    pub fn chain_height(&self) -> u32 {
+        self.get_temporal_height().ok().flatten().unwrap_or(0)
+    }
+
+    pub fn trainers_for_height(&self, height: u32) -> Option<Vec<[u8; 48]>> {
+        // Delegate to existing consensus helper using Fabric's RocksDb handle
+        crate::consensus::trainers_for_height(self.db(), height)
     }
 }
 
