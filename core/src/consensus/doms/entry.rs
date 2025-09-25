@@ -10,7 +10,6 @@ use crate::utils::bls12_381;
 use crate::utils::misc::{TermExt, TermMap, bitvec_to_bools, bools_to_bitvec, get_unix_millis_now};
 use crate::utils::safe_etf::{encode_safe, encode_safe_deterministic};
 use crate::utils::{archiver, blake3};
-use crate::{bic, consensus};
 use eetf::{Atom, Binary, FixInteger, Map, Term};
 use std::collections::HashMap;
 use std::fmt;
@@ -267,12 +266,14 @@ impl Protocol for Entry {
         let height = self.header.height;
 
         // compute rooted_tip_height if possible
-        let rooted_height = fabric::get_rooted_tip()
+        let rooted_height = _ctx
+            .fabric
+            .get_rooted_tip()
             .ok()
             .flatten()
             .map(TryInto::try_into)
             .and_then(|h| h.ok())
-            .and_then(|h| fabric::get_entry_by_hash(&h))
+            .and_then(|h| _ctx.fabric.get_entry_by_hash(&h))
             .map(|e| e.header.height)
             .unwrap_or(0);
 
@@ -282,7 +283,7 @@ impl Protocol for Entry {
             let slot = self.header.slot; // height is the same as slot in amadeus
             let bin: Vec<u8> = self.clone().try_into()?;
 
-            fabric::insert_entry(&hash, height, slot, &bin, get_unix_millis_now())?;
+            _ctx.fabric.insert_entry(&hash, height, slot, &bin, get_unix_millis_now())?;
             archiver::store(bin, format!("epoch-{}", epoch), format!("entry-{}", height)).await?;
         }
 
@@ -416,23 +417,9 @@ impl ParsedEntry {
     }
 
     fn validate_signature(&self) -> Result<(), Error> {
-        if let Some(mask) = &self.entry.mask {
-            // resolve trainers for this height (chain state dependent)
-            if let Some(trainers) = consensus::trainers_for_height(self.entry.header.height) {
-                // unmask trainers who have signed using the provided bitmask
-                let signed: Vec<[u8; 48]> = bic::epoch::unmask_trainers(&trainers, mask);
-                if signed.is_empty() {
-                    // no signers in mask -> invalid aggregate signature
-                    return Err(Error::BadAggSignature);
-                }
-                // aggregate public keys
-                let agg_pk = bls12_381::aggregate_public_keys(signed.iter())?;
-                // verify aggregate signature over blake3(header_bin)
-                let h = blake3::hash(&self.header_bin);
-                bls12_381::verify(&agg_pk, &self.entry.signature, &h, DST_ENTRY)?;
-            } else {
-                return Err(Error::NoTrainers); // trainers unavailable
-            }
+        if let Some(_mask) = &self.entry.mask {
+            // Aggregate signature path requires trainers from chain state (DB); not available here.
+            return Err(Error::NoTrainers);
         } else {
             let h = blake3::hash(&self.header_bin);
             bls12_381::verify(&self.entry.header.signer, &self.entry.signature, &h, DST_ENTRY)?;

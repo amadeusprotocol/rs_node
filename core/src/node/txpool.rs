@@ -3,6 +3,7 @@ use crate::bic::coin;
 use crate::bic::sol;
 use crate::consensus::doms::tx::{TxU, pack, validate};
 use crate::consensus::{chain_balance, chain_diff_bits, chain_epoch, chain_nonce, chain_segment_vr_hash};
+use crate::utils::rocksdb::RocksDb;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -30,13 +31,14 @@ pub enum TxPoolError {
 }
 
 pub struct TxPool {
+    db: Arc<RocksDb>,
     pool: Arc<RwLock<HashMap<Vec<u8>, TxU>>>,
     gifted_sol_cache: Arc<RwLock<HashMap<Vec<u8>, u64>>>,
 }
 
 impl TxPool {
-    pub fn new() -> Self {
-        Self { pool: Arc::new(RwLock::new(HashMap::new())), gifted_sol_cache: Arc::new(RwLock::new(HashMap::new())) }
+    pub fn new(db: Arc<RocksDb>) -> Self {
+        Self { db, pool: Arc::new(RwLock::new(HashMap::new())), gifted_sol_cache: Arc::new(RwLock::new(HashMap::new())) }
     }
 
     pub async fn insert(&self, tx_packed: &[u8]) -> Result<(), TxPoolError> {
@@ -58,7 +60,7 @@ impl TxPool {
     }
 
     pub async fn purge_stale(&self) {
-        let _cur_epoch = chain_epoch();
+        let _cur_epoch = chain_epoch(self.db.as_ref());
         let mut pool = self.pool.write().await;
 
         // Remove transactions older than 1 epoch
@@ -69,7 +71,7 @@ impl TxPool {
         });
     }
 
-    pub fn validate_tx(txu: &TxU, args: &mut ValidateTxArgs) -> Result<(), TxPoolError> {
+    pub fn validate_tx(&self, txu: &TxU, args: &mut ValidateTxArgs) -> Result<(), TxPoolError> {
         // Check nonce validity
         let signer_vec = txu.tx.signer.to_vec();
         let chain_nonce = args
@@ -77,7 +79,7 @@ impl TxPool {
             .chain_nonces
             .get(&signer_vec)
             .cloned()
-            .unwrap_or_else(|| chain_nonce(&txu.tx.signer).unwrap_or(0));
+            .unwrap_or_else(|| chain_nonce(self.db.as_ref(), &txu.tx.signer).unwrap_or(0));
 
         if chain_nonce != 0 && txu.tx.nonce <= chain_nonce {
             return Err(TxPoolError::InvalidNonce { nonce: txu.tx.nonce, hash: txu.hash });
@@ -85,8 +87,12 @@ impl TxPool {
         args.batch_state.chain_nonces.insert(signer_vec.clone(), txu.tx.nonce);
 
         // Check balance
-        let balance =
-            args.batch_state.balances.get(&signer_vec).cloned().unwrap_or_else(|| chain_balance(&txu.tx.signer));
+        let balance = args
+            .batch_state
+            .balances
+            .get(&signer_vec)
+            .cloned()
+            .unwrap_or_else(|| chain_balance(self.db.as_ref(), &txu.tx.signer));
 
         let exec_cost = base::exec_cost(args.epoch, txu);
         let fee = coin::to_cents(1);
@@ -118,8 +124,8 @@ impl TxPool {
         Ok(())
     }
 
-    pub fn validate_tx_batch(txs_packed: &[Vec<u8>]) -> Vec<Vec<u8>> {
-        let chain_epoch = chain_epoch();
+    pub fn validate_tx_batch(&self, txs_packed: &[Vec<u8>]) -> Vec<Vec<u8>> {
+        let chain_epoch = chain_epoch(self.db.as_ref());
         let segment_vr_hash = chain_segment_vr_hash();
         let diff_bits = chain_diff_bits();
 
@@ -130,7 +136,7 @@ impl TxPool {
         for tx_packed in txs_packed {
             match validate(tx_packed, false) {
                 Ok(txu) => {
-                    if Self::validate_tx(&txu, &mut args).is_ok() {
+                    if self.validate_tx(&txu, &mut args).is_ok() {
                         good.push(tx_packed.clone());
                     }
                 }
@@ -142,7 +148,7 @@ impl TxPool {
     }
 
     pub async fn grab_next_valid(&self, amt: usize) -> Vec<Vec<u8>> {
-        let chain_epoch = chain_epoch();
+        let chain_epoch = chain_epoch(self.db.as_ref());
         let segment_vr_hash = chain_segment_vr_hash();
         let diff_bits = chain_diff_bits();
 
@@ -158,7 +164,7 @@ impl TxPool {
                 break;
             }
 
-            match Self::validate_tx(txu, &mut args) {
+            match self.validate_tx(txu, &mut args) {
                 Ok(()) => {
                     result.push(pack(txu));
                 }

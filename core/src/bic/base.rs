@@ -2,6 +2,7 @@ use crate::consensus::doms::tx::{TxAction, TxU};
 use crate::consensus::kv;
 use crate::consensus::kv::Mutation;
 use crate::utils::misc::pk_hex;
+use crate::utils::rocksdb::RocksDb;
 use blake3;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -90,21 +91,21 @@ fn key_balance(pk: &[u8], symbol: &str) -> String {
 
 /// Note: This function does not handle VRF/epoch-dependent sol verification flags; the
 /// bic::sol::verify_with_hash handles epoch branches internally
-pub fn call_txs_pre_parallel(entry_signer: &[u8; 48], txus: &[TxU]) -> (Vec<Mutation>, Vec<Mutation>) {
+pub fn call_txs_pre_parallel(db: &RocksDb, entry_signer: &[u8; 48], txus: &[TxU]) -> (Vec<Mutation>, Vec<Mutation>) {
     // for each txu: set nonce and move exec cost from signer to entry_signer in AMA
     for txu in txus {
         // nonce
         let key_nonce = format!("bic:base:nonce:{}", pk_hex(&txu.tx.signer));
-        kv::kv_put(&key_nonce, txu.tx.nonce.to_string().as_bytes());
+        kv::kv_put(db, &key_nonce, txu.tx.nonce.to_string().as_bytes());
 
         // exec cost in cents
-        let exec_cost = exec_cost(crate::consensus::chain_epoch(), txu) as i64;
+        let exec_cost = exec_cost(0, txu) as i64;
         // charge signer
         let key_signer = key_balance(&txu.tx.signer, "AMA");
-        kv::kv_increment(&key_signer, -exec_cost);
+        kv::kv_increment(db, &key_signer, -exec_cost);
         // reward entry signer
         let key_entry = key_balance(entry_signer, "AMA");
-        kv::kv_increment(&key_entry, exec_cost);
+        kv::kv_increment(db, &key_entry, exec_cost);
     }
 
     // build and store Sol verification cache
@@ -115,7 +116,7 @@ pub fn call_txs_pre_parallel(entry_signer: &[u8; 48], txus: &[TxU]) -> (Vec<Muta
 }
 
 /// Handle epoch exit operations - matches Elixir BIC.Base.call_exit/1  
-pub fn call_exit(env: &crate::bic::epoch::CallEnv) -> (Vec<Mutation>, Vec<Mutation>) {
+pub fn call_exit(db: &RocksDb, env: &crate::bic::epoch::CallEnv) -> (Vec<Mutation>, Vec<Mutation>) {
     kv::reset(); // Clear mutations - matches Process.delete(:mutations) etc
 
     // Seed randomness - matches Elixir seed_random(env.entry_vr, "", "", "")
@@ -124,12 +125,12 @@ pub fn call_exit(env: &crate::bic::epoch::CallEnv) -> (Vec<Mutation>, Vec<Mutati
     // Thank you come again - increment AMA by to_flat(1) for entry_signer
     let key_entry_signer = key_balance(&env.entry_signer, "AMA");
     let flat_reward = crate::bic::coin::to_flat(1) as i64;
-    kv::kv_increment(&key_entry_signer, flat_reward);
+    kv::kv_increment(db, &key_entry_signer, flat_reward);
 
     // Update epoch segment VR hash every 1000 heights
     if env.entry_height % 1000 == 0 {
         let vr_hash = blake3::hash(&env.entry_vr);
-        kv::kv_put("bic:epoch:segment_vr_hash", vr_hash.as_bytes());
+        kv::kv_put(db, "bic:epoch:segment_vr_hash", vr_hash.as_bytes());
     }
 
     // Handle special heights
@@ -140,11 +141,11 @@ pub fn call_exit(env: &crate::bic::epoch::CallEnv) -> (Vec<Mutation>, Vec<Mutati
             let trainers = vec![env.entry_signer];
             let serialized =
                 bincode::encode_to_vec(&trainers, bincode::config::standard()).expect("failed to serialize trainers");
-            kv::kv_put("bic:epoch:trainers:0", &serialized);
+            kv::kv_put(db, "bic:epoch:trainers:0", &serialized);
 
             // Store POP for genesis signer (placeholder implementation)
             let pop_key = format!("bic:epoch:pop:{}", bs58::encode(&env.entry_signer).into_string());
-            kv::kv_put(&pop_key, b"genesis_pop_placeholder");
+            kv::kv_put(db, &pop_key, b"genesis_pop_placeholder");
         }
         h if h % 100_000 == 99_999 => {
             // Next epoch transition - would call BIC.Epoch.next(env) in Elixir
@@ -160,12 +161,13 @@ pub fn call_exit(env: &crate::bic::epoch::CallEnv) -> (Vec<Mutation>, Vec<Mutati
 /// Execute transaction actions - matches Elixir BIC.Base.call_tx_actions/2
 /// Returns (mutations, mutations_reverse, mutations_gas, mutations_gas_reverse, result)
 pub fn call_tx_actions(
+    db: &RocksDb,
     env: &crate::bic::epoch::CallEnv,
     txu: &TxU,
 ) -> (Vec<Mutation>, Vec<Mutation>, Vec<Mutation>, Vec<Mutation>, ActionResult) {
     kv::reset(); // Clear all mutations - matches Process.delete calls
 
-    let result = execute_action_safe(env, txu);
+    let result = execute_action_safe(db, env, txu);
 
     // Return all mutation types and result
     (kv::mutations(), kv::mutations_reverse(), vec![], vec![], result)
@@ -199,7 +201,7 @@ impl Default for ActionResult {
     }
 }
 
-fn execute_action_safe(env: &crate::bic::epoch::CallEnv, txu: &TxU) -> ActionResult {
+fn execute_action_safe(db: &RocksDb, env: &crate::bic::epoch::CallEnv, txu: &TxU) -> ActionResult {
     // Get first action (Rust validation ensures exactly 1 action)
     let action = match txu.tx.actions.first() {
         Some(action) => action,
@@ -217,14 +219,14 @@ fn execute_action_safe(env: &crate::bic::epoch::CallEnv, txu: &TxU) -> ActionRes
     // Check if contract is a valid BLS public key (WASM contract)
     if crate::utils::bls12_381::validate_public_key(&action.contract).is_ok() {
         // WASM contract call
-        execute_wasm_contract(env, txu, action)
+        execute_wasm_contract(db, env, txu, action)
     } else {
         // Built-in module call
-        execute_builtin_module(env, action)
+        execute_builtin_module(db, env, action)
     }
 }
 
-fn execute_wasm_contract(env: &crate::bic::epoch::CallEnv, txu: &TxU, action: &TxAction) -> ActionResult {
+fn execute_wasm_contract(db: &RocksDb, env: &crate::bic::epoch::CallEnv, txu: &TxU, action: &TxAction) -> ActionResult {
     // Check if contract has bytecode
     let contract_key: [u8; 48] = match action.contract.as_slice().try_into() {
         Ok(key) => key,
@@ -238,7 +240,7 @@ fn execute_wasm_contract(env: &crate::bic::epoch::CallEnv, txu: &TxU, action: &T
             };
         }
     };
-    let bytecode = match crate::bic::contract::bytecode(&contract_key) {
+    let bytecode = match crate::bic::contract::bytecode(db, &contract_key) {
         Some(bc) => bc,
         None => {
             return ActionResult {
@@ -272,7 +274,7 @@ fn execute_wasm_contract(env: &crate::bic::epoch::CallEnv, txu: &TxU, action: &T
 
         // Check sufficient balance
         let symbol_str = std::str::from_utf8(symbol).unwrap_or("INVALID");
-        let signer_balance = crate::consensus::chain_balance_symbol(&txu.tx.signer, symbol_str);
+        let signer_balance = crate::consensus::chain_balance_symbol(db, &txu.tx.signer, symbol_str);
         if amount as u64 > signer_balance {
             return ActionResult {
                 error: "attached_amount_insufficient_funds".to_string(),
@@ -286,12 +288,12 @@ fn execute_wasm_contract(env: &crate::bic::epoch::CallEnv, txu: &TxU, action: &T
         // Transfer attached amount
         let contract_balance_key = key_balance(&contract_key, symbol_str);
         let signer_balance_key = key_balance(&txu.tx.signer, symbol_str);
-        kv::kv_increment(&contract_balance_key, amount);
-        kv::kv_increment(&signer_balance_key, -amount);
+        kv::kv_increment(db, &contract_balance_key, amount);
+        kv::kv_increment(db, &signer_balance_key, -amount);
     }
 
     // Call WASM runtime
-    let wasm_result = match crate::wasm::runtime::execute(env, &bytecode, &action.function, &action.args) {
+    let wasm_result = match crate::wasm::runtime::execute(env, db, &bytecode, &action.function, &action.args) {
         Ok(result) => WasmCallResult {
             exec_used: Some(result.exec_used),
             logs: Some(result.logs),
@@ -305,14 +307,14 @@ fn execute_wasm_contract(env: &crate::bic::epoch::CallEnv, txu: &TxU, action: &T
         let gas_cost = (exec_used * 100) as i64;
         let entry_key = key_balance(&env.entry_signer, "AMA");
         let signer_key = key_balance(&txu.tx.signer, "AMA");
-        kv::kv_increment(&entry_key, gas_cost);
-        kv::kv_increment(&signer_key, -gas_cost);
+        kv::kv_increment(db, &entry_key, gas_cost);
+        kv::kv_increment(db, &signer_key, -gas_cost);
     }
 
     ActionResult { error: "ok".to_string(), logs: None, exec_used: wasm_result.exec_used, result: None, reason: None }
 }
 
-fn execute_builtin_module(env: &crate::bic::epoch::CallEnv, action: &TxAction) -> ActionResult {
+fn execute_builtin_module(_db: &RocksDb, env: &crate::bic::epoch::CallEnv, action: &TxAction) -> ActionResult {
     // Generate seed for randomness
     let _seed = seed_random(&env.entry_vr, &env.tx_hash, b"0", b"");
 

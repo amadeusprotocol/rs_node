@@ -47,6 +47,7 @@ pub struct Context {
     pub(crate) reassembler: node::ReedSolomonReassembler,
     pub(crate) node_peers: peers::NodePeers,
     pub(crate) node_anrs: NodeAnrs,
+    pub(crate) fabric: crate::consensus::fabric::Fabric,
     pub(crate) socket: Arc<dyn UdpSocketExt>,
 }
 
@@ -68,14 +69,14 @@ impl Context {
         socket: Arc<dyn UdpSocketExt>,
     ) -> Result<Arc<Self>, Error> {
         use crate::config::{ANR_PERIOD_MILLIS, BROADCAST_PERIOD_MILLIS, CLEANUP_PERIOD_MILLIS};
-        use crate::consensus::fabric::init_kvdb;
+        use crate::consensus::fabric::{Fabric, init_kvdb};
         use crate::utils::archiver::init_storage;
         use metrics::Metrics;
         use node::ReedSolomonReassembler;
         use tokio::time::{Duration, interval};
 
         assert_ne!(config.get_root(), "");
-        init_kvdb(&config.get_root()).await?;
+        let rocksdb = init_kvdb(&config.get_root()).await?;
         init_storage(&config.get_root()).await?;
 
         let metrics = Metrics::new();
@@ -84,9 +85,10 @@ impl Context {
         let reassembler = ReedSolomonReassembler::new();
 
         node_anrs.seed(&config).await; // must be done before node_peers.seed()
-        node_peers.seed(&config, &node_anrs).await?;
+        node_peers.seed(&rocksdb, &config, &node_anrs).await?;
 
-        let ctx = Arc::new(Self { config, metrics, reassembler, node_peers, node_anrs, socket });
+        let fabric = Fabric::new(rocksdb);
+        let ctx = Arc::new(Self { config, metrics, reassembler, node_peers, node_anrs, fabric, socket });
 
         tokio::spawn({
             let ctx = ctx.clone();
@@ -132,7 +134,7 @@ impl Context {
                     ticker.tick().await;
                     if let Err(e) = ctx.broadcast_task().await {
                         // broadcast errors are expected when starting from scratch
-                        debug!("broadcast task error: {e}");
+                        warn!("broadcast task error: {e}");
                         //ctx.metrics.add_error(&e);
                     }
                 }
@@ -170,10 +172,12 @@ impl Context {
     #[instrument(skip(self), name = "cleanup_task")]
     async fn cleanup_task(&self, cleanup_secs: u64) {
         let cleared_shards = self.reassembler.clear_stale(cleanup_secs).await;
-        let cleared_peers = self.node_peers.clear_stale(&self.node_anrs).await;
+        let cleared_peers = self.node_peers.clear_stale(self.fabric.db(), &self.node_anrs).await;
         if cleared_shards > 0 || cleared_peers > 0 {
             debug!("cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
         }
+        // Also run fabric cleanup step (finality garbage collection)
+        self.fabric.cleanup().await;
     }
 
     #[instrument(skip(self), name = "anr_task")]
@@ -204,7 +208,7 @@ impl Context {
     async fn broadcast_task(&self) -> Result<(), Error> {
         // v1.1.7+ simplified Ping - just timestamp
         let ping = Ping::new();
-        let tip = EventTip::from_current_tips()?;
+        let tip = EventTip::from_current_tips_db(&self.fabric)?;
 
         let my_ip = self.config.get_public_ipv4();
         let peers = self.node_peers.all().await?;
@@ -339,11 +343,11 @@ impl Context {
     /// Get temporal height from fabric
     pub fn get_temporal_height(&self) -> u32 {
         // Get temporal height from temporal tip entry (same as block height)
-        match consensus::consensus::get_chain_tip_entry() {
+        match consensus::consensus::get_chain_tip_entry(self.fabric.db()) {
             Ok(entry) => entry.header.height,
             Err(_) => {
                 // Fallback to stored temporal_height in sysconf
-                match consensus::fabric::get_temporal_height() {
+                match self.fabric.get_temporal_height() {
                     Ok(Some(height)) => height,
                     Ok(None) | Err(_) => 0, // fallback to 0 if not available
                 }
@@ -354,7 +358,7 @@ impl Context {
     /// Get rooted height from fabric
     pub fn get_rooted_height(&self) -> u32 {
         // Get rooted height from rooted tip entry
-        match consensus::consensus::get_rooted_tip_entry() {
+        match consensus::consensus::get_rooted_tip_entry(self.fabric.db()) {
             Ok(entry) => entry.header.height,
             Err(_) => 0, // default to 0 if not available
         }
@@ -830,8 +834,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_context_task_tracking() {
+    #[tokio::test]
+    async fn test_context_task_tracking() {
         // test that Context task tracking wrapper functions work
         use crate::utils::bls12_381 as bls;
         use std::net::Ipv4Addr;
@@ -873,7 +877,9 @@ mod tests {
         let node_anrs = crate::node::anr::NodeAnrs::new();
         let reassembler = node::ReedSolomonReassembler::new();
 
-        let ctx = Context { config, metrics, reassembler, node_peers, node_anrs, socket };
+        let rocksdb = crate::consensus::fabric::init_kvdb(&config.get_root()).await.unwrap();
+        let fabric = crate::consensus::fabric::Fabric::new(rocksdb);
+        let ctx = Context { config, metrics, reassembler, node_peers, node_anrs, fabric, socket };
 
         // Test task tracking via Context wrapper methods
         let snapshot = ctx.get_metrics_snapshot();

@@ -27,7 +27,7 @@ pub fn spawn(
     thread::spawn(move || {
         let exec = || -> Result<WasmCallResult, WasmError> {
             // Execute WASM function using the runtime
-            match runtime::execute(&env, &wasmbytes, &function, &args) {
+            match runtime::execute_nodb(&env, &wasmbytes, &function, &args) {
                 Ok(result) => {
                     // Calculate remaining execution points
                     let exec_remaining = env.call_exec_points.saturating_sub(result.exec_used);

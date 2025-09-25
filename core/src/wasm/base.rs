@@ -102,38 +102,43 @@ fn wasm_loop(rx: &Receiver<WasmBridgeMsg>, env: CallEnv, callstack: Vec<CallStac
         Ok(msg) => match msg {
             // Storage operations - delegate to ConsensusKV
             WasmBridgeMsg::StorageKvGet { rpc_id: _, key } => {
-                let _value = crate::consensus::kv::kv_get(&key);
-                // TODO: Send response back to WASM runtime (would need response mechanism)
+                // TODO: Requires DB handle; placeholder no-op
+                let _ = &key;
                 // For now, continue loop
                 wasm_loop(rx, env, callstack)
             }
 
             WasmBridgeMsg::StorageKvExists { rpc_id: _, key } => {
-                let _exists = crate::consensus::kv::kv_exists(&key);
+                // TODO: Requires DB handle; placeholder no-op
+                let _ = &key;
                 // TODO: Send response back to WASM runtime
                 wasm_loop(rx, env, callstack)
             }
 
             WasmBridgeMsg::StorageKvPut { rpc_id: _, key, value } => {
-                crate::consensus::kv::kv_put(&key, &value);
+                // TODO: Requires DB handle; placeholder no-op
+                let _ = (key, value);
                 // TODO: Send response back to WASM runtime
                 wasm_loop(rx, env, callstack)
             }
 
             WasmBridgeMsg::StorageKvIncrement { rpc_id: _, key, value } => {
-                let _new_value = crate::consensus::kv::kv_increment(&key, value);
+                // TODO: Requires DB handle; placeholder no-op
+                let _ = (key, value);
                 // TODO: Send response back to WASM runtime
                 wasm_loop(rx, env, callstack)
             }
 
             WasmBridgeMsg::StorageKvDelete { rpc_id: _, key } => {
-                crate::consensus::kv::kv_delete(&key);
+                // TODO: Requires DB handle; placeholder no-op
+                let _ = key;
                 // TODO: Send response back to WASM runtime
                 wasm_loop(rx, env, callstack)
             }
 
             WasmBridgeMsg::StorageKvClear { rpc_id: _, prefix } => {
-                let _deleted_count = crate::consensus::kv::kv_clear(&prefix);
+                // TODO: Requires DB handle; placeholder no-op
+                let _ = prefix;
                 // TODO: Send response back to WASM runtime
                 wasm_loop(rx, env, callstack)
             }

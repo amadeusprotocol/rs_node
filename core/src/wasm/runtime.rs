@@ -8,6 +8,7 @@ use wasmer::{Function, FunctionEnv, FunctionEnvMut, Instance, Memory, Module, St
 /// WASM Runtime context shared between host and WASM
 pub struct WasmContext {
     pub env: CallEnv,
+    pub db: crate::utils::rocksdb::RocksDb,
     pub logs: Arc<Mutex<Vec<String>>>,
     pub exec_used: Arc<Mutex<u64>>,
     pub rpc_tx: Option<Sender<RpcMessage>>,
@@ -18,9 +19,10 @@ pub struct WasmContext {
 }
 
 impl WasmContext {
-    pub fn new(env: CallEnv) -> Self {
+    pub fn new(env: CallEnv, db: crate::utils::rocksdb::RocksDb) -> Self {
         Self {
             env,
+            db,
             logs: Arc::new(Mutex::new(Vec::new())),
             exec_used: Arc::new(Mutex::new(0)),
             rpc_tx: None,
@@ -82,7 +84,7 @@ mod host_functions {
 
         match context.read_string_with_store(&store, key_ptr as u32, key_len as u32) {
             Ok(key) => {
-                match kv::kv_get(&key) {
+                match kv::kv_get(&context.db, &key) {
                     Some(value) => {
                         // Store value in shared buffer and return pointer
                         let mut buffer = context.memory_buffer.lock().unwrap();
@@ -104,7 +106,7 @@ mod host_functions {
 
         match context.read_string_with_store(&store, key_ptr as u32, key_len as u32) {
             Ok(key) => {
-                if kv::kv_exists(&key) {
+                if kv::kv_exists(&context.db, &key) {
                     1
                 } else {
                     0
@@ -130,7 +132,7 @@ mod host_functions {
             context.read_bytes_with_store(&store, val_ptr as u32, val_len as u32),
         ) {
             (Ok(key), Ok(value)) => {
-                kv::kv_put(&key, &value);
+                kv::kv_put(&context.db, &key, &value);
                 0
             }
             _ => -1,
@@ -143,7 +145,7 @@ mod host_functions {
         context.add_exec_cost(15);
 
         match context.read_string_with_store(&store, key_ptr as u32, key_len as u32) {
-            Ok(key) => kv::kv_increment(&key, delta),
+            Ok(key) => kv::kv_increment(&context.db, &key, delta),
             Err(_) => 0,
         }
     }
@@ -155,7 +157,7 @@ mod host_functions {
 
         match context.read_string_with_store(&store, key_ptr as u32, key_len as u32) {
             Ok(key) => {
-                kv::kv_delete(&key);
+                kv::kv_delete(&context.db, &key);
                 0
             }
             Err(_) => -1,
@@ -168,7 +170,7 @@ mod host_functions {
         context.add_exec_cost(50);
 
         match context.read_string_with_store(&store, prefix_ptr as u32, prefix_len as u32) {
-            Ok(prefix) => kv::kv_clear(&prefix) as i32,
+            Ok(prefix) => kv::kv_clear(&context.db, &prefix) as i32,
             Err(_) => -1,
         }
     }
@@ -372,7 +374,7 @@ mod host_functions {
                 if account.len() == 48 {
                     let mut account_array = [0u8; 48];
                     account_array.copy_from_slice(&account);
-                    crate::consensus::chain_balance_symbol(&account_array, &symbol) as i64
+                    crate::consensus::chain_balance_symbol(&context.db, &account_array, &symbol) as i64
                 } else {
                     0
                 }
@@ -385,6 +387,7 @@ mod host_functions {
 /// Execute WASM bytecode with given function and arguments
 pub fn execute(
     env: &CallEnv,
+    db: &crate::utils::rocksdb::RocksDb,
     bytecode: &[u8],
     function: &str,
     args: &[Vec<u8>],
@@ -393,7 +396,7 @@ pub fn execute(
     let module = Module::new(&store, bytecode).map_err(|e| WasmError::Compilation(e.to_string()))?;
 
     // Create context
-    let context = WasmContext::new(env.clone());
+    let context = WasmContext::new(env.clone(), db.clone());
     let func_env = FunctionEnv::new(&mut store, context);
 
     // Build imports with all host functions
@@ -545,6 +548,15 @@ pub fn execute(
         logs,
         exec_used,
     })
+}
+
+pub fn execute_nodb(
+    _env: &CallEnv,
+    _bytecode: &[u8],
+    _function: &str,
+    _args: &[Vec<u8>],
+) -> Result<WasmExecutionResult, WasmError> {
+    Err(WasmError::Runtime("db_required".to_string()))
 }
 
 #[derive(Debug)]

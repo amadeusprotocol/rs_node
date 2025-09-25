@@ -146,12 +146,12 @@ impl NodePeers {
         Self::new(100)
     }
 
-    pub async fn clear_stale(&self, node_registry: &anr::NodeAnrs) -> usize {
-        self.clear_stale_inner(node_registry).await.inspect_err(|e| warn!("peer cleanup error: {}", e)).unwrap_or(0)
+    pub async fn clear_stale(&self, db: &crate::utils::rocksdb::RocksDb, node_registry: &anr::NodeAnrs) -> usize {
+        self.clear_stale_inner(db, node_registry).await.inspect_err(|e| warn!("peer cleanup error: {}", e)).unwrap_or(0)
     }
 
     /// Clear stale peers and add missing validators/handshaked nodes
-    pub async fn clear_stale_inner(&self, node_registry: &anr::NodeAnrs) -> Result<usize, Error> {
+    pub async fn clear_stale_inner(&self, db: &crate::utils::rocksdb::RocksDb, node_registry: &anr::NodeAnrs) -> Result<usize, Error> {
         let ts_m = get_unix_millis_now();
 
         // let mut peers = Vec::new();
@@ -163,8 +163,8 @@ impl NodePeers {
         // let anrs = node_registry.get_all().await;
         // println!("{:?} {:?}", peers.len(), anrs.len());
         // Get validators for current height + 1
-        let height = consensus::chain_height();
-        let validators = consensus::trainers_for_height(height + 1).unwrap_or_default();
+        let height = consensus::chain_height(db);
+        let validators = consensus::trainers_for_height(db, height + 1).unwrap_or_default();
         let validators: Vec<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();
 
         let validator_anr_ips = node_registry.by_pks_ip(&validators).await;
@@ -272,9 +272,9 @@ impl NodePeers {
     }
 
     /// Seed initial peers with validators
-    pub async fn seed(&self, config: &Config, node_anrs: &anr::NodeAnrs) -> Result<(), Error> {
-        let height = consensus::chain_height();
-        let validators = consensus::trainers_for_height(height + 1).unwrap_or_default();
+    pub async fn seed(&self, db: &crate::utils::rocksdb::RocksDb, config: &Config, node_anrs: &anr::NodeAnrs) -> Result<(), Error> {
+        let height = consensus::chain_height(db);
+        let validators = consensus::trainers_for_height(db, height + 1).unwrap_or_default();
         let validators: Vec<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();
 
         let validator_ips: Vec<_> =
@@ -371,9 +371,9 @@ impl NodePeers {
     }
 
     /// Get all trainer peers for given height
-    pub async fn all_trainers(&self, height: Option<u32>) -> Result<Vec<Peer>, Error> {
-        let height = height.unwrap_or_else(|| consensus::chain_height());
-        let pks = consensus::trainers_for_height(height + 1).unwrap_or_default();
+    pub async fn all_trainers(&self, db: &crate::utils::rocksdb::RocksDb, height: Option<u32>) -> Result<Vec<Peer>, Error> {
+        let height = height.unwrap_or_else(|| consensus::chain_height(db));
+        let pks = consensus::trainers_for_height(db, height + 1).unwrap_or_default();
         let pks: Vec<Vec<u8>> = pks.iter().map(|pk| pk.to_vec()).collect();
 
         let mut trainers = Vec::new();
@@ -510,8 +510,8 @@ impl NodePeers {
     }
 
     /// Get peers for a specific height (trainers)
-    pub async fn for_height(&self, height: u32) -> Result<Vec<Peer>, Error> {
-        let trainers = consensus::trainers_for_height(height).unwrap_or_default();
+    pub async fn for_height(&self, db: &crate::utils::rocksdb::RocksDb, height: u32) -> Result<Vec<Peer>, Error> {
+        let trainers = consensus::trainers_for_height(db, height).unwrap_or_default();
         let trainers: Vec<Vec<u8>> = trainers.iter().map(|pk| pk.to_vec()).collect();
 
         let trainers_set: std::collections::HashSet<_> = trainers.iter().collect();
@@ -542,12 +542,12 @@ impl NodePeers {
     }
 
     /// Get peer IPs by who specification
-    pub async fn by_who(&self, who: Who) -> Result<Vec<Ipv4Addr>, Error> {
+    pub async fn by_who(&self, db: &crate::utils::rocksdb::RocksDb, who: Who) -> Result<Vec<Ipv4Addr>, Error> {
         match who {
             Who::Some(peer_ips) => Ok(peer_ips),
             Who::Trainers => {
-                let height = consensus::chain_height();
-                let trainer_peers = self.for_height(height + 1).await?;
+                let height = consensus::chain_height(db);
+                let trainer_peers = self.for_height(db, height + 1).await?;
                 let mut ips: Vec<_> = trainer_peers.iter().map(|p| p.ip).collect();
 
                 if ips.is_empty() {
@@ -560,8 +560,8 @@ impl NodePeers {
                 Ok(ips)
             }
             Who::NotTrainers(cnt) => {
-                let height = consensus::chain_height();
-                let trainer_peers = self.for_height(height + 1).await?;
+                let height = consensus::chain_height(db);
+                let trainer_peers = self.for_height(db, height + 1).await?;
                 let trainer_ips: std::collections::HashSet<_> = trainer_peers.iter().map(|p| p.ip).collect();
 
                 let all_peers = self.all().await?;

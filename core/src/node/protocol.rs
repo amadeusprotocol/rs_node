@@ -4,7 +4,6 @@ use crate::Ver;
 use crate::bic::sol;
 use crate::bic::sol::Solution;
 use crate::consensus::consensus;
-use crate::consensus::consensus::{get_chain_tip_entry, get_rooted_tip_entry};
 use crate::consensus::doms::EntrySummary;
 use crate::consensus::doms::attestation::EventAttestation;
 use crate::consensus::doms::entry::Entry;
@@ -190,7 +189,8 @@ impl Protocol for EventTip {
         // TODO: validate temporal and rooted entry signatures like in Elixir
 
         let signer = self.temporal.header.signer.to_vec();
-        let is_trainer = match crate::consensus::trainers_for_height(crate::consensus::chain_height()) {
+        let db = ctx.fabric.db();
+        let is_trainer = match crate::consensus::trainers_for_height(db, crate::consensus::chain_height(db)) {
             Some(trainers) => trainers.iter().any(|pk| pk.as_slice() == signer),
             None => false,
         };
@@ -211,10 +211,32 @@ impl EventTip {
     }
 
     pub fn from_current_tips() -> Result<Self, Error> {
-        let temporal = get_chain_tip_entry()?;
-        let rooted = get_rooted_tip_entry()?;
+        // Deprecated: use from_current_tips_db with an explicit DB handle
+        Err(Error::Consensus(consensus::Error::NotImplemented("from_current_tips requires DB context")))
+    }
 
-        Ok(Self::new(temporal.into(), rooted.into()))
+    /// Build EventTip from the current temporal/rooted tips in Fabric using the provided Fabric handle
+    pub fn from_current_tips_db(fab: &crate::consensus::fabric::Fabric) -> Result<Self, Error> {
+        // Helper to load EntrySummary by tip hash, or return empty summary if missing
+        fn entry_summary_by_hash(fab: &crate::consensus::fabric::Fabric, hash: &[u8; 32]) -> crate::consensus::doms::entry::EntrySummary {
+            if let Some(entry) = fab.get_entry_by_hash(hash) {
+                entry.into()
+            } else {
+                crate::consensus::doms::entry::EntrySummary::empty()
+            }
+        }
+
+        let temporal_summary = match fab.get_temporal_tip()? {
+            Some(h) => entry_summary_by_hash(fab, &h),
+            None => crate::consensus::doms::entry::EntrySummary::empty(),
+        };
+
+        let rooted_summary = match fab.get_rooted_tip()? {
+            Some(h) => entry_summary_by_hash(fab, &h),
+            None => crate::consensus::doms::entry::EntrySummary::empty(),
+        };
+
+        Ok(Self { temporal: temporal_summary, rooted: rooted_summary })
     }
 }
 

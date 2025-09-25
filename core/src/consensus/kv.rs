@@ -1,4 +1,4 @@
-use crate::utils::rocksdb;
+use crate::utils::rocksdb::RocksDb;
 use blake3;
 use std::collections::VecDeque;
 
@@ -60,35 +60,28 @@ pub fn reset() {
 }
 
 #[cfg(test)]
-pub fn reset_for_tests() {
+pub fn reset_for_tests(db: &RocksDb) {
     reset(); // Clear mutations
 
-    // Clear all data from the sysconf column family to ensure clean test state
-    // Use direct RocksDB iteration and deletion to avoid potential consistency issues
-    // with kv_clear("") which relies on iter_prefix
     loop {
-        let items = match rocksdb::iter_prefix("sysconf", b"") {
+        let items = match db.iter_prefix("sysconf", b"") {
             Ok(items) => items,
             Err(_) => break,
         };
-
-        if items.is_empty() {
-            break;
-        }
-
+        if items.is_empty() { break; }
         for (k, _v) in items {
-            let _ = rocksdb::delete("sysconf", &k);
+            let _ = db.delete("sysconf", &k);
         }
     }
 }
 
-pub fn kv_put(key: &str, value: &[u8]) {
+pub fn kv_put(db: &RocksDb, key: &str, value: &[u8]) {
     get_store_mut(|ctx| {
         // Get existing value from RocksDB for reverse mutation
-        let existed = rocksdb::get("sysconf", key.as_bytes()).unwrap_or(None);
+        let existed = db.get("sysconf", key.as_bytes()).unwrap_or(None);
 
         // Store in RocksDB
-        let _ = rocksdb::put("sysconf", key.as_bytes(), value);
+        let _ = db.put("sysconf", key.as_bytes(), value);
 
         // forward mutation tracks new value
         ctx.mutations.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(value.to_vec()) });
@@ -102,16 +95,16 @@ pub fn kv_put(key: &str, value: &[u8]) {
     });
 }
 
-pub fn kv_increment(key: &str, delta: i64) -> i64 {
+pub fn kv_increment(db: &RocksDb, key: &str, delta: i64) -> i64 {
     get_store_mut(|ctx| {
         // Get current value from RocksDB
-        let cur = rocksdb::get("sysconf", key.as_bytes()).unwrap_or(None).and_then(|v| ascii_i64(&v)).unwrap_or(0);
+        let cur = db.get("sysconf", key.as_bytes()).unwrap_or(None).and_then(|v| ascii_i64(&v)).unwrap_or(0);
         let newv = cur.saturating_add(delta);
         let new_bytes = i64_ascii(newv);
-        let old_bytes = rocksdb::get("sysconf", key.as_bytes()).unwrap_or(None);
+        let old_bytes = db.get("sysconf", key.as_bytes()).unwrap_or(None);
 
         // Store updated value in RocksDB
-        let _ = rocksdb::put("sysconf", key.as_bytes(), &new_bytes);
+        let _ = db.put("sysconf", key.as_bytes(), &new_bytes);
 
         ctx.mutations.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(new_bytes) });
         match old_bytes {
@@ -124,33 +117,30 @@ pub fn kv_increment(key: &str, delta: i64) -> i64 {
     })
 }
 
-pub fn kv_delete(key: &str) {
+pub fn kv_delete(db: &RocksDb, key: &str) {
     get_store_mut(|ctx| {
-        // Get existing value from RocksDB before deleting
-        if let Some(old) = rocksdb::get("sysconf", key.as_bytes()).unwrap_or(None) {
-            // Delete from RocksDB
-            let _ = rocksdb::delete("sysconf", key.as_bytes());
-
+        if let Some(old) = db.get("sysconf", key.as_bytes()).unwrap_or(None) {
+            let _ = db.delete("sysconf", key.as_bytes());
             ctx.mutations.push_back(Mutation { op: Op::Delete, key: key.to_string(), value: None });
             ctx.mutations_reverse.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(old) });
         }
     });
 }
 
-pub fn kv_get(key: &str) -> Option<Vec<u8>> {
-    rocksdb::get("sysconf", key.as_bytes()).unwrap_or(None)
+pub fn kv_get(db: &RocksDb, key: &str) -> Option<Vec<u8>> {
+    db.get("sysconf", key.as_bytes()).unwrap_or(None)
 }
 
-pub fn kv_get_to_i64(key: &str) -> Option<i64> {
-    kv_get(key).and_then(|v| ascii_i64(&v))
+pub fn kv_get_to_i64(db: &RocksDb, key: &str) -> Option<i64> {
+    kv_get(db, key).and_then(|v| ascii_i64(&v))
 }
 
-pub fn kv_exists(key: &str) -> bool {
-    rocksdb::get("sysconf", key.as_bytes()).unwrap_or(None).is_some()
+pub fn kv_exists(db: &RocksDb, key: &str) -> bool {
+    db.get("sysconf", key.as_bytes()).unwrap_or(None).is_some()
 }
 
-pub fn kv_get_prefix(prefix: &str) -> Vec<(String, Vec<u8>)> {
-    match rocksdb::iter_prefix("sysconf", prefix.as_bytes()) {
+pub fn kv_get_prefix(db: &RocksDb, prefix: &str) -> Vec<(String, Vec<u8>)> {
+    match db.iter_prefix("sysconf", prefix.as_bytes()) {
         Ok(items) => items
             .into_iter()
             .filter_map(|(k, v)| {
@@ -162,10 +152,10 @@ pub fn kv_get_prefix(prefix: &str) -> Vec<(String, Vec<u8>)> {
     }
 }
 
-pub fn kv_clear(prefix: &str) -> usize {
+pub fn kv_clear(db: &RocksDb, prefix: &str) -> usize {
     get_store_mut(|ctx| {
         // Get all keys with this prefix from RocksDB
-        let items = match rocksdb::iter_prefix("sysconf", prefix.as_bytes()) {
+        let items = match db.iter_prefix("sysconf", prefix.as_bytes()) {
             Ok(items) => items,
             Err(_) => return 0,
         };
@@ -178,7 +168,7 @@ pub fn kv_clear(prefix: &str) -> usize {
             };
             if key_str.starts_with(prefix) {
                 // Delete from RocksDB
-                let _ = rocksdb::delete("sysconf", &k);
+                let _ = db.delete("sysconf", &k);
 
                 ctx.mutations.push_back(Mutation { op: Op::Delete, key: key_str.clone(), value: None });
                 ctx.mutations_reverse.push_back(Mutation { op: Op::Put, key: key_str, value: Some(v) });
@@ -191,12 +181,12 @@ pub fn kv_clear(prefix: &str) -> usize {
 
 /// Set a bit at bit_idx within a bitstring page. If the bit changes 0->1, returns true;
 /// otherwise returns false. Page size defaults to BIC sol bloom size (65_536 bits) when None.
-pub fn kv_set_bit(key: &str, bit_idx: u32, bloom_size_opt: Option<u32>) -> bool {
+pub fn kv_set_bit(db: &RocksDb, key: &str, bit_idx: u32, bloom_size_opt: Option<u32>) -> bool {
     let bloom_size = bloom_size_opt.unwrap_or(65_536);
     let byte_len = (bloom_size as usize).div_ceil(8);
     get_store_mut(|ctx| {
         // Get existing page from RocksDB or create new one
-        let mut page = rocksdb::get("sysconf", key.as_bytes()).unwrap_or(None).unwrap_or_else(|| vec![0u8; byte_len]);
+        let mut page = db.get("sysconf", key.as_bytes()).unwrap_or(None).unwrap_or_else(|| vec![0u8; byte_len]);
 
         let byte_i = (bit_idx / 8) as usize;
         let bit_in_byte = (bit_idx % 8) as u8; // LSB first to match Elixir bitstring semantics
@@ -207,7 +197,7 @@ pub fn kv_set_bit(key: &str, bit_idx: u32, bloom_size_opt: Option<u32>) -> bool 
         }
 
         // Record mutations (forward: set_bit; reverse: clear_bit or delete if not existed)
-        let existed = rocksdb::get("sysconf", key.as_bytes()).unwrap_or(None).is_some();
+        let existed = db.get("sysconf", key.as_bytes()).unwrap_or(None).is_some();
         ctx.mutations.push_back(Mutation { op: Op::SetBit { bit_idx, bloom_size }, key: key.to_string(), value: None });
         if existed {
             ctx.mutations_reverse.push_back(Mutation {
@@ -221,7 +211,7 @@ pub fn kv_set_bit(key: &str, bit_idx: u32, bloom_size_opt: Option<u32>) -> bool 
 
         // Set the bit and store in RocksDB
         page[byte_i] |= mask;
-        let _ = rocksdb::put("sysconf", key.as_bytes(), &page);
+        let _ = db.put("sysconf", key.as_bytes(), &page);
         true
     })
 }
@@ -266,34 +256,34 @@ pub fn mutations_reverse() -> Vec<Mutation> {
     get_store(|ctx| ctx.mutations_reverse.iter().cloned().collect())
 }
 
-pub fn revert(m_rev: &[Mutation]) {
+pub fn revert(db: &RocksDb, m_rev: &[Mutation]) {
     get_store_mut(|_ctx| {
         for m in m_rev.iter().rev() {
             match &m.op {
                 Op::Put => {
                     if let Some(v) = &m.value {
-                        let _ = rocksdb::put("sysconf", m.key.as_bytes(), v);
+                        let _ = db.put("sysconf", m.key.as_bytes(), v);
                     }
                 }
                 Op::Delete => {
-                    let _ = rocksdb::delete("sysconf", m.key.as_bytes());
+                    let _ = db.delete("sysconf", m.key.as_bytes());
                 }
                 Op::ClearBit { bit_idx } => {
-                    if let Some(mut page) = rocksdb::get("sysconf", m.key.as_bytes()).unwrap_or(None) {
+                    if let Some(mut page) = db.get("sysconf", m.key.as_bytes()).unwrap_or(None) {
                         let byte_i = (*bit_idx / 8) as usize;
                         let bit_in_byte = (*bit_idx % 8) as u8;
                         let mask = 1u8 << bit_in_byte;
                         page[byte_i] &= !mask;
-                        let _ = rocksdb::put("sysconf", m.key.as_bytes(), &page);
+                        let _ = db.put("sysconf", m.key.as_bytes(), &page);
                     }
                 }
                 Op::SetBit { bit_idx, .. } => {
-                    if let Some(mut page) = rocksdb::get("sysconf", m.key.as_bytes()).unwrap_or(None) {
+                    if let Some(mut page) = db.get("sysconf", m.key.as_bytes()).unwrap_or(None) {
                         let byte_i = (*bit_idx / 8) as usize;
                         let bit_in_byte = (*bit_idx % 8) as u8;
                         let mask = 1u8 << bit_in_byte;
                         page[byte_i] |= mask;
-                        let _ = rocksdb::put("sysconf", m.key.as_bytes(), &page);
+                        let _ = db.put("sysconf", m.key.as_bytes(), &page);
                     }
                 }
             }
@@ -304,7 +294,7 @@ pub fn revert(m_rev: &[Mutation]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::rocksdb;
+    use crate::utils::rocksdb::RocksDb;
     use std::any::type_name_of_val;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -314,44 +304,44 @@ mod tests {
         format!("/tmp/{}{}", fq, secs)
     }
 
-    #[test]
-    fn increment_and_get() {
+    #[tokio::test]
+    async fn increment_and_get() {
         let base = tmp_base_for_test(&increment_and_get);
-        let _guard = rocksdb::init_for_test(&base).expect("init test db");
-        reset_for_tests();
-        assert_eq!(kv_get_to_i64("a:1"), None);
-        let v = kv_increment("a:1", 5);
+        let db = RocksDb::open(base.clone()).await.expect("open test db");
+        reset_for_tests(&db);
+        assert_eq!(kv_get_to_i64(&db, "a:1"), None);
+        let v = kv_increment(&db, "a:1", 5);
         assert_eq!(v, 5);
-        assert_eq!(kv_get_to_i64("a:1"), Some(5));
-        let v2 = kv_increment("a:1", -2);
+        assert_eq!(kv_get_to_i64(&db, "a:1"), Some(5));
+        let v2 = kv_increment(&db, "a:1", -2);
         assert_eq!(v2, 3);
-        assert_eq!(kv_get("a:1").unwrap(), b"3".to_vec());
+        assert_eq!(kv_get(&db, "a:1").unwrap(), b"3".to_vec());
     }
 
-    #[test]
-    fn prefix_and_clear() {
+    #[tokio::test]
+    async fn prefix_and_clear() {
         let base = tmp_base_for_test(&prefix_and_clear);
-        let _guard = rocksdb::init_for_test(&base).expect("init test db");
-        reset_for_tests();
-        kv_put("p:x", b"1");
-        kv_put("p:y", b"2");
-        kv_put("q:z", b"3");
-        let got = kv_get_prefix("p:");
+        let db = RocksDb::open(base.clone()).await.expect("open test db");
+        reset_for_tests(&db);
+        kv_put(&db, "p:x", b"1");
+        kv_put(&db, "p:y", b"2");
+        kv_put(&db, "q:z", b"3");
+        let got = kv_get_prefix(&db, "p:");
         assert_eq!(got.len(), 2);
-        let cnt = kv_clear("p:");
+        let cnt = kv_clear(&db, "p:");
         assert_eq!(cnt, 2);
-        assert!(!kv_exists("p:x"));
-        assert!(kv_exists("q:z"));
+        assert!(!kv_exists(&db, "p:x"));
+        assert!(kv_exists(&db, "q:z"));
     }
 
-    #[test]
-    fn set_bit() {
+    #[tokio::test]
+    async fn set_bit() {
         let base = tmp_base_for_test(&set_bit);
-        let _guard = rocksdb::init_for_test(&base).expect("init test db");
-        reset_for_tests();
-        let changed = kv_set_bit("bloom:1", 9, Some(16)); // 2 bytes
+        let db = RocksDb::open(base.clone()).await.expect("open test db");
+        reset_for_tests(&db);
+        let changed = kv_set_bit(&db, "bloom:1", 9, Some(16)); // 2 bytes
         assert!(changed);
-        let changed2 = kv_set_bit("bloom:1", 9, Some(16));
+        let changed2 = kv_set_bit(&db, "bloom:1", 9, Some(16));
         assert!(!changed2);
     }
 }

@@ -1,5 +1,4 @@
 //! Deterministic wrapper API over RocksDB v10.
-use once_cell::sync::OnceCell;
 use rust_rocksdb::{
     BlockBasedOptions, Cache, ColumnFamilyDescriptor, DBCompressionType, DBRecoveryMode, Direction, FlushOptions,
     IteratorMode, MultiThreaded, OptimisticTransactionDB, OptimisticTransactionOptions, Options, ReadOptions,
@@ -46,11 +45,16 @@ pub enum Error {
     ColumnFamilyNotFound(String),
 }
 
+#[derive(Debug)]
 pub struct DbHandles {
     pub db: OptimisticTransactionDB<MultiThreaded>,
 }
 
-static GLOBAL_DB: OnceCell<DbHandles> = OnceCell::new();
+/// Instance-oriented wrapper to be used from Context
+#[derive(Clone, Debug)]
+pub struct RocksDb {
+    handles: std::sync::Arc<DbHandles>,
+}
 
 fn cf_names() -> &'static [&'static str] {
     &[
@@ -102,168 +106,156 @@ pub fn init_for_test(base: &str) -> Result<TestDbGuard, Error> {
     Ok(TestDbGuard { base: base.to_string() })
 }
 
-#[cfg(test)]
-fn with_handles<F, R>(f: F) -> R
-where
-    F: FnOnce(&DbHandles) -> R,
-{
-    TEST_DB.with(|cell| {
-        if let Some(h) = cell.borrow().as_ref() {
-            f(h)
-        } else {
-            let h = get_handles();
-            f(h)
-        }
-    })
+/// Lightweight transaction wrapper for instance API
+pub struct RocksDbTxn<'a> {
+    inner: SimpleTransaction<'a>,
 }
 
-#[cfg(not(test))]
-fn with_handles<F, R>(f: F) -> R
-where
-    F: FnOnce(&DbHandles) -> R,
-{
-    let h = get_handles();
-    f(h)
-}
+impl RocksDb {
+    pub async fn open(base: String) -> Result<Self, Error> {
+        let path = format!("{}/db", base);
+        create_dir_all(&path).await?;
 
-fn get_handles() -> &'static DbHandles {
-    GLOBAL_DB.get().expect("DB not initialized")
-}
+        let mut db_opts = Options::default();
+        db_opts.create_if_missing(true);
+        db_opts.create_missing_column_families(true);
 
-/// Expects path directory to exist
-pub async fn init(base: String) -> Result<(), Error> {
-    if GLOBAL_DB.get().is_some() {
-        return Ok(()); // singleton
+        #[cfg(debug_assertions)]
+        db_opts.set_use_fsync(false);
+
+        db_opts.set_write_buffer_size(64 * 1024 * 1024);
+        db_opts.set_db_write_buffer_size(1024 * 1024 * 1024);
+        db_opts.set_max_write_buffer_number(3);
+        db_opts.set_min_write_buffer_number_to_merge(1);
+        db_opts.set_max_open_files(1024);
+        db_opts.set_max_file_opening_threads(8);
+        db_opts.increase_parallelism(4);
+        db_opts.set_max_total_wal_size(1 * 1024 * 1024 * 1024);
+        db_opts.set_recycle_log_file_num(8);
+        db_opts.set_wal_bytes_per_sync(1 << 20);
+        db_opts.set_bytes_per_sync(1 << 20);
+        db_opts.set_wal_recovery_mode(DBRecoveryMode::TolerateCorruptedTailRecords);
+        db_opts.set_max_background_jobs(6);
+
+        let mut block_opts = BlockBasedOptions::default();
+        let cache = Cache::new_lru_cache(128 * 1024 * 1024);
+        block_opts.set_block_cache(&cache);
+        db_opts.set_block_based_table_factory(&block_opts);
+
+        let cf_descs: Vec<_> = cf_names()
+            .iter()
+            .map(|&name| {
+                let mut opts = Options::default();
+                opts.set_target_file_size_base(64 * 1024 * 1024);
+                opts.set_target_file_size_multiplier(2);
+                opts.set_write_buffer_size(64 * 1024 * 1024);
+                opts.set_max_write_buffer_number(2);
+                opts.set_level_zero_file_num_compaction_trigger(4);
+                opts.set_compression_type(DBCompressionType::Lz4);
+                opts.set_level_compaction_dynamic_level_bytes(true);
+                opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(8));
+                let mut block_opts = BlockBasedOptions::default();
+                block_opts.set_bloom_filter(10.0, true);
+                block_opts.set_block_size(16 * 1024);
+                opts.set_block_based_table_factory(&block_opts);
+                ColumnFamilyDescriptor::new(name, opts)
+            })
+            .collect();
+
+        let db: OptimisticTransactionDB<MultiThreaded> =
+            OptimisticTransactionDB::open_cf_descriptors(&db_opts, path.clone(), cf_descs)?;
+        db.flush_opt(&FlushOptions::default())?;
+        db.flush_wal(true)?;
+
+        Ok(RocksDb { handles: std::sync::Arc::new(DbHandles { db }) })
     }
 
-    let path = format!("{}/db", base);
-    create_dir_all(&path).await?;
-
-    let mut db_opts = Options::default();
-    db_opts.create_if_missing(true);
-    db_opts.create_missing_column_families(true);
-
-    #[cfg(debug_assertions)]
-    db_opts.set_use_fsync(false); // faster on macOS for dev
-
-    // Bigger memtables → fewer WAL flushes/SSTs
-    db_opts.set_write_buffer_size(64 * 1024 * 1024);
-    db_opts.set_db_write_buffer_size(1024 * 1024 * 1024);
-    db_opts.set_max_write_buffer_number(3);
-    db_opts.set_min_write_buffer_number_to_merge(1);
-
-    // Keep open FDs bounded
-    db_opts.set_max_open_files(1024);
-    db_opts.set_max_file_opening_threads(8);
-    db_opts.increase_parallelism(4);
-
-    // WAL hygiene: trigger flush/purge rather than piling up thousands of WALs
-    db_opts.set_max_total_wal_size(1 * 1024 * 1024 * 1024); // 1GB cap
-    db_opts.set_recycle_log_file_num(8);
-    db_opts.set_wal_bytes_per_sync(1 << 20);
-    db_opts.set_bytes_per_sync(1 << 20);
-
-    // Faster, tolerant recovery (optional)
-    db_opts.set_wal_recovery_mode(DBRecoveryMode::TolerateCorruptedTailRecords);
-
-    // RocksDB auto-allocates between flushes/compactions
-    db_opts.set_max_background_jobs(6);
-
-    let mut block_opts = BlockBasedOptions::default();
-    let cache = Cache::new_lru_cache(128 * 1024 * 1024);
-    block_opts.set_block_cache(&cache);
-    db_opts.set_block_based_table_factory(&block_opts);
-
-    let cf_descs: Vec<_> = cf_names()
-        .iter()
-        .map(|&name| {
-            let mut opts = Options::default();
-            opts.set_target_file_size_base(64 * 1024 * 1024);
-            opts.set_target_file_size_multiplier(2);
-            opts.set_write_buffer_size(64 * 1024 * 1024);
-            opts.set_max_write_buffer_number(2);
-            opts.set_level_zero_file_num_compaction_trigger(4);
-            opts.set_compression_type(DBCompressionType::Lz4);
-            opts.set_level_compaction_dynamic_level_bytes(true);
-            opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(8));
-            let mut block_opts = BlockBasedOptions::default();
-            block_opts.set_bloom_filter(10.0, true);
-            block_opts.set_block_size(16 * 1024); // 16KB blocks
-            opts.set_block_based_table_factory(&block_opts);
-            ColumnFamilyDescriptor::new(name, opts)
-        })
-        .collect();
-
-    let db: OptimisticTransactionDB<MultiThreaded> =
-        OptimisticTransactionDB::open_cf_descriptors(&db_opts, path.clone(), cf_descs)?;
-    db.flush_opt(&FlushOptions::default())?; // for the default CF
-    db.flush_wal(true)?; // forces WAL roll+fsync
-
-    GLOBAL_DB.set(DbHandles { db }).ok();
-
-    Ok(())
-}
-
-pub fn close() {
-    // rocksdb closes on drop, we cannot drop OnceCell contents safely here
-}
-
-pub fn get(cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-    Ok(with_handles(|h| {
-        let cf_h = h.db.cf_handle(cf).expect("cf name");
-        h.db.get_cf(&cf_h, key)
-    })?)
-}
-
-pub fn put(cf: &str, key: &[u8], value: &[u8]) -> Result<(), Error> {
-    Ok(with_handles(|h| {
-        let cf_h = h.db.cf_handle(cf).expect("cf name");
-        h.db.put_cf(&cf_h, key, value)
-    })?)
-}
-
-pub fn delete(cf: &str, key: &[u8]) -> Result<(), Error> {
-    Ok(with_handles(|h| {
-        let cf_h = h.db.cf_handle(cf).expect("cf name");
-        h.db.delete_cf(&cf_h, key)
-    })?)
-}
-
-pub fn iter_prefix(cf: &str, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
-    Ok(with_handles(|h| -> std::result::Result<Vec<(Vec<u8>, Vec<u8>)>, rust_rocksdb::Error> {
-        let cf_h = h.db.cf_handle(cf).expect("cf name");
-        let mut ro = ReadOptions::default();
-        ro.set_prefix_same_as_start(true);
-        let mode = IteratorMode::From(prefix, Direction::Forward);
-        let it = h.db.iterator_cf_opt(&cf_h, ro, mode);
+    pub fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        let h = &self.handles;
+        let cf_h = h.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
+        Ok(h.db.get_cf(&cf_h, key)?)
+    }
+    pub fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), Error> {
+        let h = &self.handles;
+        let cf_h = h.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
+        Ok(h.db.put_cf(&cf_h, key, value)?)
+    }
+    pub fn delete(&self, cf: &str, key: &[u8]) -> Result<(), Error> {
+        let h = &self.handles;
+        let cf_h = h.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
+        Ok(h.db.delete_cf(&cf_h, key)?)
+    }
+    pub fn iter_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
+        let h = &self.handles;
+        let cf_h = h.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
+        let opts = ReadOptions::default();
+        let it_mode = IteratorMode::From(prefix, Direction::Forward);
+        let iter = h.db.iterator_cf_opt(&cf_h, opts, it_mode);
         let mut out = Vec::new();
-        for kv in it {
-            let (k, v) = kv?;
+        for item in iter {
+            let (k, v) = item?;
             if !k.starts_with(prefix) {
                 break;
             }
             out.push((k.to_vec(), v.to_vec()));
         }
         Ok(out)
-    })?)
-}
-
-/// Find the latest key-value under `prefix` with key <= `prefix || key_suffix`
-/// Returns the raw key and value if found, otherwise None
-pub fn get_prev_or_first(cf: &str, prefix: &str, key_suffix: &str) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
-    Ok(with_handles(|h| -> std::result::Result<Option<(Vec<u8>, Vec<u8>)>, rust_rocksdb::Error> {
-        let cf_h = h.db.cf_handle(cf).expect("cf name");
-        let seek_key = format!("{}{}", prefix, key_suffix);
-        let mut it = h.db.iterator_cf(&cf_h, IteratorMode::From(seek_key.as_bytes(), Direction::Reverse));
-
-        if let Some(res) = it.next() {
-            let (k, v) = res?;
+    }
+    pub fn get_prev_or_first(
+        &self,
+        cf: &str,
+        prefix: &str,
+        key_suffix: &str,
+    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
+        let h = &self.handles;
+        let cf_h = h.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
+        let opts = ReadOptions::default();
+        let key = format!("{}{}", prefix, key_suffix);
+        let it_mode = IteratorMode::From(key.as_bytes(), Direction::Reverse);
+        let mut iter = h.db.iterator_cf_opt(&cf_h, opts, it_mode);
+        if let Some(item) = iter.next() {
+            let (k, v) = item?;
+            if !k.starts_with(prefix.as_bytes()) {
+                return Ok(None);
+            }
+            return Ok(Some((k.to_vec(), v.to_vec())));
+        }
+        // fallback: first forward
+        let it_mode_f = IteratorMode::From(prefix.as_bytes(), Direction::Forward);
+        let mut iter_f = h.db.iterator_cf_opt(&cf_h, ReadOptions::default(), it_mode_f);
+        if let Some(item) = iter_f.next() {
+            let (k, v) = item?;
             if k.starts_with(prefix.as_bytes()) {
                 return Ok(Some((k.to_vec(), v.to_vec())));
             }
         }
         Ok(None)
-    })?)
+    }
+    pub fn begin_transaction(&self) -> Result<RocksDbTxn<'_>, Error> {
+        let h = &self.handles;
+        let txn_opts = OptimisticTransactionOptions::default();
+        let write_opts = WriteOptions::default();
+        let txn = h.db.transaction_opt(&write_opts, &txn_opts);
+        Ok(RocksDbTxn { inner: SimpleTransaction { txn, db: &h.db } })
+    }
+}
+
+impl<'a> RocksDbTxn<'a> {
+    pub fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), Error> {
+        self.inner.put(cf, key, value)
+    }
+    pub fn delete(&self, cf: &str, key: &[u8]) -> Result<(), Error> {
+        self.inner.delete(cf, key)
+    }
+    pub fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        self.inner.get(cf, key)
+    }
+    pub fn commit(self) -> Result<(), Error> {
+        self.inner.commit()
+    }
+    pub fn rollback(self) -> Result<(), Error> {
+        self.inner.rollback()
+    }
 }
 
 /// RocksDB transaction trait
@@ -367,15 +359,6 @@ impl<'a> RocksDbTransaction for SimpleTransaction<'a> {
     }
 }
 
-/// Create a new transaction - convenience function
-pub fn begin_transaction() -> Result<SimpleTransaction<'static>, Error> {
-    let h = get_handles();
-    let txn_opts = OptimisticTransactionOptions::default();
-    let write_opts = WriteOptions::default();
-    let txn = h.db.transaction_opt(&write_opts, &txn_opts);
-    Ok(SimpleTransaction { txn, db: &h.db })
-}
-
 /// Snapshot module for deterministic export/import of column families
 pub mod snapshot {
     use super::*;
@@ -453,38 +436,33 @@ pub mod snapshot {
     }
 
     /// Export a column family to a deterministic snapshot file (.spk)
-    pub async fn export_spk(cf_name: &str, output_path: &Path) -> Result<Manifest, Error> {
-        let (records, total_count) = with_handles(|handles| -> Result<(Vec<(Vec<u8>, Vec<u8>)>, u64), Error> {
-            let cf_handle = handles.db.cf_handle(cf_name).ok_or_else(|| {
-                Error::TokioIo(
-                    std::io::Error::new(std::io::ErrorKind::NotFound, format!("column family '{}' not found", cf_name))
-                        .into(),
-                )
-            })?;
-
-            let snapshot = handles.db.snapshot();
-            let mut read_opts = ReadOptions::default();
-            read_opts.set_total_order_seek(true);
-            read_opts.set_snapshot(&snapshot);
-
-            let iterator =
-                handles.db.iterator_cf_opt(&cf_handle, read_opts, IteratorMode::From(&[], Direction::Forward));
-
-            let mut records = Vec::new();
-            let mut count = 0u64;
-
-            for item in iterator {
-                let (key, value) = item?;
-                records.push((key.to_vec(), value.to_vec()));
-                count += 1;
-            }
-
-            Ok((records, count))
+    pub async fn export_spk(db: &super::RocksDb, cf_name: &str, output_path: &Path) -> Result<Manifest, Error> {
+        let handles = db.handles.as_ref();
+        let cf_handle = handles.db.cf_handle(cf_name).ok_or_else(|| {
+            Error::TokioIo(
+                std::io::Error::new(std::io::ErrorKind::NotFound, format!("column family '{}' not found", cf_name))
+                    .into(),
+            )
         })?;
 
+        let snapshot = handles.db.snapshot();
+        let mut read_opts = ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        read_opts.set_snapshot(&snapshot);
+
+        let iterator = handles.db.iterator_cf_opt(&cf_handle, read_opts, IteratorMode::From(&[], Direction::Forward));
+
+        let mut records = Vec::new();
+        let mut count = 0u64;
+
+        for item in iterator {
+            let (key, value) = item?;
+            records.push((key.to_vec(), value.to_vec()));
+            count += 1;
+        }
+
         // Sort records by key for deterministic export
-        let mut sorted_records = records;
-        sorted_records.sort_by(|a, b| a.0.cmp(&b.0));
+        records.sort_by(|a, b| a.0.cmp(&b.0));
 
         let file = File::create(output_path).await.map_err(Error::TokioIo)?;
         let mut writer = BufWriter::new(file);
@@ -498,7 +476,7 @@ pub mod snapshot {
         hasher.update(DOMAIN_SEP.as_bytes());
 
         // Write and hash records
-        for (key, value) in sorted_records {
+        for (key, value) in records {
             // Hash key length, key, value length, value
             let key_len_bytes = encode_varint_bytes(key.len() as u64);
             let value_len_bytes = encode_varint_bytes(value.len() as u64);
@@ -523,7 +501,7 @@ pub mod snapshot {
             version: 1,
             algo: "blake3".to_string(),
             cf: cf_name.to_string(),
-            items_total: total_count,
+            items_total: count,
             root_hex: hash_hex,
             snapshot_seq: None,
             domain_sep: DOMAIN_SEP.to_string(),
@@ -532,6 +510,7 @@ pub mod snapshot {
 
     /// Import a snapshot file (.spk) into a column family using streaming with batching
     pub async fn import_spk(
+        db: &super::RocksDb,
         cf_name: &str,
         spk_in: &Path,
         manifest: &Manifest,
@@ -567,7 +546,9 @@ pub mod snapshot {
 
         // Spawn task to handle batch writes
         let cf_name_owned = cf_name.to_string();
+        let db_clone = db.clone();
         let write_task = tokio::spawn(async move {
+            let db = db_clone;
             let mut current_batch = Vec::new();
             let mut current_size = 0;
 
@@ -575,7 +556,7 @@ pub mod snapshot {
                 let item_size = key.len() + value.len();
                 if current_size + item_size > batch_bytes && !current_batch.is_empty() {
                     // Write current batch
-                    write_batch(&cf_name_owned, &current_batch)?;
+                    write_batch(&db, &cf_name_owned, &current_batch)?;
                     current_batch.clear();
                     current_size = 0;
                 }
@@ -586,7 +567,7 @@ pub mod snapshot {
 
             // Write final batch
             if !current_batch.is_empty() {
-                write_batch(&cf_name_owned, &current_batch)?;
+                write_batch(&db, &cf_name_owned, &current_batch)?;
             }
 
             Ok::<(), Error>(())
@@ -617,65 +598,63 @@ pub mod snapshot {
     }
 
     /// Write a batch of key-value pairs to the database
-    fn write_batch(cf_name: &str, batch: &[(Vec<u8>, Vec<u8>)]) -> Result<(), Error> {
-        with_handles(|handles| -> Result<(), Error> {
-            let cf_handle =
-                handles.db.cf_handle(cf_name).ok_or_else(|| Error::ColumnFamilyNotFound(cf_name.to_string()))?;
+    fn write_batch(db: &super::RocksDb, cf_name: &str, batch: &[(Vec<u8>, Vec<u8>)]) -> Result<(), Error> {
+        let handles = db.handles.as_ref();
+        let cf_handle =
+            handles.db.cf_handle(cf_name).ok_or_else(|| Error::ColumnFamilyNotFound(cf_name.to_string()))?;
 
-            let mut write_opts = WriteOptions::default();
-            write_opts.set_sync(false); // Use async writes for better performance
+        let mut write_opts = WriteOptions::default();
+        write_opts.set_sync(false); // Use async writes for better performance
 
-            for (key, value) in batch {
-                handles.db.put_cf_opt(&cf_handle, key, value, &write_opts)?;
-            }
+        for (key, value) in batch {
+            handles.db.put_cf_opt(&cf_handle, key, value, &write_opts)?;
+        }
 
-            Ok(())
-        })
+        Ok(())
     }
 
     /// Hash a column family in the database (for verification)
-    pub async fn hash_cf(cf_name: &str) -> Result<[u8; 32], Error> {
-        with_handles(|handles| {
-            let snapshot = handles.db.snapshot();
-            let mut read_opts = ReadOptions::default();
-            read_opts.set_total_order_seek(true);
-            read_opts.set_snapshot(&snapshot);
+    pub async fn hash_cf(db: &super::RocksDb, cf_name: &str) -> Result<[u8; 32], Error> {
+        let handles = db.handles.as_ref();
+        let snapshot = handles.db.snapshot();
+        let mut read_opts = ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+        read_opts.set_snapshot(&snapshot);
 
-            let cf_handle = handles.db.cf_handle(cf_name).ok_or_else(|| {
-                Error::TokioIo(
-                    std::io::Error::new(std::io::ErrorKind::NotFound, format!("cf '{}' missing", cf_name)).into(),
-                )
-            })?;
+        let cf_handle = handles.db.cf_handle(cf_name).ok_or_else(|| {
+            Error::TokioIo(
+                std::io::Error::new(std::io::ErrorKind::NotFound, format!("cf '{}' missing", cf_name)).into(),
+            )
+        })?;
 
-            let iterator = handles.db.iterator_cf_opt(&cf_handle, read_opts, IteratorMode::Start);
+        let iterator = handles.db.iterator_cf_opt(&cf_handle, read_opts, IteratorMode::Start);
 
-            let mut hasher = Hasher::new();
-            hasher.update(DOMAIN_SEP.as_bytes());
+        let mut hasher = Hasher::new();
+        hasher.update(DOMAIN_SEP.as_bytes());
 
-            let mut records = Vec::new();
-            for item in iterator {
-                let (key, value) = item?;
-                records.push((key.to_vec(), value.to_vec()));
-            }
+        let mut records = Vec::new();
+        for item in iterator {
+            let (key, value) = item?;
+            records.push((key.to_vec(), value.to_vec()));
+        }
 
-            // Sort for deterministic hashing
-            records.sort_by(|a, b| a.0.cmp(&b.0));
+        // Sort for deterministic hashing
+        records.sort_by(|a, b| a.0.cmp(&b.0));
 
-            for (key, value) in records {
-                let key_len_bytes = encode_varint_bytes(key.len() as u64);
-                let value_len_bytes = encode_varint_bytes(value.len() as u64);
+        for (key, value) in records {
+            let key_len_bytes = encode_varint_bytes(key.len() as u64);
+            let value_len_bytes = encode_varint_bytes(value.len() as u64);
 
-                hasher.update(&key_len_bytes);
-                hasher.update(&key);
-                hasher.update(&value_len_bytes);
-                hasher.update(&value);
-            }
+            hasher.update(&key_len_bytes);
+            hasher.update(&key);
+            hasher.update(&value_len_bytes);
+            hasher.update(&value);
+        }
 
-            let hash_result = hasher.finalize();
-            let mut hash_array = [0u8; 32];
-            hash_array.copy_from_slice(hash_result.as_bytes());
-            Ok(hash_array)
-        })
+        let hash_result = hasher.finalize();
+        let mut hash_array = [0u8; 32];
+        hash_array.copy_from_slice(hash_result.as_bytes());
+        Ok(hash_array)
     }
 
     #[cfg(test)]
@@ -692,39 +671,39 @@ pub mod snapshot {
         #[tokio::test]
         async fn test_snapshot_export_import() {
             let base = tmp_base_for_test(&test_snapshot_export_import);
-            let _guard = crate::utils::rocksdb::init_for_test(&base).expect("init test db");
+            let db = super::RocksDb::open(base.clone()).await.expect("open test db");
 
             // Put some test data
-            put("default", b"key1", b"value1").unwrap();
-            put("default", b"key2", b"value2").unwrap();
-            put("default", b"key3", b"value3").unwrap();
+            db.put("default", b"key1", b"value1").unwrap();
+            db.put("default", b"key2", b"value2").unwrap();
+            db.put("default", b"key3", b"value3").unwrap();
 
             let spk_path = std::path::PathBuf::from(format!("{}/test.spk", base));
 
             // Export snapshot
-            let manifest = export_spk("default", &spk_path).await.unwrap();
+            let manifest = export_spk(&db, "default", &spk_path).await.unwrap();
             assert_eq!(manifest.items_total, 3);
             assert_eq!(manifest.cf, "default");
             assert_eq!(manifest.version, 1);
 
             // Verify hash matches
-            let cf_hash = hash_cf("default").await.unwrap();
+            let cf_hash = hash_cf(&db, "default").await.unwrap();
             assert_eq!(hex::encode(cf_hash), manifest.root_hex);
 
             // Test import on a fresh database instance
             let base2 = tmp_base_for_test(&"test_import_fresh");
-            let _guard2 = crate::utils::rocksdb::init_for_test(&base2).expect("init test db 2");
+            let db2 = super::RocksDb::open(base2.clone()).await.expect("open test db 2");
 
             // Import the snapshot to the fresh database
-            import_spk("default", &spk_path, &manifest, 1024).await.unwrap();
+            import_spk(&db2, "default", &spk_path, &manifest, 1024).await.unwrap();
 
             // Verify data was imported correctly
-            assert_eq!(get("default", b"key1").unwrap(), Some(b"value1".to_vec()));
-            assert_eq!(get("default", b"key2").unwrap(), Some(b"value2".to_vec()));
-            assert_eq!(get("default", b"key3").unwrap(), Some(b"value3".to_vec()));
+            assert_eq!(db2.get("default", b"key1").unwrap(), Some(b"value1".to_vec()));
+            assert_eq!(db2.get("default", b"key2").unwrap(), Some(b"value2".to_vec()));
+            assert_eq!(db2.get("default", b"key3").unwrap(), Some(b"value3".to_vec()));
 
             // Verify hash matches on imported data
-            let cf_hash_after = hash_cf("default").await.unwrap();
+            let cf_hash_after = hash_cf(&db2, "default").await.unwrap();
             assert_eq!(hex::encode(cf_hash_after), manifest.root_hex);
         }
     }

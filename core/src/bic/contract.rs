@@ -31,8 +31,8 @@ fn key_bytecode(account: &[u8; 48]) -> String {
 }
 
 /// Read stored bytecode for a given account public key
-pub fn bytecode(account: &[u8; 48]) -> Option<Vec<u8>> {
-    kv::kv_get(&key_bytecode(account))
+pub fn bytecode(db: &crate::utils::rocksdb::RocksDb, account: &[u8; 48]) -> Option<Vec<u8>> {
+    kv::kv_get(db, &key_bytecode(account))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +41,7 @@ pub struct CallEnv {
 }
 
 /// Dispatch contract module calls (currently only "deploy")
-pub fn call(function: &str, env: &CallEnv, args: &[Vec<u8>]) -> Result<(), ContractError> {
+pub fn call(db: &crate::utils::rocksdb::RocksDb, function: &str, env: &CallEnv, args: &[Vec<u8>]) -> Result<(), ContractError> {
     match function {
         "deploy" => {
             // Expect exactly one argument: wasm bytes
@@ -51,7 +51,7 @@ pub fn call(function: &str, env: &CallEnv, args: &[Vec<u8>]) -> Result<(), Contr
             let wasmbytes = &args[0];
             // Store bytecode under caller's account key
             let key = key_bytecode(&env.account_caller);
-            kv::kv_put(&key, wasmbytes);
+            kv::kv_put(db, &key, wasmbytes);
             Ok(())
         }
         other => Err(ContractError::InvalidFunction(other.to_string())),
