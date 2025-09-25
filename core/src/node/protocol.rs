@@ -7,6 +7,7 @@ use crate::consensus::consensus;
 use crate::consensus::doms::EntrySummary;
 use crate::consensus::doms::attestation::EventAttestation;
 use crate::consensus::doms::entry::Entry;
+use crate::consensus::fabric::Fabric;
 use crate::node::anr::Anr;
 use crate::node::peers::HandshakeStatus;
 use crate::node::{anr, peers};
@@ -216,24 +217,24 @@ impl EventTip {
     }
 
     /// Build EventTip from the current temporal/rooted tips in Fabric using the provided Fabric handle
-    pub fn from_current_tips_db(fab: &crate::consensus::fabric::Fabric) -> Result<Self, Error> {
+    pub fn from_current_tips_db(fab: &Fabric) -> Result<Self, Error> {
         // Helper to load EntrySummary by tip hash, or return empty summary if missing
-        fn entry_summary_by_hash(fab: &crate::consensus::fabric::Fabric, hash: &[u8; 32]) -> crate::consensus::doms::entry::EntrySummary {
+        fn entry_summary_by_hash(fab: &Fabric, hash: &[u8; 32]) -> EntrySummary {
             if let Some(entry) = fab.get_entry_by_hash(hash) {
                 entry.into()
             } else {
-                crate::consensus::doms::entry::EntrySummary::empty()
+                EntrySummary::empty()
             }
         }
 
         let temporal_summary = match fab.get_temporal_tip()? {
             Some(h) => entry_summary_by_hash(fab, &h),
-            None => crate::consensus::doms::entry::EntrySummary::empty(),
+            None => EntrySummary::empty(),
         };
 
         let rooted_summary = match fab.get_rooted_tip()? {
             Some(h) => entry_summary_by_hash(fab, &h),
-            None => crate::consensus::doms::entry::EntrySummary::empty(),
+            None => EntrySummary::empty(),
         };
 
         Ok(Self { temporal: temporal_summary, rooted: rooted_summary })
