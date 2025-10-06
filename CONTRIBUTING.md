@@ -4,7 +4,7 @@
 > pass `fmt`, `clippy`, and CI.
 
 This repository implements an Amadeus blockchain node. Contributions are welcome
-and reviewed with a focus on the **correctness, safety, determinism, 
+and reviewed with a focus on the **correctness, safety, determinism,
 maintainability, and performance**.
 
 ## 1) Governance & Scope
@@ -88,9 +88,9 @@ When opening PRs:
 - Avoid `unwrap`/`expect` in long‑running paths; prefer `?` or explicit error
   handling, add comments for justification.
 - Use `tracing` for logs; no `println!` in library/runtime code.
-- For unimplemented functions leave `todo!()`, `unimplemented!()`, or 
+- For unimplemented functions leave `todo!()`, `unimplemented!()`, or
   `unreachable!()`.
-- For additional improvements, leave `// TODO: ... ` or `// FIXME: ...` 
+- For additional improvements, leave `// TODO: ... ` or `// FIXME: ...`
   comments
 
 ## 7) Testing Requirements
@@ -101,7 +101,7 @@ When opening PRs:
 - Determinism: consensus‑critical code must be deterministic across platforms;
   avoid time/locale/FS nondeterminism; fix RNG seeds.
 - Concurrency: add tests for race conditions; use `loom` where feasible.
-- Performance: add benchmarks for hot paths; include baseline comparisons 
+- Performance: add benchmarks for hot paths; include baseline comparisons
   when refactoring.
 - Set `RUSTFLAGS='-D warnings'` for tests.
 
@@ -110,7 +110,7 @@ When opening PRs:
 - Public APIs have Rustdoc comments with examples.
 - Record design decisions in `/docs/CONSENSUS.md` (Architecture Decision
   Records).
-- Update protocol specs / message formats in `/docs/PROTOCOL.md` with 
+- Update protocol specs / message formats in `/docs/PROTOCOL.md` with
   versioning.
 - Keep README quickstart up‑to‑date when CLI or config changes.
 
@@ -128,8 +128,14 @@ When opening PRs:
 
 - Use **SemVer** in the core library; document MSRV bumps as breaking.
 - Tag releases `vX.Y.Z`; publish release notes derived from commits/PRs.
-- For protocol changes that break compatibility, bump the major version version 
-  number.
+- For protocol changes that break compatibility, bump the major version number.
+
+Publishing the release (you need to run `cargo install cargo-release`):
+
+```bash
+# Example of creating a release without push to crates.io
+cargo release --workspace -x --sign --no-publish
+```
 
 ## 11) Local Dev Quickstart
 
@@ -148,6 +154,7 @@ cargo clippy --all-targets --all-features
 - Questions: open a discussion or issue.
 
 ### Review ownership
+
 We use a `CODEOWNERS` fallback team:
 
 - Code owner team: `@amadeus-robot/core-maintainers`.
