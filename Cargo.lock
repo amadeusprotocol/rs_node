@@ -98,7 +98,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "amadeus-node"
-version = "1.1.8"
+version = "1.1.9"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -668,7 +668,7 @@ checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 
 [[package]]
 name = "client"
-version = "1.1.8"
+version = "1.1.9"
 dependencies = [
  "amadeus-node",
  "anyhow",
@@ -678,7 +678,7 @@ dependencies = [
  "clap",
  "console-subscriber",
  "hex",
- "http 1.1.8",
+ "http 1.1.9",
  "jemalloc-ctl",
  "jemallocator",
  "reqwest",
@@ -1419,7 +1419,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "http"
-version = "1.1.8"
+version = "1.1.9"
 dependencies = [
  "amadeus-node",
  "anyhow",
