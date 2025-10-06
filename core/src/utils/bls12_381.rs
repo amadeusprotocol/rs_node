@@ -207,7 +207,6 @@ pub fn validate_public_key(public_key: &[u8]) -> Result<(), Error> {
     parse_public_key(public_key).map(|_| ())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,7 +423,6 @@ mod tests {
                 println!("✗ Rust shared secret generation failed: {:?}", e);
             }
         }
-
 
         println!("\n=== COMPATIBILITY TEST COMPLETE ===");
     }

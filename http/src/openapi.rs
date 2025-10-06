@@ -1,8 +1,8 @@
+use axum::{Router, http::header, response::Response, routing::get};
 use utoipa::OpenApi;
-use axum::{response::Response, http::header, Router, routing::get};
 
 use crate::models::*;
-use crate::routes::api::{peer, chain, wallet, transaction, contract, epoch};
+use crate::routes::api::{chain, contract, epoch, peer, transaction, wallet};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -96,10 +96,7 @@ async fn get_openapi_yaml() -> Response {
         String::new()
     });
 
-    Response::builder()
-        .header(header::CONTENT_TYPE, "application/x-yaml")
-        .body(yaml_content.into())
-        .unwrap()
+    Response::builder().header(header::CONTENT_TYPE, "application/x-yaml").body(yaml_content.into()).unwrap()
 }
 
 pub fn openapi_route<S: Clone + Send + Sync + 'static>() -> Router<S> {

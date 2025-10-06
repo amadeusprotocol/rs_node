@@ -41,7 +41,12 @@ pub struct CallEnv {
 }
 
 /// Dispatch contract module calls (currently only "deploy")
-pub fn call(db: &crate::utils::rocksdb::RocksDb, function: &str, env: &CallEnv, args: &[Vec<u8>]) -> Result<(), ContractError> {
+pub fn call(
+    db: &crate::utils::rocksdb::RocksDb,
+    function: &str,
+    env: &CallEnv,
+    args: &[Vec<u8>],
+) -> Result<(), ContractError> {
     match function {
         "deploy" => {
             // Expect exactly one argument: wasm bytes

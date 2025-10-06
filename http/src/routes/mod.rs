@@ -1,3 +1,4 @@
+use crate::openapi;
 use ama_core::Context;
 use axum::http::{StatusCode, header};
 use axum::{
@@ -8,11 +9,10 @@ use axum::{
 };
 use serde_json::Value;
 use std::sync::Arc;
-use crate::openapi;
 
 pub mod advanced;
-pub mod not_found;
 pub mod api;
+pub mod not_found;
 
 pub fn app(ctx: Arc<Context>) -> Router {
     Router::new()
@@ -22,7 +22,6 @@ pub fn app(ctx: Arc<Context>) -> Router {
         .merge(system_router(ctx))
         .fallback(not_found::not_found_handler)
 }
-
 
 async fn prometheus_metrics(State(ctx): State<Arc<Context>>) -> Response<String> {
     Response::builder()

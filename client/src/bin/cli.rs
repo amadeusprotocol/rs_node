@@ -221,12 +221,7 @@ pub async fn send_transaction(tx_packed: Vec<u8>, url: &str) -> Result<()> {
     // send POST request to /api/tx/submit with base58-encoded transaction as text/plain body
     let endpoint = format!("{}/api/tx/submit", url.trim_end_matches('/'));
 
-    let response = client
-        .post(&endpoint)
-        .header("Content-Type", "text/plain")
-        .body(tx_base58)
-        .send()
-        .await?;
+    let response = client.post(&endpoint).header("Content-Type", "text/plain").body(tx_base58).send().await?;
 
     if response.status().is_success() {
         let result: JsonValue = response.json().await?;

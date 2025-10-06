@@ -1,12 +1,11 @@
 use crate::models::*;
 use ama_core::Context;
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 use std::sync::Arc;
 use utoipa;
-
 
 #[utoipa::path(
     get,
@@ -22,10 +21,7 @@ use utoipa;
     ),
     tag = "peer"
 )]
-pub async fn get_peer_anr(
-    State(ctx): State<Arc<Context>>,
-    Path(public_key): Path<String>,
-) -> Json<AnrResponse> {
+pub async fn get_peer_anr(State(ctx): State<Arc<Context>>, Path(public_key): Path<String>) -> Json<AnrResponse> {
     match ctx.get_anr_by_pk_b58(&public_key).await {
         Some(anr_data) => Json(AnrResponse::ok((&anr_data).into())),
         None => Json(AnrResponse::error("not_found")),
@@ -43,10 +39,7 @@ pub async fn get_peer_anr(
     tag = "peer"
 )]
 pub async fn get_validator_anrs(State(ctx): State<Arc<Context>>) -> Json<AnrsResponse> {
-    let anrs = ctx.get_validator_anrs().await
-        .iter()
-        .map(Into::into)
-        .collect();
+    let anrs = ctx.get_validator_anrs().await.iter().map(Into::into).collect();
     Json(AnrsResponse::ok(anrs))
 }
 
@@ -61,10 +54,7 @@ pub async fn get_validator_anrs(State(ctx): State<Arc<Context>>) -> Json<AnrsRes
     tag = "peer"
 )]
 pub async fn get_all_anrs(State(ctx): State<Arc<Context>>) -> Json<AnrsResponse> {
-    let anrs = ctx.get_all_anrs().await
-        .iter()
-        .map(Into::into)
-        .collect();
+    let anrs = ctx.get_all_anrs().await.iter().map(Into::into).collect();
     Json(AnrsResponse::ok(anrs))
 }
 
@@ -84,10 +74,8 @@ pub async fn get_all_nodes(State(ctx): State<Arc<Context>>) -> Json<serde_json::
     let all_anrs = ctx.get_all_anrs().await;
 
     // create a map from IP to public key via ANRs
-    let ip_to_pk: std::collections::HashMap<String, String> = all_anrs
-        .iter()
-        .map(|anr| (anr.ip4.to_string(), bs58::encode(&anr.pk).into_string()))
-        .collect();
+    let ip_to_pk: std::collections::HashMap<String, String> =
+        all_anrs.iter().map(|anr| (anr.ip4.to_string(), bs58::encode(&anr.pk).into_string())).collect();
 
     let nodes: std::collections::HashMap<String, NodeInfo> = peers
         .into_iter()
@@ -138,9 +126,7 @@ pub async fn get_trainers(State(_ctx): State<Arc<Context>>) -> Json<TrainersResp
 )]
 pub async fn get_removed_trainers(State(_ctx): State<Arc<Context>>) -> Json<TrainersResponse> {
     // placeholder implementation - in a real system, this would query removed trainers
-    let removed_trainers = vec![
-        "6DVTIepmDpJ21KqzTAaQ3Xe25JfS55ATvV52wRGw4lbgcPgT7hvK1MjGLApSh4Gt2g".to_string(),
-    ];
+    let removed_trainers = vec!["6DVTIepmDpJ21KqzTAaQ3Xe25JfS55ATvV52wRGw4lbgcPgT7hvK1MjGLApSh4Gt2g".to_string()];
 
     Json(TrainersResponse::ok(removed_trainers))
 }

@@ -11,17 +11,11 @@ pub struct ApiResponse<T> {
 
 impl<T> ApiResponse<T> {
     pub fn ok(data: T) -> Self {
-        Self {
-            error: "ok".to_string(),
-            data: Some(data),
-        }
+        Self { error: "ok".to_string(), data: Some(data) }
     }
 
     pub fn error(msg: &str) -> Self {
-        Self {
-            error: msg.to_string(),
-            data: None,
-        }
+        Self { error: msg.to_string(), data: None }
     }
 }
 
@@ -127,11 +121,7 @@ impl From<&ama_core::node::anr::Anr> for Anr {
 
 impl Balance {
     pub fn new(symbol: &str, flat: u64, float: f64) -> Self {
-        Self {
-            symbol: symbol.to_string(),
-            flat,
-            float,
-        }
+        Self { symbol: symbol.to_string(), flat, float }
     }
 }
 
@@ -167,19 +157,11 @@ pub struct TransactionSubmitResponse {
 
 impl TransactionSubmitResponse {
     pub fn ok(tx_hash: String) -> Self {
-        Self {
-            error: "ok".to_string(),
-            tx_hash: Some(tx_hash),
-            message: None,
-        }
+        Self { error: "ok".to_string(), tx_hash: Some(tx_hash), message: None }
     }
 
     pub fn error(msg: &str) -> Self {
-        Self {
-            error: msg.to_string(),
-            tx_hash: None,
-            message: Some(msg.to_string()),
-        }
+        Self { error: msg.to_string(), tx_hash: None, message: Some(msg.to_string()) }
     }
 }
 
@@ -195,21 +177,11 @@ pub struct BytecodeValidationResponse {
 
 impl BytecodeValidationResponse {
     pub fn ok(valid: bool, gas_estimate: Option<u64>, warnings: Option<Vec<String>>) -> Self {
-        Self {
-            error: "ok".to_string(),
-            valid,
-            gas_estimate,
-            warnings,
-        }
+        Self { error: "ok".to_string(), valid, gas_estimate, warnings }
     }
 
     pub fn error(msg: &str) -> Self {
-        Self {
-            error: msg.to_string(),
-            valid: false,
-            gas_estimate: None,
-            warnings: None,
-        }
+        Self { error: msg.to_string(), valid: false, gas_estimate: None, warnings: None }
     }
 }
 
@@ -223,12 +195,7 @@ pub struct EpochScoreResponse {
 
 impl EpochScoreResponse {
     pub fn ok(score: f64, epoch: u64, rank: u64) -> Self {
-        Self {
-            error: "ok".to_string(),
-            score,
-            epoch,
-            rank,
-        }
+        Self { error: "ok".to_string(), score, epoch, rank }
     }
 }
 
@@ -240,10 +207,7 @@ pub struct EmissionAddressResponse {
 
 impl EmissionAddressResponse {
     pub fn ok(emission_address: String) -> Self {
-        Self {
-            error: "ok".to_string(),
-            emission_address,
-        }
+        Self { error: "ok".to_string(), emission_address }
     }
 }
 

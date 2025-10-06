@@ -297,7 +297,7 @@ impl Epoch {
             None => {
                 // TODO: requires DB handle to fetch trainers; not available in this env
                 return Err(EpochError::InvalidEpoch);
-            },
+            }
         };
 
         if !trainers.iter().any(|pk| pk == malicious_pk) {

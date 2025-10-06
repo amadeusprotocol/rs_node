@@ -266,27 +266,6 @@ impl Anr {
         Ok(packed_anr)
     }
 
-    /// Get Blake3 hash of public key (v1.1.8 compatibility)
-    pub fn get_pk_b3(&self) -> &[u8; 32] {
-        &self.pk_b3
-    }
-
-    /// Get first 4 bytes of Blake3 hash for fast lookup (v1.1.8 compatibility)
-    pub fn get_pk_b3_f4(&self) -> &[u8; 4] {
-        &self.pk_b3_f4
-    }
-
-    /// Check if ANR matches Blake3 prefix for fast filtering
-    pub fn matches_b3_prefix(&self, prefix: &[u8; 4]) -> bool {
-        &self.pk_b3_f4 == prefix
-    }
-
-    /// Recompute Blake3 fields (in case public key changed)
-    pub fn recompute_blake3_fields(&mut self) {
-        self.pk_b3 = blake3::hash(&self.pk);
-        self.pk_b3_f4.copy_from_slice(&self.pk_b3[0..4]);
-    }
-
     pub fn to_etf_bin_for_signing(&self) -> Vec<u8> {
         use crate::utils::safe_etf::encode_safe_deterministic;
         encode_safe_deterministic(&self.to_etf_term_without_signature())
@@ -570,22 +549,6 @@ impl NodeAnrs {
         selected
     }
 
-    /// Get all validators from handshaked nodes
-    pub async fn all_validators(&self) -> Vec<Anr> {
-        // this would need integration with consensus module to get validator set
-        // for now, return all handshaked nodes
-        let pks = self.handshaked().await;
-        let mut anrs = Vec::new();
-
-        for pk in pks {
-            if let Some(anr) = self.get(&pk).await {
-                anrs.push(anr);
-            }
-        }
-
-        anrs
-    }
-
     /// Get all handshaked (pk, ip4) pairs
     pub async fn get_all_excluding_b3f4(&self, b3f4: &[[u8; 4]]) -> Vec<Anr> {
         let map = self.store.read().await;
@@ -663,12 +626,6 @@ impl NodeAnrs {
     /// Get count of anrs
     pub async fn count(&self) -> usize {
         self.store.read().await.len()
-    }
-
-    /// Get count of handshaked anrs
-    pub async fn count_handshaked(&self) -> usize {
-        let map = self.store.read().await;
-        map.values().filter(|v| v.handshaked).count()
     }
 }
 
@@ -1015,4 +972,3 @@ mod tests {
         }
     }
 }
-

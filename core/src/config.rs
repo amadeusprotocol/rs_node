@@ -18,9 +18,12 @@ pub const TX_SIZE: usize = 393216; // 384 KiB
 pub const ATTESTATION_SIZE: usize = 512;
 pub const QUORUM: usize = 3; // quorum size for AMA
 pub const QUORUM_SINGLE: usize = 1; // quorum size for single shard
-pub const CLEANUP_PERIOD_MILLIS: u64 = 8000; // how often node does the cleanup (8 seconds)
-pub const ANR_PERIOD_MILLIS: u64 = 3000; // how often node checks ANR status (3 seconds)
-pub const BROADCAST_PERIOD_MILLIS: u64 = 1000; // how often node broadcasts pings (1 second)
+pub const CLEANUP_PERIOD_MILLIS: u64 = 8000; // how often node does the cleanup
+pub const ANR_PERIOD_MILLIS: u64 = 3000; // how often node checks ANR status
+pub const BROADCAST_PERIOD_MILLIS: u64 = 500; // how often node broadcasts pings
+pub const AUTOUPDATE_PERIOD_MILLIS: u64 = 1000; // how often node checks for updates
+pub const CONSENSUS_PERIOD_MILLIS: u64 = 100; // how often node runs consensus
+pub const CATCHUP_PERIOD_MILLIS: u64 = 1000; // how often node checks for entry gaps
 
 pub const VERSION: Ver = parse_version();
 

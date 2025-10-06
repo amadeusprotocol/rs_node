@@ -262,18 +262,18 @@ impl Protocol for Entry {
         Ok(out)
     }
 
-    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
+    async fn handle(&self, ctx: &Context, _src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
         let height = self.header.height;
 
         // compute rooted_tip_height if possible
-        let rooted_height = _ctx
+        let rooted_height = ctx
             .fabric
             .get_rooted_tip()
             .ok()
             .flatten()
             .map(TryInto::try_into)
             .and_then(|h| h.ok())
-            .and_then(|h| _ctx.fabric.get_entry_by_hash(&h))
+            .and_then(|h| ctx.fabric.get_entry_by_hash(&h))
             .map(|e| e.header.height)
             .unwrap_or(0);
 
@@ -283,7 +283,7 @@ impl Protocol for Entry {
             let slot = self.header.slot; // height is the same as slot in amadeus
             let bin: Vec<u8> = self.clone().try_into()?;
 
-            _ctx.fabric.insert_entry(&hash, height, slot, &bin, get_unix_millis_now())?;
+            ctx.fabric.insert_entry(&hash, height, slot, &bin, get_unix_millis_now())?;
             archiver::store(bin, format!("epoch-{}", epoch), format!("entry-{}", height)).await?;
         }
 

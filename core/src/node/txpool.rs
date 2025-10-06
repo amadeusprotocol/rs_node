@@ -38,7 +38,11 @@ pub struct TxPool {
 
 impl TxPool {
     pub fn new(db: Arc<RocksDb>) -> Self {
-        Self { db, pool: Arc::new(RwLock::new(HashMap::new())), gifted_sol_cache: Arc::new(RwLock::new(HashMap::new())) }
+        Self {
+            db,
+            pool: Arc::new(RwLock::new(HashMap::new())),
+            gifted_sol_cache: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 
     pub async fn insert(&self, tx_packed: &[u8]) -> Result<(), TxPoolError> {

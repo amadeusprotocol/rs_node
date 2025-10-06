@@ -1,6 +1,6 @@
 use crate::consensus::kv;
-use crate::utils::rocksdb::RocksDb;
 use crate::utils::bls12_381;
+use crate::utils::rocksdb::RocksDb;
 
 pub const DECIMALS: u32 = 9;
 pub const BURN_ADDRESS: [u8; 48] = [0u8; 48];

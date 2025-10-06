@@ -1,10 +1,10 @@
 use crate::models::*;
 use ama_core::Context;
 use axum::{
+    Json,
     body::Bytes,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -37,7 +37,11 @@ pub async fn validate_contract_bytecode(
     let is_wasm = body.starts_with(b"\x00asm");
 
     if is_wasm {
-        Ok(Json(BytecodeValidationResponse::ok(true, Some(100000), Some(vec!["Contract uses experimental features".to_string()]))))
+        Ok(Json(BytecodeValidationResponse::ok(
+            true,
+            Some(100000),
+            Some(vec!["Contract uses experimental features".to_string()]),
+        )))
     } else {
         Ok(Json(BytecodeValidationResponse::error("invalid_bytecode")))
     }

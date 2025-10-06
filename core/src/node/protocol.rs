@@ -3,16 +3,16 @@ use crate::Context;
 use crate::Ver;
 use crate::bic::sol;
 use crate::bic::sol::Solution;
-use crate::consensus::consensus;
-use crate::consensus::doms::EntrySummary;
+use crate::consensus::consensus::{self, Consensus};
 use crate::consensus::doms::attestation::EventAttestation;
 use crate::consensus::doms::entry::Entry;
+use crate::consensus::doms::{Attestation, EntrySummary};
 use crate::consensus::fabric::Fabric;
 use crate::node::anr::Anr;
 use crate::node::peers::HandshakeStatus;
 use crate::node::{anr, peers};
 use crate::utils::bls12_381;
-use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now};
+use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now, parse_list, serialize_list};
 use crate::utils::safe_etf::encode_safe;
 use eetf::convert::TryAsRef;
 use eetf::{Atom, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, List, Map, Term};
@@ -20,7 +20,8 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io::Error as IoError;
 use std::net::{Ipv4Addr, SocketAddr};
-use tracing::{instrument, warn};
+use tracing::instrument;
+use tracing::warn;
 
 /// Every object that has this trait must be convertible from an Erlang ETF
 /// Binary representation and must be able to handle itself as a message
@@ -103,6 +104,8 @@ pub enum Instruction {
     ValidTxs { txs: Vec<Vec<u8>> },
     ReceivedSol { sol: Solution },
     ReceivedEntry { entry: Entry },
+    ReceivedAttestation { attestation: Attestation },
+    ReceivedConsensus { consensus: Consensus },
     ConsensusesPacked { packed: Vec<u8> },
     CatchupEntryReq { heights: Vec<u64> },
     CatchupTriReq { heights: Vec<u64> },
@@ -143,6 +146,8 @@ pub fn parse_etf_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
         NewPhoneWhoDisReply::TYPENAME => Box::new(NewPhoneWhoDisReply::from_etf_map_validated(map)?),
         SpecialBusiness::TYPENAME => Box::new(SpecialBusiness::from_etf_map_validated(map)?),
         SpecialBusinessReply::TYPENAME => Box::new(SpecialBusinessReply::from_etf_map_validated(map)?),
+        Catchup::TYPENAME => Box::new(Catchup::from_etf_map_validated(map)?),
+        CatchupReply::TYPENAME => Box::new(CatchupReply::from_etf_map_validated(map)?),
         _ => {
             warn!("Unknown operation: {}", op_atom.name);
             return Err(Error::BadEtf("op"));
@@ -220,11 +225,7 @@ impl EventTip {
     pub fn from_current_tips_db(fab: &Fabric) -> Result<Self, Error> {
         // Helper to load EntrySummary by tip hash, or return empty summary if missing
         fn entry_summary_by_hash(fab: &Fabric, hash: &[u8; 32]) -> EntrySummary {
-            if let Some(entry) = fab.get_entry_by_hash(hash) {
-                entry.into()
-            } else {
-                EntrySummary::empty()
-            }
+            if let Some(entry) = fab.get_entry_by_hash(hash) { entry.into() } else { EntrySummary::empty() }
         }
 
         let temporal_summary = match fab.get_temporal_tip()? {
@@ -275,6 +276,243 @@ pub struct CatchupBi {
 #[derive(Debug)]
 pub struct CatchupAttestation {
     pub hashes: Vec<Vec<u8>>,
+}
+
+/// Requests information about selected heights (<1000 heights per request)
+#[derive(Debug)]
+pub struct Catchup {
+    pub heights: Vec<CatchupHeight>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CatchupHeight {
+    pub height: u32,
+    pub c: Option<bool>,              // consensus flag (matches Elixir)
+    pub e: Option<bool>,              // entries flag (matches Elixir)
+    pub a: Option<bool>,              // attestations flag (matches Elixir)
+    pub hashes: Option<Vec<Vec<u8>>>, // skip these entry hashes (matches Elixir)
+}
+
+impl Catchup {
+    pub const TYPENAME: &'static str = "catchup";
+}
+
+impl Typename for Catchup {
+    fn typename(&self) -> &'static str {
+        Self::TYPENAME
+    }
+}
+
+#[async_trait::async_trait]
+impl Protocol for Catchup {
+    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
+        let height_flags_term = map.get_list("height_flags").ok_or(Error::BadEtf("height_flags"))?;
+        let mut height_flags = Vec::new();
+
+        for item in height_flags_term {
+            if let Some(flag_map) = item.get_term_map() {
+                let height = flag_map.get_integer::<u32>("height").ok_or(Error::BadEtf("height"))?;
+
+                let c = flag_map.get_atom("c").map(|a| a.name == "true");
+                let e = flag_map.get_atom("e").map(|a| a.name == "true");
+                let a = flag_map.get_atom("a").map(|a| a.name == "true");
+
+                let hashes = flag_map.get_list("hashes").map(|hashes_list| {
+                    hashes_list.iter().filter_map(|h| h.get_binary().map(|bytes| bytes.to_vec())).collect()
+                });
+
+                height_flags.push(CatchupHeight { height, c, e, a, hashes });
+            }
+        }
+
+        Ok(Self { heights: height_flags })
+    }
+
+    fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
+        let mut m = HashMap::new();
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
+
+        let height_flags_list: Vec<Term> = self
+            .heights
+            .iter()
+            .map(|flag| {
+                let mut flag_map = HashMap::new();
+                flag_map.insert(Term::Atom(Atom::from("height")), Term::FixInteger((flag.height as i32).into()));
+
+                if let Some(true) = flag.c {
+                    flag_map.insert(Term::Atom(Atom::from("c")), Term::Atom(Atom::from("true")));
+                }
+                if let Some(true) = flag.e {
+                    flag_map.insert(Term::Atom(Atom::from("e")), Term::Atom(Atom::from("true")));
+                }
+                if let Some(true) = flag.a {
+                    flag_map.insert(Term::Atom(Atom::from("a")), Term::Atom(Atom::from("true")));
+                }
+                if let Some(ref hashes) = flag.hashes {
+                    if !hashes.is_empty() {
+                        let hashes_terms: Vec<Term> =
+                            hashes.iter().map(|h| Term::Binary(Binary::from(h.clone()))).collect();
+                        flag_map.insert(Term::Atom(Atom::from("hashes")), Term::List(List::from(hashes_terms)));
+                    }
+                }
+                Term::Map(Map::from(flag_map))
+            })
+            .collect();
+
+        m.insert(Term::Atom(Atom::from("height_flags")), Term::List(List::from(height_flags_list)));
+
+        let etf_term = Term::Map(Map::from(m));
+        Ok(encode_safe(&etf_term))
+    }
+
+    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
+        // TODO: implement catchup handling logic
+        Ok(vec![Instruction::Noop { why: "catchup received".to_string() }])
+    }
+}
+
+#[derive(Debug)]
+pub struct CatchupReply {
+    pub heights: Vec<CatchupHeightReply>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CatchupHeightReply {
+    pub height: u32,
+    pub entries: Option<Vec<Entry>>,
+    pub attestations: Option<Vec<Attestation>>,
+    pub consensuses: Option<Vec<Consensus>>,
+}
+
+impl CatchupReply {
+    pub const TYPENAME: &'static str = "catchup_reply";
+}
+
+impl Typename for CatchupReply {
+    fn typename(&self) -> &'static str {
+        Self::TYPENAME
+    }
+}
+
+#[async_trait::async_trait]
+impl Protocol for CatchupReply {
+    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
+        let tries_term = map.get_list("tries").ok_or(Error::BadEtf("tries"))?;
+        let mut tries = Vec::new();
+
+        for item in tries_term {
+            if let Some(trie_map) = item.get_term_map() {
+                let height = trie_map.get_integer::<u32>("height").ok_or(Error::BadEtf("height"))?;
+
+                let entries = trie_map.get_list("entries").and_then(|list| {
+                    let parsed = parse_list(list, |bytes| Entry::unpack(bytes));
+                    if parsed.is_empty() { None } else { Some(parsed) }
+                });
+
+                let attestations = trie_map.get_list("attestations").and_then(|list| {
+                    let parsed = parse_list(list, |bytes| Attestation::from_etf_bin(bytes));
+                    if parsed.is_empty() { None } else { Some(parsed) }
+                });
+
+                let consensuses = trie_map.get_list("consensuses").and_then(|list| {
+                    let parsed = parse_list(list, |bytes| Consensus::from_etf_bin(bytes));
+                    if parsed.is_empty() { None } else { Some(parsed) }
+                });
+
+                tries.push(CatchupHeightReply { height, entries, attestations, consensuses });
+            }
+        }
+
+        Ok(Self { heights: tries })
+    }
+
+    fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
+        let mut m = HashMap::new();
+        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
+
+        let tries_list: Vec<Term> = self
+            .heights
+            .iter()
+            .map(|trie| {
+                let mut trie_map = HashMap::new();
+                trie_map.insert(Term::Atom(Atom::from("height")), Term::FixInteger((trie.height as i32).into()));
+
+                if let Some(ref entries) = trie.entries {
+                    if let Some(term) = serialize_list(entries, |e| e.pack()) {
+                        trie_map.insert(Term::Atom(Atom::from("entries")), term);
+                    }
+                }
+
+                if let Some(ref attestations) = trie.attestations {
+                    if let Some(term) = serialize_list(attestations, |a| a.to_etf_bin()) {
+                        trie_map.insert(Term::Atom(Atom::from("attestations")), term);
+                    }
+                }
+
+                if let Some(ref consensuses) = trie.consensuses {
+                    if let Some(term) = serialize_list(consensuses, |c| c.to_etf_bin()) {
+                        trie_map.insert(Term::Atom(Atom::from("consensuses")), term);
+                    }
+                }
+
+                Term::Map(Map::from(trie_map))
+            })
+            .collect();
+
+        m.insert(Term::Atom(Atom::from("tries")), Term::List(List::from(tries_list)));
+
+        let etf_term = Term::Map(Map::from(m));
+        Ok(encode_safe(&etf_term))
+    }
+
+    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
+        use tracing::{debug, info};
+
+        let mut instructions = Vec::new();
+        let rooted_tip_height = if let Ok(Some(rooted_tip_hash)) = ctx.fabric.get_rooted_tip() {
+            if let Some(rooted_entry) = ctx.fabric.get_entry_by_hash(&rooted_tip_hash) {
+                rooted_entry.header.height
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        for trie in &self.heights {
+            // Handle entries - insert if height >= rooted_tip_height
+            if let Some(ref entries) = trie.entries {
+                debug!("Received {} entries at height {}", entries.len(), trie.height);
+                for entry in entries {
+                    if entry.header.height >= rooted_tip_height {
+                        instructions.push(Instruction::ReceivedEntry { entry: entry.clone() });
+                    }
+                }
+            }
+
+            // Handle attestations - validate and insert
+            if let Some(ref attestations) = trie.attestations {
+                debug!("Received {} attestations at height {}", attestations.len(), trie.height);
+                for attestation in attestations {
+                    instructions.push(Instruction::ReceivedAttestation { attestation: attestation.clone() });
+                }
+            }
+
+            // Handle consensuses - validate and insert
+            if let Some(ref consensuses) = trie.consensuses {
+                debug!("Received {} consensuses at height {}", consensuses.len(), trie.height);
+                for consensus in consensuses {
+                    instructions.push(Instruction::ReceivedConsensus { consensus: consensus.clone() });
+                }
+            }
+        }
+
+        if !instructions.is_empty() {
+            info!("Processed catchup_reply from {} with {} instructions", src, instructions.len());
+        }
+
+        Ok(instructions)
+    }
 }
 
 #[derive(Debug)]
@@ -1006,5 +1244,68 @@ mod tests {
                 // context creation failed - this is acceptable for this test
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_catchup_and_catchup_reply_etf_roundtrip() {
+        // Test Catchup
+        let height_flag = CatchupHeight {
+            height: 42,
+            c: Some(true),
+            e: None,
+            a: Some(true),
+            hashes: Some(vec![vec![1, 2, 3], vec![4, 5, 6]]),
+        };
+
+        let catchup = Catchup { heights: vec![height_flag] };
+
+        // Test Catchup serialization
+        let catchup_bin = catchup.to_etf_bin().expect("should serialize catchup");
+        let parsed_catchup = parse_etf_bin(&catchup_bin).expect("should deserialize catchup");
+        assert_eq!(parsed_catchup.typename(), "catchup");
+
+        // Test CatchupReply with actual structs
+        let entry1 = Entry {
+            hash: [1; 32],
+            header: EntryHeader {
+                height: 100,
+                slot: 1,
+                prev_slot: 0,
+                prev_hash: [0; 32],
+                dr: [2; 32],
+                vr: [0; 96],
+                signer: [3; 48],
+                txs_hash: [4; 32],
+            },
+            signature: [5; 96],
+            mask: None,
+            txs: vec![vec![1, 2, 3, 4]],
+        };
+
+        let attestation1 =
+            Attestation { entry_hash: [6; 32], mutations_hash: [7; 32], signer: [8; 48], signature: [9; 96] };
+
+        let consensus1 = Consensus {
+            entry_hash: [10; 32],
+            mutations_hash: [11; 32],
+            mask: Some(vec![true, false, true]),
+            agg_sig: [12; 96],
+            score: Some(0.95),
+        };
+
+        let trie1 = CatchupHeightReply {
+            height: 100,
+            entries: Some(vec![entry1]),
+            attestations: Some(vec![attestation1]),
+            consensuses: None,
+        };
+        let trie2 =
+            CatchupHeightReply { height: 101, entries: None, attestations: None, consensuses: Some(vec![consensus1]) };
+        let catchup_reply = CatchupReply { heights: vec![trie1, trie2] };
+
+        // Test CatchupReply serialization
+        let reply_bin = catchup_reply.to_etf_bin().expect("should serialize catchup_reply");
+        let parsed_reply = parse_etf_bin(&reply_bin).expect("should deserialize catchup_reply");
+        assert_eq!(parsed_reply.typename(), "catchup_reply");
     }
 }

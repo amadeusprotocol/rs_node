@@ -4,6 +4,7 @@ use num_traits::ToPrimitive;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
 /// Trait for types that can provide their type name as a static string
 pub trait Typename {
@@ -62,7 +63,6 @@ pub fn hexdump(data: &[u8]) -> String {
     out
 }
 
-
 /// Keep only ASCII characters considered printable for our use-case.
 pub fn ascii(input: &str) -> String {
     input
@@ -92,7 +92,6 @@ pub fn is_alphanumeric(input: &str) -> bool {
     alphanumeric(input) == input
 }
 
-
 /// Trim trailing slash from url
 pub fn url(url: &str) -> String {
     url.trim_end_matches('/').to_string()
@@ -103,7 +102,6 @@ pub fn url_with(url: &str, path: &str) -> String {
     format!("{}{}", url, path)
 }
 
-
 /// Lightweight helpers so you can keep calling `.atom()`, `.integer()`, etc.
 pub trait TermExt {
     fn as_atom(&self) -> Option<&Atom>;
@@ -112,6 +110,9 @@ pub trait TermExt {
     fn get_list(&self) -> Option<&[Term]>;
     fn get_string(&self) -> Option<String>;
     fn get_term_map(&self) -> Option<TermMap>;
+    fn parse_list<T, E>(&self, parser: impl Fn(&[u8]) -> Result<T, E>) -> Vec<T>
+    where
+        E: std::fmt::Display;
 }
 
 impl TermExt for Term {
@@ -153,6 +154,13 @@ impl TermExt for Term {
             Term::Map(m) => Some(TermMap(m.map.clone())),
             _ => None,
         }
+    }
+
+    fn parse_list<T, E>(&self, parser: impl Fn(&[u8]) -> Result<T, E>) -> Vec<T>
+    where
+        E: std::fmt::Display,
+    {
+        self.get_list().map(|list| parse_list(list, parser)).unwrap_or_default()
     }
 }
 
@@ -201,6 +209,13 @@ impl TermMap {
 
     pub fn get_string(&self, key: &str) -> Option<String> {
         self.0.get(&Term::Atom(Atom::from(key))).and_then(TermExt::get_string)
+    }
+
+    pub fn parse_list<T, E>(&self, key: &str, parser: impl Fn(&[u8]) -> Result<T, E>) -> Vec<T>
+    where
+        E: std::fmt::Display,
+    {
+        self.0.get(&Term::Atom(Atom::from(key))).map(|term| term.parse_list(parser)).unwrap_or_default()
     }
 
     pub fn into_term(self) -> Term {
@@ -286,6 +301,28 @@ pub fn format_duration(total_seconds: u32) -> String {
     let months = months % 12;
 
     format!("{}y {}mo {}d", years, months, days)
+}
+
+/// Parse a list of ETF terms into structured data using the provided parser
+pub fn parse_list<T, E>(list: &[Term], parser: impl Fn(&[u8]) -> Result<T, E>) -> Vec<T>
+where
+    E: std::fmt::Display,
+{
+    list.iter()
+        .filter_map(|term| {
+            term.get_binary().and_then(|bytes| parser(bytes).map_err(|e| warn!("Failed to parse item: {}", e)).ok())
+        })
+        .collect()
+}
+
+/// Serialize a list of items into an ETF List term using the provided serializer
+pub fn serialize_list<T, E>(items: &[T], serializer: impl Fn(&T) -> Result<Vec<u8>, E>) -> Option<Term>
+where
+    E: std::fmt::Display,
+{
+    let terms: Result<Vec<_>, _> =
+        items.iter().map(|item| serializer(item).map(|bytes| Term::Binary(Binary::from(bytes)))).collect();
+    terms.ok().map(|terms| Term::List(List::from(terms)))
 }
 
 #[cfg(test)]

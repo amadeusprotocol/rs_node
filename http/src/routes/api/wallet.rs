@@ -1,12 +1,11 @@
 use crate::models::*;
 use ama_core::Context;
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 use std::sync::Arc;
 use utoipa;
-
 
 #[utoipa::path(
     get,

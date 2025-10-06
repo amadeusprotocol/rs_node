@@ -1,8 +1,8 @@
 use crate::models::*;
 use ama_core::Context;
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 use std::sync::Arc;
 use utoipa;
@@ -22,10 +22,10 @@ use utoipa;
 pub async fn get_chain_stats(State(ctx): State<Arc<Context>>) -> Json<ChainStatsResponse> {
     let stats = ChainStats {
         height: ctx.get_block_height(),
-        total_transactions: 0, // placeholder - would need to query from fabric
-        total_accounts: 0,     // placeholder - would need to query from fabric
+        total_transactions: 0,                  // placeholder - would need to query from fabric
+        total_accounts: 0,                      // placeholder - would need to query from fabric
         network_hash_rate: "0 H/s".to_string(), // placeholder
-        difficulty: "0x0".to_string(),           // placeholder
+        difficulty: "0x0".to_string(),          // placeholder
     };
 
     Json(ChainStatsResponse::ok(stats))
@@ -69,10 +69,7 @@ pub async fn get_chain_tip(State(_ctx): State<Arc<Context>>) -> Json<ChainTipRes
     ),
     tag = "chain"
 )]
-pub async fn get_entries_by_height(
-    State(_ctx): State<Arc<Context>>,
-    Path(height): Path<u64>,
-) -> Json<EntriesResponse> {
+pub async fn get_entries_by_height(State(_ctx): State<Arc<Context>>, Path(height): Path<u64>) -> Json<EntriesResponse> {
     // placeholder implementation - would query entries from fabric by height
     let entries = vec![BlockEntry {
         hash: format!("0x{:x}", height),
@@ -115,20 +112,18 @@ pub async fn get_entries_by_height_with_txs(
             signature: format!("sig_{}", height),
             mask: format!("mask_{}", height),
         },
-        txs: vec![
-            Transaction {
-                hash: format!("tx_{}", height),
-                from: "7EVUJfpnEqK32KrzUAaR4Yf26KgT66AWwW63xSHw5mbgdQhV8iwL1NkHMAqTi5Hv3h".to_string(),
-                to: "6K9RwSR3gKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKg".to_string(),
-                amount: "100.0".to_string(),
-                symbol: "AMA".to_string(),
-                fee: "0.1".to_string(),
-                nonce: height,
-                timestamp: 1695123456 + height,
-                signature: format!("tx_sig_{}", height),
-                tx_type: "transfer".to_string(),
-            }
-        ],
+        txs: vec![Transaction {
+            hash: format!("tx_{}", height),
+            from: "7EVUJfpnEqK32KrzUAaR4Yf26KgT66AWwW63xSHw5mbgdQhV8iwL1NkHMAqTi5Hv3h".to_string(),
+            to: "6K9RwSR3gKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKg".to_string(),
+            amount: "100.0".to_string(),
+            symbol: "AMA".to_string(),
+            fee: "0.1".to_string(),
+            nonce: height,
+            timestamp: 1695123456 + height,
+            signature: format!("tx_sig_{}", height),
+            tx_type: "transfer".to_string(),
+        }],
     };
 
     Json(EntriesWithTxsResponse::ok(vec![entry_with_txs]))
@@ -218,10 +213,7 @@ pub async fn get_transaction_events_by_account(
         },
     ];
 
-    Json(TransactionEventsResponse {
-        cursor: Some("next_cursor_placeholder".to_string()),
-        txs: transactions,
-    })
+    Json(TransactionEventsResponse { cursor: Some("next_cursor_placeholder".to_string()), txs: transactions })
 }
 
 #[utoipa::path(
@@ -242,20 +234,18 @@ pub async fn get_transactions_in_entry(
     Path(entry_hash): Path<String>,
 ) -> Json<TransactionsInEntryResponse> {
     // placeholder implementation - would query transactions from specific entry
-    let transactions = vec![
-        Transaction {
-            hash: format!("entry_tx_1_{}", entry_hash.chars().take(8).collect::<String>()),
-            from: "7EVUJfpnEqK32KrzUAaR4Yf26KgT66AWwW63xSHw5mbgdQhV8iwL1NkHMAqTi5Hv3h".to_string(),
-            to: "6K9RwSR3gKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKg".to_string(),
-            amount: "100.0".to_string(),
-            symbol: "AMA".to_string(),
-            fee: "0.1".to_string(),
-            nonce: 42,
-            timestamp: 1695123456,
-            signature: "entry_tx_signature_1".to_string(),
-            tx_type: "transfer".to_string(),
-        }
-    ];
+    let transactions = vec![Transaction {
+        hash: format!("entry_tx_1_{}", entry_hash.chars().take(8).collect::<String>()),
+        from: "7EVUJfpnEqK32KrzUAaR4Yf26KgT66AWwW63xSHw5mbgdQhV8iwL1NkHMAqTi5Hv3h".to_string(),
+        to: "6K9RwSR3gKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKg".to_string(),
+        amount: "100.0".to_string(),
+        symbol: "AMA".to_string(),
+        fee: "0.1".to_string(),
+        nonce: 42,
+        timestamp: 1695123456,
+        signature: "entry_tx_signature_1".to_string(),
+        tx_type: "transfer".to_string(),
+    }];
 
     Json(TransactionsInEntryResponse::ok(transactions))
 }

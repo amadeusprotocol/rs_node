@@ -68,7 +68,9 @@ pub fn reset_for_tests(db: &RocksDb) {
             Ok(items) => items,
             Err(_) => break,
         };
-        if items.is_empty() { break; }
+        if items.is_empty() {
+            break;
+        }
         for (k, _v) in items {
             let _ = db.delete("sysconf", &k);
         }

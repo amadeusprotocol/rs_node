@@ -1,7 +1,7 @@
 use crate::node::anr::{Anr, NodeAnrs};
 use crate::node::peers::HandshakeStatus;
 use crate::node::protocol::*;
-use crate::node::protocol::{Instruction, NewPhoneWhoDis, NewPhoneWhoDisReply};
+use crate::node::protocol::{Catchup, CatchupHeight, Instruction, NewPhoneWhoDis, NewPhoneWhoDisReply};
 use crate::node::{anr, peers};
 use crate::socket::UdpSocketExt;
 use crate::utils::misc::Typename;
@@ -68,7 +68,10 @@ impl Context {
         config: config::Config,
         socket: Arc<dyn UdpSocketExt>,
     ) -> Result<Arc<Self>, Error> {
-        use crate::config::{ANR_PERIOD_MILLIS, BROADCAST_PERIOD_MILLIS, CLEANUP_PERIOD_MILLIS};
+        use crate::config::{
+            ANR_PERIOD_MILLIS, BROADCAST_PERIOD_MILLIS, CATCHUP_PERIOD_MILLIS, CLEANUP_PERIOD_MILLIS,
+            CONSENSUS_PERIOD_MILLIS,
+        };
         use crate::consensus::fabric::Fabric;
         use crate::utils::archiver::init_storage;
         use metrics::Metrics;
@@ -141,6 +144,34 @@ impl Context {
             }
         });
 
+        tokio::spawn({
+            let ctx = ctx.clone();
+            async move {
+                let mut ticker = interval(Duration::from_millis(CONSENSUS_PERIOD_MILLIS));
+                loop {
+                    ticker.tick().await;
+                    if let Err(e) = ctx.consensus_task().await {
+                        warn!("consensus task error: {e}");
+                        //ctx.metrics.add_error(&e);
+                    }
+                }
+            }
+        });
+
+        tokio::spawn({
+            let ctx = ctx.clone();
+            async move {
+                let mut ticker = interval(Duration::from_millis(CATCHUP_PERIOD_MILLIS));
+                loop {
+                    ticker.tick().await;
+                    if let Err(e) = ctx.catchup_task().await {
+                        warn!("catchup task error: {e}");
+                        //ctx.metrics.add_error(&e);
+                    }
+                }
+            }
+        });
+
         Ok(ctx)
     }
 
@@ -204,7 +235,6 @@ impl Context {
 
     #[instrument(skip(self), name = "broadcast_task")]
     async fn broadcast_task(&self) -> Result<(), Error> {
-        // v1.1.7+ simplified Ping - just timestamp
         let ping = Ping::new();
         let tip = EventTip::from_current_tips_db(&self.fabric)?;
 
@@ -226,18 +256,180 @@ impl Context {
         Ok(())
     }
 
+    #[instrument(skip(self), name = "autoupdate_task")]
     async fn autoupdate_task(&self) -> Result<(), Error> {
         // TODO: check if updates are available, then download and verify update signature and
         // apply set the flag to make the node restart after it's slot
         Ok(())
     }
 
-    pub fn get_prometheus_metrics(&self) -> String {
-        self.metrics.get_prometheus()
+    #[instrument(skip(self), name = "consensus_task")]
+    async fn consensus_task(&self) -> Result<(), Error> {
+        // Process entries for consensus - applies new entries to the chain
+        if let Err(e) = consensus::consensus::proc_entries(self.fabric.db(), &self.fabric, &self.config) {
+            warn!("proc_entries failed: {e}");
+        }
+
+        // Process consensus validation - validates and roots entries
+        if let Err(e) = consensus::consensus::proc_consensus(self.fabric.db(), &self.fabric) {
+            warn!("proc_consensus failed: {e}");
+        }
+
+        Ok(())
     }
 
-    pub fn get_json_metrics(&self) -> Value {
-        self.metrics.get_json()
+    #[instrument(skip(self), name = "catchup_task")]
+    async fn catchup_task(&self) -> Result<(), Error> {
+        // Get current chain heights
+        let temporal_height = self.fabric.chain_height();
+
+        // Get rooted height by looking up the rooted tip entry
+        let rooted_height = if let Ok(Some(rooted_tip_hash)) = self.fabric.get_rooted_tip() {
+            if let Some(rooted_entry) = self.fabric.get_entry_by_hash(&rooted_tip_hash) {
+                rooted_entry.header.height
+            } else {
+                0 // fallback if entry not found
+            }
+        } else {
+            0 // fallback if no rooted tip set
+        };
+
+        // Get network heights from peers
+        let height_network_temp = self.node_peers.highest_temporal_height().await.unwrap_or(0);
+        let behind_temp = height_network_temp.saturating_sub(temporal_height);
+        let height_network_root = self.node_peers.highest_rooted_height().await.unwrap_or(0);
+        let behind_root_network = height_network_root.saturating_sub(rooted_height);
+        let height_network_bft = self.node_peers.highest_bft_height().await.unwrap_or(0);
+        let height_network_bft = if height_network_bft == 0 { height_network_root } else { height_network_bft };
+        let behind_bft = height_network_bft.saturating_sub(temporal_height);
+
+        // Calculate behind_root as temporal_height - rooted_height (local chain gap)
+        let behind_root = temporal_height.saturating_sub(rooted_height);
+
+        // Handle large local rooted gap first
+        if behind_root > 1000 {
+            info!("Behind Root: Syncing {} entries", behind_root);
+            let heights: Vec<u32> = (rooted_height + 1..=temporal_height).take(1000).collect();
+            if let Some(&last_height) = heights.last() {
+                // Use empty validators array to get any peer
+                if let Ok((_, temporal_peers)) = self.node_peers.peers_w_min_height(last_height, &[]).await {
+                    let chunks: Vec<Vec<CatchupHeight>> = heights
+                        .into_iter()
+                        .map(|height| CatchupHeight { height, c: None, e: Some(true), a: None, hashes: None })
+                        .collect::<Vec<_>>()
+                        .chunks(200)
+                        .map(|chunk| chunk.to_vec())
+                        .collect();
+
+                    self.fetch_chunks(chunks, temporal_peers).await?;
+                }
+            }
+            return Ok(());
+        }
+
+        // Handle different synchronization scenarios
+        if behind_bft > 0 {
+            info!("Behind BFT: Syncing {} entries", behind_bft);
+            let heights: Vec<u32> = (temporal_height + 1..=height_network_bft).take(1000).collect();
+            if let Some(&last_height) = heights.last() {
+                // Use empty validators array to get any peer
+                if let Ok((_, temporal_peers)) = self.node_peers.peers_w_min_height(last_height, &[]).await {
+                    let chunks: Vec<Vec<CatchupHeight>> = heights
+                        .into_iter()
+                        .map(|height| CatchupHeight { height, c: Some(true), e: Some(true), a: None, hashes: None })
+                        .collect::<Vec<_>>()
+                        .chunks(20)
+                        .map(|chunk| chunk.to_vec())
+                        .collect();
+
+                    self.fetch_chunks(chunks, temporal_peers).await?;
+                }
+            }
+        } else if behind_root_network > 0 {
+            let heights: Vec<u32> = (rooted_height + 1..=height_network_root).take(1000).collect();
+            if let Some(&last_height) = heights.last() {
+                // Use empty validators array to get any peer
+                if let Ok((rooted_peers, _)) = self.node_peers.peers_w_min_height(last_height, &[]).await {
+                    let chunks: Vec<Vec<CatchupHeight>> = heights
+                        .into_iter()
+                        .map(|height| {
+                            let entries = self.fabric.entries_by_height(height as u64).unwrap_or_default();
+                            let hashes = entries; // entries_by_height returns Vec<Vec<u8>> which are already hashes
+                            CatchupHeight { height, c: Some(true), e: Some(true), a: None, hashes: Some(hashes) }
+                        })
+                        .collect::<Vec<_>>()
+                        .chunks(20)
+                        .map(|chunk| chunk.to_vec())
+                        .collect();
+
+                    self.fetch_chunks(chunks, rooted_peers).await?;
+                }
+            }
+        } else if behind_temp > 0 {
+            let heights: Vec<u32> = (temporal_height..=height_network_temp).take(1000).collect();
+            if let Some(&last_height) = heights.last() {
+                // Get current validators for temporal sync
+                let validators = self.fabric.trainers_for_height(temporal_height + 1).unwrap_or_default();
+                if let Ok((_, temporal_peers)) = self.node_peers.peers_w_min_height(last_height, &validators).await {
+                    let chunks: Vec<Vec<CatchupHeight>> = heights
+                        .into_iter()
+                        .map(|height| {
+                            let entries = self.fabric.entries_by_height(height as u64).unwrap_or_default();
+                            let hashes = entries; // entries_by_height returns Vec<Vec<u8>> which are already hashes
+                            CatchupHeight { height, c: None, e: Some(true), a: Some(true), hashes: Some(hashes) }
+                        })
+                        .collect::<Vec<_>>()
+                        .chunks(10)
+                        .map(|chunk| chunk.to_vec())
+                        .collect();
+
+                    self.fetch_chunks(chunks, temporal_peers).await?;
+                }
+            }
+        } else if behind_temp == 0 {
+            // Fetch missing attestations for current height from validators
+            let validators = self.fabric.trainers_for_height(temporal_height + 1).unwrap_or_default();
+            if let Ok((_, temporal_peers)) = self.node_peers.peers_w_min_height(temporal_height, &validators).await {
+                let entries = self.fabric.entries_by_height(temporal_height as u64).unwrap_or_default();
+                let hashes = entries; // entries_by_height returns Vec<Vec<u8>> which are already hashes
+                let chunk = vec![CatchupHeight {
+                    height: temporal_height,
+                    c: None,
+                    e: Some(true),
+                    a: Some(true),
+                    hashes: Some(hashes),
+                }];
+
+                self.fetch_chunks(vec![chunk], temporal_peers).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Send catchup requests to peers based on fabric_sync_gen.ex fetch_chunks implementation
+    async fn fetch_chunks(&self, chunks: Vec<Vec<CatchupHeight>>, peers: Vec<std::net::Ipv4Addr>) -> Result<(), Error> {
+        use rand::seq::SliceRandom;
+
+        // Shuffle peers before entering async context to avoid Send issues
+        let mut shuffled_peers = peers;
+        {
+            let mut rng = rand::rng();
+            shuffled_peers.shuffle(&mut rng);
+        }
+
+        for (chunk, peer_ip) in chunks.into_iter().zip(shuffled_peers.into_iter().cycle()) {
+            let catchup_msg = Catchup { heights: chunk };
+            if let Err(e) = catchup_msg.send_to_with_metrics(self, peer_ip).await {
+                warn!("Failed to send catchup to {}: {}", peer_ip, e);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn get_prometheus_metrics(&self) -> String {
+        self.metrics.get_prometheus()
     }
 
     pub fn get_json_health(&self) -> Value {
@@ -391,23 +583,9 @@ impl Context {
         })
     }
 
-    /// Set the handshaked status for a peer with the given public key
-    pub async fn set_peer_handshaked(&self, pk: &[u8]) -> Result<(), peers::Error> {
-        self.node_peers.set_handshaked(pk).await
-    }
-
     /// Set handshake status for a peer by IP address
     pub async fn set_peer_handshake_status(&self, ip: Ipv4Addr, status: HandshakeStatus) -> Result<(), peers::Error> {
         self.node_peers.set_handshake_status(ip, status).await
-    }
-
-    /// Set handshake status for a peer by public key
-    pub async fn set_peer_handshake_status_by_pk(
-        &self,
-        pk: &[u8],
-        status: HandshakeStatus,
-    ) -> Result<(), peers::Error> {
-        self.node_peers.set_handshake_status_by_pk(pk, status).await
     }
 
     /// Update peer information from ANR data
@@ -529,13 +707,53 @@ impl Context {
             }
 
             Instruction::ReceivedEntry { entry } => {
-                // Handle received blockchain entry
+                // Handle received blockchain entry (from catchup)
                 info!("received entry, height: {}", entry.header.height);
-                // TODO: implement entry validation and insertion
+                let seen_time = crate::utils::misc::get_unix_millis_now();
+                match entry.pack() {
+                    Ok(entry_bin) => {
+                        if let Err(e) = self.fabric.insert_entry(
+                            &entry.hash,
+                            entry.header.height,
+                            entry.header.slot,
+                            &entry_bin,
+                            seen_time,
+                        ) {
+                            warn!("Failed to insert entry at height {}: {}", entry.header.height, e);
+                        } else {
+                            debug!("Successfully inserted entry at height {}", entry.header.height);
+                        }
+                    }
+                    Err(e) => warn!("Failed to pack entry for insertion: {}", e),
+                }
+            }
+
+            Instruction::ReceivedAttestation { attestation } => {
+                // Handle received attestation (from catchup)
+                info!("received attestation for entry {:?}", &attestation.entry_hash[..8]);
+                // TODO: implement attestation validation and insertion
                 // Following Elixir implementation:
-                // - Check if entry already exists by hash
-                // - Validate entry
-                // - Insert into Fabric if height >= rooted_tip_height
+                // - Validate attestation vs chain
+                // - Insert if valid, cache if invalid but structurally correct
+                debug!("Attestation handling not fully implemented yet");
+            }
+
+            Instruction::ReceivedConsensus { consensus } => {
+                // Handle received consensus (from catchup)
+                info!("received consensus for entry {:?}", &consensus.entry_hash[..8]);
+                let mask = consensus.mask.clone().unwrap_or_default();
+                let score = consensus.score.unwrap_or(1.0); // Default to full score if not set
+                if let Err(e) = self.fabric.insert_consensus(
+                    consensus.entry_hash,
+                    consensus.mutations_hash,
+                    mask,
+                    consensus.agg_sig,
+                    score,
+                ) {
+                    warn!("Failed to insert consensus: {}", e);
+                } else {
+                    debug!("Successfully inserted consensus");
+                }
             }
 
             Instruction::ConsensusesPacked { packed: _ } => {

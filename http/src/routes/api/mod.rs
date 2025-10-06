@@ -1,18 +1,18 @@
 use ama_core::Context;
 use axum::{
+    Json, Router,
     extract::State,
     routing::{get, post},
-    Json, Router,
 };
 use serde_json::Value;
 use std::sync::Arc;
 
-pub mod peer;
 pub mod chain;
-pub mod wallet;
-pub mod transaction;
 pub mod contract;
 pub mod epoch;
+pub mod peer;
+pub mod transaction;
+pub mod wallet;
 
 pub fn api_router(ctx: Arc<Context>) -> Router {
     Router::new()
@@ -44,10 +44,7 @@ pub fn api_router(ctx: Arc<Context>) -> Router {
 }
 
 pub fn v2_router(ctx: Arc<Context>) -> Router {
-    Router::new()
-        .route("/peers", get(api_peers))
-        .route("/metrics", get(api_metrics))
-        .with_state(ctx)
+    Router::new().route("/peers", get(api_peers)).route("/metrics", get(api_metrics)).with_state(ctx)
 }
 
 async fn api_peers(State(ctx): State<Arc<Context>>) -> Json<Value> {

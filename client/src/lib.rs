@@ -47,7 +47,6 @@ fn memory_stats_task() {
     }
 }
 
-
 pub fn get_http_port() -> u16 {
     std::env::var("HTTP_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(3000)
 }
