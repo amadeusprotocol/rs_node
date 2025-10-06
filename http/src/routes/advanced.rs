@@ -1,5 +1,5 @@
 use crate::views;
-use ama_core::Context;
+use amadeus_node::Context;
 use axum::{Router, extract::State, response::Html, routing::get};
 use std::sync::Arc;
 

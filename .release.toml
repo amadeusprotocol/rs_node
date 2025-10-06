@@ -1,0 +1,7 @@
+shared-version = true
+consolidate-commits = true
+
+# change if you want to push to crates.io
+publish = false
+tag = false
+push = false

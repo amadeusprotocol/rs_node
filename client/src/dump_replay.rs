@@ -1,4 +1,4 @@
-use ama_core::socket::UdpSocketExt;
+use amadeus_node::socket::UdpSocketExt;
 use bincode::{config::standard, decode_from_slice, encode_to_vec};
 use std::io::Result;
 use std::net::SocketAddr;

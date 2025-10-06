@@ -740,7 +740,6 @@ impl Context {
 
             Instruction::ReceivedConsensus { consensus } => {
                 // Handle received consensus (from catchup)
-                info!("received consensus for entry {:?}", &consensus.entry_hash[..8]);
                 let mask = consensus.mask.clone().unwrap_or_default();
                 let score = consensus.score.unwrap_or(1.0); // Default to full score if not set
                 if let Err(e) = self.fabric.insert_consensus(

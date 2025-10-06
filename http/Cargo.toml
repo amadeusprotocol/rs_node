@@ -1,13 +1,10 @@
 [package]
-name = "dashboard"
-version = "0.1.0"
-edition = "2024"
-license = "Apache-2.0"
-
-[lib]
 name = "http"
-path = "src/lib.rs"
-crate-type = ["rlib"]
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 axum = { version = "0.8.4", features = ["macros", "json"] }
@@ -18,7 +15,7 @@ anyhow = "1.0.98"
 tracing = "0.1.41"
 tower-http = { version = "0.6", features = ["fs", "trace", "timeout"] }
 bs58 = "0.5"
-ama_core = { workspace = true }
-utoipa = { version = "5.2", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "8.0", features = ["axum"] }
+amadeus-node = { path = "../amadeus-node" }
+utoipa = { version = "5.4.0", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 serde_yaml = "0.9"

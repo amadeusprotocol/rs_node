@@ -1,5 +1,5 @@
 use crate::openapi;
-use ama_core::Context;
+use amadeus_node::Context;
 use axum::http::{StatusCode, header};
 use axum::{
     Router,

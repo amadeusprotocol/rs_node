@@ -1,11 +1,10 @@
 [workspace]
 resolver = "3"
 
-members = ["core", "client", "http"]
+members = ["amadeus-node", "client", "http"]
 
-[workspace.dependencies]
-ama_core = { path = "core" }
-http = { path = "http", package = "dashboard" }
-
-[patch.crates-io]
-reed-solomon-simd = { git = "https://github.com/AndersTrier/reed-solomon-simd" } # 3.1.0
+[workspace.package]
+version = "1.1.8"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/valentynfaychuk/rs_node"

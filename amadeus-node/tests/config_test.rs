@@ -1,4 +1,4 @@
-use ama_core::config::{ATTESTATION_SIZE, ComputorType, Config, ENTRY_SIZE, QUORUM, TX_SIZE};
+use amadeus_node::config::{ATTESTATION_SIZE, ComputorType, Config, ENTRY_SIZE, QUORUM, TX_SIZE};
 mod common;
 use common::TmpTestDir;
 
@@ -47,7 +47,7 @@ async fn test_config_has_all_essential_elixir_parts() {
     let seed_anr = &config.seed_anrs[0];
     assert_eq!(seed_anr.ip4, "72.9.144.110");
     assert_eq!(seed_anr.port, 36969);
-    assert_eq!(seed_anr.version, ama_core::Ver::new(1, 1, 8));
+    assert_eq!(seed_anr.version, amadeus_node::Ver::new(1, 1, 8));
     assert_eq!(seed_anr.ts, 1758219202);
     assert!(seed_anr.signature.len() > 0); // has signatures in config
     assert_eq!(seed_anr.pk.len(), 48);
@@ -92,7 +92,7 @@ async fn test_config_from_sk() {
     assert_eq!(config.trainer_pk.len(), 48);
     assert!(!config.trainer_pk_b58.is_empty());
     assert_eq!(config.trainer_pop.len(), 96);
-    assert_eq!(config.get_ver().to_string(), "1.1.8");
+    assert_eq!(config.get_ver().to_string(), env!("CARGO_PKG_VERSION"));
     assert_eq!(config.udp_port, 36969);
     // verify that seed nodes list includes the essential nodes (now 3 nodes total)
     assert!(config.seed_ips.contains(&"72.9.144.110".parse().unwrap()));

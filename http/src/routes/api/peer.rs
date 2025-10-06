@@ -1,5 +1,5 @@
 use crate::models::*;
-use ama_core::Context;
+use amadeus_node::Context;
 use axum::{
     Json,
     extract::{Path, State},
@@ -86,7 +86,7 @@ pub async fn get_all_nodes(State(ctx): State<Arc<Context>>) -> Json<serde_json::
                 version: peer_info.version.map(|v| v.to_string()).unwrap_or_else(|| "unknown".to_string()),
                 latency: peer_info.latency,
                 last_message: peer_info.last_ts,
-                online: matches!(peer_info.handshake_status, ama_core::node::peers::HandshakeStatus::Completed),
+                online: matches!(peer_info.handshake_status, amadeus_node::node::peers::HandshakeStatus::Completed),
             };
             (node_info.ip4.clone(), node_info)
         })

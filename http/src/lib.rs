@@ -7,7 +7,7 @@ mod views {
     pub mod not_found;
 }
 
-use ama_core::Context;
+use amadeus_node::Context;
 use axum::http::{StatusCode, header};
 use axum::routing::get;
 use std::process;

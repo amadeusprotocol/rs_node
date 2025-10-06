@@ -103,8 +103,8 @@ pub struct RichlistEntry {
 }
 
 // From trait implementations for automatic conversions
-impl From<&ama_core::node::anr::Anr> for Anr {
-    fn from(anr_data: &ama_core::node::anr::Anr) -> Self {
+impl From<&amadeus_node::node::anr::Anr> for Anr {
+    fn from(anr_data: &amadeus_node::node::anr::Anr) -> Self {
         Self {
             ip4: anr_data.ip4.to_string(),
             pk: bs58::encode(&anr_data.pk).into_string(),

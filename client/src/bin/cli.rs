@@ -1,6 +1,6 @@
-use ama_core::bic::contract;
-use ama_core::config::{Config, gen_sk, get_pk, read_sk, write_sk};
-use ama_core::consensus::doms::tx;
+use amadeus_node::bic::contract;
+use amadeus_node::config::{Config, gen_sk, get_pk, read_sk, write_sk};
+use amadeus_node::consensus::doms::tx;
 use anyhow::{Error, Result};
 use bs58;
 use clap::{Parser, Subcommand};

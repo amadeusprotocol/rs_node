@@ -1,6 +1,6 @@
-use ama_core::consensus::doms::entry::Entry;
-use ama_core::node::protocol::Instruction;
-use ama_core::{Config, Context};
+use amadeus_node::consensus::doms::entry::Entry;
+use amadeus_node::node::protocol::Instruction;
+use amadeus_node::{Config, Context};
 use client::{UdpSocketWrapper, get_http_port, init_tracing};
 use http::serve as http_serve;
 use std::net::{Ipv4Addr, SocketAddr};

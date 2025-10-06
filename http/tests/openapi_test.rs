@@ -15,6 +15,6 @@ async fn test_openapi_yaml_generation() {
 async fn test_openapi_struct() {
     let openapi = ApiDoc::openapi();
     assert_eq!(openapi.info.title, "Amadeus Node HTTP API");
-    assert_eq!(openapi.info.version, "1.1.9");
+    assert_eq!(openapi.info.version, env!("CARGO_PKG_VERSION"));
     assert!(!openapi.paths.paths.is_empty());
 }

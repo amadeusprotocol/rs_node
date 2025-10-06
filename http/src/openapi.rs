@@ -8,7 +8,7 @@ use crate::routes::api::{chain, contract, epoch, peer, transaction, wallet};
 #[openapi(
     info(
         title = "Amadeus Node HTTP API",
-        version = "1.1.9",
+        version = env!("CARGO_PKG_VERSION"),
         description = "REST API for the Amadeus blockchain node, providing access to blockchain data, peer information, wallet operations, and smart contract interactions.",
         contact(
             name = "Amadeus Project",

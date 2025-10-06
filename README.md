@@ -211,6 +211,19 @@ cargo add ama_core --git https://github.com/valentynfaychuk/rs_node --package am
 # ama_core = { package = "ama_core", git = "https://github.com/valentynfaychuk/rs_node", branch = "main" }
 ```
 
+### Versioning (you need to install `cargo install cargo-release`)
+
+The workspace uses semver (`major.minor.patch`).
+Major - when you make a breaking change.
+Minor - when you add a new feature.
+Patch - when you fix a bug.
+
+```bash
+cargo release patch --workspace
+cargo release minor --workspace
+cargo release major --workspace
+```
+
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.

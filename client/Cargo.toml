@@ -1,15 +1,17 @@
 [package]
 name = "client"
-version = "0.1.0"
-edition = "2024"
-license = "Apache-2.0"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 tokio = { version = "1.47.1", features = ["full"] }
 bs58 = "0.5.1"
 anyhow = "1.0.99"
-ama_core = { workspace = true }
-http = { workspace = true }
+amadeus-node = { path = "../amadeus-node" }
+http = { path = "../http" }
 hex = "0.4.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 console-subscriber = { version = "0.4", optional = true }
@@ -24,5 +26,5 @@ reqwest = { version = "0.12", features = ["json"] }
 
 [features]
 default = ["system-metrics"]
-system-metrics = ["ama_core/system-metrics"]
 debugging = ["dep:console-subscriber", "dep:jemalloc-ctl", "tokio/tracing"]
+system-metrics = ["amadeus-node/system-metrics"]

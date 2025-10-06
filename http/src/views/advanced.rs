@@ -1,5 +1,5 @@
-use ama_core::node::peers::HandshakeStatus;
-use ama_core::{Context, MetricsSnapshot, PeerInfo};
+use amadeus_node::node::peers::HandshakeStatus;
+use amadeus_node::{Context, MetricsSnapshot, PeerInfo};
 use std::collections::HashMap;
 
 fn format_number(n: u64) -> String {
