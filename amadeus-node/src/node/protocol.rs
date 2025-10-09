@@ -228,12 +228,12 @@ impl EventTip {
             if let Some(entry) = fab.get_entry_by_hash(hash) { entry.into() } else { EntrySummary::empty() }
         }
 
-        let temporal_summary = match fab.get_temporal_tip()? {
+        let temporal_summary = match fab.get_temporal_hash()? {
             Some(h) => entry_summary_by_hash(fab, &h),
             None => EntrySummary::empty(),
         };
 
-        let rooted_summary = match fab.get_rooted_tip()? {
+        let rooted_summary = match fab.get_rooted_hash()? {
             Some(h) => entry_summary_by_hash(fab, &h),
             None => EntrySummary::empty(),
         };
@@ -469,15 +469,7 @@ impl Protocol for CatchupReply {
         use tracing::{debug, info};
 
         let mut instructions = Vec::new();
-        let rooted_tip_height = if let Ok(Some(rooted_tip_hash)) = ctx.fabric.get_rooted_tip() {
-            if let Some(rooted_entry) = ctx.fabric.get_entry_by_hash(&rooted_tip_hash) {
-                rooted_entry.header.height
-            } else {
-                0
-            }
-        } else {
-            0
-        };
+        let rooted_tip_height = ctx.fabric.get_rooted_height()?.unwrap_or_default();
 
         for trie in &self.heights {
             // Handle entries - insert if height >= rooted_tip_height

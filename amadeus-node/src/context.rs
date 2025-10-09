@@ -177,7 +177,6 @@ impl Context {
 
     #[instrument(skip(self), name = "bootstrap_task")]
     async fn bootstrap_task(&self) -> Result<(), Error> {
-        // v1.1.7+ simplified NewPhoneWhoDis - no fields needed
         let new_phone_who_dis = NewPhoneWhoDis::new();
 
         for ip in &self.config.seed_ips {
@@ -280,36 +279,24 @@ impl Context {
 
     #[instrument(skip(self), name = "catchup_task")]
     async fn catchup_task(&self) -> Result<(), Error> {
-        // Get current chain heights
-        let temporal_height = self.fabric.chain_height();
+        let temporal_height = self.fabric.get_temporal_height()?.unwrap_or_default();
+        let rooted_height = self.fabric.get_rooted_height()?.unwrap_or_default();
 
-        // Get rooted height by looking up the rooted tip entry
-        let rooted_height = if let Ok(Some(rooted_tip_hash)) = self.fabric.get_rooted_tip() {
-            if let Some(rooted_entry) = self.fabric.get_entry_by_hash(&rooted_tip_hash) {
-                rooted_entry.header.height
-            } else {
-                0 // fallback if entry not found
-            }
-        } else {
-            0 // fallback if no rooted tip set
-        };
+        let trainer_pks = self.fabric.trainers_for_height(temporal_height).unwrap_or_default();
+        let (peers_temporal, peers_rooted, peers_bft) = self.node_peers.get_heights(&trainer_pks).await?;
+        info!("Temporal: {} Rooted: {}", temporal_height, rooted_height);
+        info!("Temporal: {} Rooted: {} BFT: {}", peers_temporal, peers_rooted, peers_bft);
 
-        // Get network heights from peers
-        let height_network_temp = self.node_peers.highest_temporal_height().await.unwrap_or(0);
-        let behind_temp = height_network_temp.saturating_sub(temporal_height);
-        let height_network_root = self.node_peers.highest_rooted_height().await.unwrap_or(0);
-        let behind_root_network = height_network_root.saturating_sub(rooted_height);
-        let height_network_bft = self.node_peers.highest_bft_height().await.unwrap_or(0);
-        let height_network_bft = if height_network_bft == 0 { height_network_root } else { height_network_bft };
-        let behind_bft = height_network_bft.saturating_sub(temporal_height);
+        let behind_temporal = temporal_height.saturating_sub(peers_temporal);
+        let behind_rooted = rooted_height.saturating_sub(peers_rooted);
+        let behind_bft = temporal_height.saturating_sub(peers_bft);
 
-        // Calculate behind_root as temporal_height - rooted_height (local chain gap)
-        let behind_root = temporal_height.saturating_sub(rooted_height);
+        // TODO: redo syncing policy
 
         // Handle large local rooted gap first
-        if behind_root > 1000 {
-            info!("Behind Root: Syncing {} entries", behind_root);
-            let heights: Vec<u32> = (rooted_height + 1..=temporal_height).take(1000).collect();
+        if behind_rooted > 1000 {
+            info!("Behind Root: Syncing {} entries", behind_rooted);
+            let heights: Vec<u32> = (rooted_height + 1..=peers_rooted).take(1000).collect();
             if let Some(&last_height) = heights.last() {
                 // Use empty validators array to get any peer
                 if let Ok((_, temporal_peers)) = self.node_peers.peers_w_min_height(last_height, &[]).await {
@@ -330,7 +317,7 @@ impl Context {
         // Handle different synchronization scenarios
         if behind_bft > 0 {
             info!("Behind BFT: Syncing {} entries", behind_bft);
-            let heights: Vec<u32> = (temporal_height + 1..=height_network_bft).take(1000).collect();
+            let heights: Vec<u32> = (temporal_height + 1..=peers_bft).take(1000).collect();
             if let Some(&last_height) = heights.last() {
                 // Use empty validators array to get any peer
                 if let Ok((_, temporal_peers)) = self.node_peers.peers_w_min_height(last_height, &[]).await {
@@ -345,8 +332,8 @@ impl Context {
                     self.fetch_chunks(chunks, temporal_peers).await?;
                 }
             }
-        } else if behind_root_network > 0 {
-            let heights: Vec<u32> = (rooted_height + 1..=height_network_root).take(1000).collect();
+        } else if behind_rooted > 0 {
+            let heights: Vec<u32> = (rooted_height + 1..=peers_rooted).take(1000).collect();
             if let Some(&last_height) = heights.last() {
                 // Use empty validators array to get any peer
                 if let Ok((rooted_peers, _)) = self.node_peers.peers_w_min_height(last_height, &[]).await {
@@ -365,8 +352,8 @@ impl Context {
                     self.fetch_chunks(chunks, rooted_peers).await?;
                 }
             }
-        } else if behind_temp > 0 {
-            let heights: Vec<u32> = (temporal_height..=height_network_temp).take(1000).collect();
+        } else if behind_temporal > 0 {
+            let heights: Vec<u32> = (temporal_height..=peers_temporal).take(1000).collect();
             if let Some(&last_height) = heights.last() {
                 // Get current validators for temporal sync
                 let validators = self.fabric.trainers_for_height(temporal_height + 1).unwrap_or_default();
@@ -386,7 +373,7 @@ impl Context {
                     self.fetch_chunks(chunks, temporal_peers).await?;
                 }
             }
-        } else if behind_temp == 0 {
+        } else if behind_temporal == 0 {
             // Fetch missing attestations for current height from validators
             let validators = self.fabric.trainers_for_height(temporal_height + 1).unwrap_or_default();
             if let Ok((_, temporal_peers)) = self.node_peers.peers_w_min_height(temporal_height, &validators).await {
@@ -470,11 +457,11 @@ impl Context {
                     continue; // skip self
                 }
 
-                let temporal_height = peer.temporal.map(|t| t.header_unpacked.height).unwrap_or(0);
-                let rooted_height = peer.rooted.map(|r| r.header_unpacked.height).unwrap_or(0);
+                let temporal_height = peer.temporal.map(|t| t.height).unwrap_or(0);
+                let rooted_height = peer.rooted.map(|r| r.height).unwrap_or(0);
 
                 let peer_info = PeerInfo {
-                    last_ts: peer.last_seen,
+                    last_ts: peer.last_seen_ms,
                     last_msg: peer.last_msg_type.unwrap_or_else(|| "unknown".to_string()),
                     handshake_status: peer.handshake_status.clone(),
                     version: peer.version.clone(),
@@ -589,7 +576,13 @@ impl Context {
     }
 
     /// Update peer information from ANR data
-    pub async fn update_peer_from_anr(&self, ip: Ipv4Addr, pk: &[u8], version: &Ver, status: Option<HandshakeStatus>) {
+    pub async fn update_peer_from_anr(
+        &self,
+        ip: Ipv4Addr,
+        pk: &[u8; 48],
+        version: &Ver,
+        status: Option<HandshakeStatus>,
+    ) {
         self.node_peers.update_peer_from_anr(ip, pk, version, status).await
     }
 

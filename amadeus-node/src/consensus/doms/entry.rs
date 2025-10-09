@@ -268,7 +268,7 @@ impl Protocol for Entry {
         // compute rooted_tip_height if possible
         let rooted_height = ctx
             .fabric
-            .get_rooted_tip()
+            .get_rooted_hash()
             .ok()
             .flatten()
             .map(TryInto::try_into)

@@ -5,7 +5,8 @@ use crate::node::protocol::{EventTip, PingReply};
 use crate::utils::misc::{Typename, get_unix_millis_now};
 use crate::{Context, Ver};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde_with::serde_as;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -87,10 +88,12 @@ impl crate::utils::misc::Typename for Error {
     }
 }
 
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Peer {
     pub ip: Ipv4Addr,
-    pub pk: Option<Vec<u8>>,
+    #[serde_as(as = "Option<[_; 48]>")]
+    pub pk: Option<[u8; 48]>,
     pub version: Option<Ver>,
     pub latency: Option<u64>,
     pub last_msg: u64,
@@ -99,7 +102,7 @@ pub struct Peer {
     pub shared_secret: Option<Vec<u8>>,
     pub temporal: Option<TipInfo>,
     pub rooted: Option<TipInfo>,
-    pub last_seen: u64,
+    pub last_seen_ms: u64,
     pub last_msg_type: Option<String>,
     pub handshake_status: HandshakeStatus,
 }
@@ -111,14 +114,15 @@ impl Peer {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct TipInfo {
-    pub header_unpacked: HeaderInfo,
+    pub height: u32,
+    pub prev_hash: [u8; 32],
 }
 
 impl From<EntrySummary> for TipInfo {
     fn from(summary: EntrySummary) -> Self {
-        Self { header_unpacked: HeaderInfo { height: summary.header.height, prev_hash: summary.header.prev_hash } }
+        Self { height: summary.header.height, prev_hash: summary.header.prev_hash }
     }
 }
 
@@ -172,10 +176,10 @@ impl NodePeers {
         // Get validators for current height + 1
         let height = fabric.chain_height();
         let validators = fabric.trainers_for_height(height + 1).unwrap_or_default();
-        let validators: Vec<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();
+        let validators_vec: Vec<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();
 
-        let validator_anr_ips = node_registry.by_pks_ip(&validators).await;
-        let validators_map: std::collections::HashSet<Vec<u8>> = validators.into_iter().collect();
+        let validator_anr_ips = node_registry.by_pks_ip(&validators_vec).await;
+        let validators_map: std::collections::HashSet<&[u8; 48]> = validators.iter().collect();
 
         let handshaked_ips = node_registry.get_all_handshaked_ip4().await;
 
@@ -259,7 +263,7 @@ impl NodePeers {
                     shared_secret: None,
                     temporal: None,
                     rooted: None,
-                    last_seen: ts_m,
+                    last_seen_ms: ts_m,
                     last_msg_type: None,
                     handshake_status,
                 })
@@ -305,7 +309,7 @@ impl NodePeers {
                 shared_secret: None,
                 temporal: None,
                 rooted: None,
-                last_seen: ts_m,
+                last_seen_ms: ts_m,
                 last_msg_type: None,
                 handshake_status: HandshakeStatus::None,
             });
@@ -391,20 +395,18 @@ impl NodePeers {
     ) -> Result<Vec<Peer>, Error> {
         let height = height.unwrap_or_else(|| fabric.chain_height());
         let pks = fabric.trainers_for_height(height + 1).unwrap_or_default();
-        let pks: Vec<Vec<u8>> = pks.iter().map(|pk| pk.to_vec()).collect();
+        let pks_set: std::collections::HashSet<&[u8; 48]> = pks.iter().collect();
 
         let mut trainers = Vec::new();
-        for pk in pks {
-            self.peers
-                .scan(|_, peer| {
-                    if let Some(ref peer_pk) = peer.pk {
-                        if *peer_pk == pk {
-                            trainers.push(peer.clone());
-                        }
+        self.peers
+            .scan(|_, peer| {
+                if let Some(ref peer_pk) = peer.pk {
+                    if pks_set.contains(peer_pk) {
+                        trainers.push(peer.clone());
                     }
-                })
-                .await;
-        }
+                }
+            })
+            .await;
 
         Ok(trainers)
     }
@@ -415,8 +417,8 @@ impl NodePeers {
         let mut summary = Vec::new();
 
         for peer in online_peers {
-            let temporal_height = peer.temporal.as_ref().map(|t| t.header_unpacked.height);
-            let rooted_height = peer.rooted.as_ref().map(|r| r.header_unpacked.height);
+            let temporal_height = peer.temporal.as_ref().map(|t| t.height);
+            let rooted_height = peer.rooted.as_ref().map(|r| r.height);
 
             summary.push((peer.ip, peer.latency, temporal_height, rooted_height));
         }
@@ -452,13 +454,13 @@ impl NodePeers {
 
     /// Get peers by multiple public keys
     pub async fn by_pks(&self, pks: &[Vec<u8>]) -> Result<Vec<Peer>, Error> {
-        let pks_set: std::collections::HashSet<_> = pks.iter().collect();
         let mut peers = Vec::new();
 
         self.peers
             .scan(|_, peer| {
                 if let Some(ref peer_pk) = peer.pk {
-                    if pks_set.contains(peer_pk) {
+                    // Compare peer_pk (which is [u8; 48]) with pks (which are Vec<u8>)
+                    if pks.iter().any(|pk| pk.as_slice() == peer_pk.as_slice()) {
                         peers.push(peer.clone());
                     }
                 }
@@ -471,9 +473,7 @@ impl NodePeers {
     /// Get peers for a specific height (trainers)
     pub async fn for_height(&self, fabric: &crate::consensus::fabric::Fabric, height: u32) -> Result<Vec<Peer>, Error> {
         let trainers = fabric.trainers_for_height(height).unwrap_or_default();
-        let trainers: Vec<Vec<u8>> = trainers.iter().map(|pk| pk.to_vec()).collect();
-
-        let trainers_set: std::collections::HashSet<_> = trainers.iter().collect();
+        let trainers_set: std::collections::HashSet<&[u8; 48]> = trainers.iter().collect();
         let mut peers = Vec::new();
 
         self.peers
@@ -631,7 +631,7 @@ impl NodePeers {
         let updated = self
             .peers
             .update(&ip, |_key, peer| {
-                peer.last_seen = current_time;
+                peer.last_seen_ms = current_time;
                 peer.last_msg = current_time;
                 peer.last_msg_type = Some(tip.typename().to_string());
                 peer.temporal = Some(temporal.clone());
@@ -647,7 +647,7 @@ impl NodePeers {
                 version: None,
                 latency: None,
                 last_msg: current_time,
-                last_seen: current_time,
+                last_seen_ms: current_time,
                 last_ping: None,
                 last_pong: None,
                 shared_secret: None,
@@ -669,7 +669,7 @@ impl NodePeers {
             .update(&ip, |_key, peer| {
                 peer.latency = Some(latency);
                 peer.last_pong = Some(current_time);
-                peer.last_seen = current_time;
+                peer.last_seen_ms = current_time;
                 peer.last_msg = current_time;
                 peer.last_msg_type = Some("pong".to_string());
             })
@@ -689,7 +689,7 @@ impl NodePeers {
                 shared_secret: None,
                 temporal: None,
                 rooted: None,
-                last_seen: current_time,
+                last_seen_ms: current_time,
                 last_msg_type: Some("pong".to_string()),
                 handshake_status: HandshakeStatus::None,
             };
@@ -705,7 +705,7 @@ impl NodePeers {
         let updated = self
             .peers
             .update(&ip, |_key, peer| {
-                peer.last_seen = current_time;
+                peer.last_seen_ms = current_time;
                 peer.last_msg = current_time;
                 peer.last_msg_type = Some(last_msg_type.to_string());
             })
@@ -725,7 +725,7 @@ impl NodePeers {
                 shared_secret: None,
                 temporal: None,
                 rooted: None,
-                last_seen: current_time,
+                last_seen_ms: current_time,
                 last_msg_type: Some(last_msg_type.to_string()),
                 handshake_status: HandshakeStatus::None,
             };
@@ -744,14 +744,21 @@ impl NodePeers {
     }
 
     /// Update peer with version and public key information from ANR
-    pub async fn update_peer_from_anr(&self, ip: Ipv4Addr, pk: &[u8], version: &Ver, status: Option<HandshakeStatus>) {
+    pub async fn update_peer_from_anr(
+        &self,
+        ip: Ipv4Addr,
+        pk: &[u8; 48],
+        version: &Ver,
+        status: Option<HandshakeStatus>,
+    ) {
         let current_time = get_unix_millis_now();
+
         let updated = self
             .peers
             .update(&ip, |_key, peer| {
-                peer.pk = Some(pk.to_vec());
+                peer.pk = Some(*pk);
                 peer.version = Some(*version);
-                peer.last_seen = current_time;
+                peer.last_seen_ms = current_time;
                 if let Some(status) = &status {
                     peer.handshake_status = status.clone();
                 }
@@ -763,7 +770,7 @@ impl NodePeers {
         if !updated {
             let peer = Peer {
                 ip,
-                pk: Some(pk.to_vec()),
+                pk: Some(*pk),
                 version: Some(*version),
                 latency: None,
                 last_msg: current_time,
@@ -772,7 +779,7 @@ impl NodePeers {
                 shared_secret: None,
                 temporal: None,
                 rooted: None,
-                last_seen: current_time,
+                last_seen_ms: current_time,
                 last_msg_type: None,
                 handshake_status: status.unwrap_or(HandshakeStatus::None),
             };
@@ -780,31 +787,65 @@ impl NodePeers {
         }
     }
 
-    /// Get highest rooted height from network peers
-    /// Returns the maximum rooted height seen across all online peers
-    pub async fn highest_rooted_height(&self) -> Result<u32, Error> {
-        let summary = self.summary_online().await?;
-        let max_rooted_height = summary.iter().filter_map(|(_, _, _, rooted_height)| *rooted_height).max().unwrap_or(0);
-        Ok(max_rooted_height)
-    }
+    /// Returns temporal, rooted and bft heights across peers
+    pub async fn get_heights(&self, trainer_pks: &[[u8; 48]]) -> Result<(u32, u32, u32), Error> {
+        let mut online_trainers = Vec::new();
+        let mut online_nontrainers = Vec::new();
 
-    /// Get highest temporal height from network peers
-    /// Returns the maximum temporal height seen across all online peers
-    pub async fn highest_temporal_height(&self) -> Result<u32, Error> {
-        let summary = self.summary_online().await?;
-        let max_temporal_height =
-            summary.iter().filter_map(|(_, _, temporal_height, _)| *temporal_height).max().unwrap_or(0);
-        Ok(max_temporal_height)
-    }
+        let now = get_unix_millis_now();
+        self.peers
+            .scan(|_, peer| {
+                if let Some(pk) = peer.pk
+                    && peer.last_seen_ms > now - 30_000
+                {
+                    if trainer_pks.contains(&pk) {
+                        online_trainers.push(peer.clone());
+                    } else {
+                        online_nontrainers.push(peer.clone());
+                    }
+                }
+            })
+            .await;
 
-    /// Get highest BFT height from network peers
-    /// Returns the maximum BFT height (same as rooted height in current implementation)
-    pub async fn highest_bft_height(&self) -> Result<u32, Error> {
-        // Based on Elixir reference, BFT height is typically the same as rooted height
-        // In fabric_sync_attest_gen.ex line 44: height_network_bft = if height_network_bft == 0 do height_network_root else height_network_bft end
-        let summary = self.summary_online().await?;
-        let max_bft_height = summary.iter().filter_map(|(_, _, _, rooted_height)| *rooted_height).max().unwrap_or(0);
-        Ok(max_bft_height)
+        let mut highest_temporal = 0;
+        let mut highest_rooted = 0;
+        for peer in online_nontrainers.iter() {
+            if let Some(temporal_height) = peer.temporal.map(|t| t.height)
+                && let Some(rooted_height) = peer.rooted.map(|t| t.height)
+            {
+                if temporal_height > highest_temporal {
+                    highest_temporal = temporal_height;
+                }
+                if rooted_height > highest_rooted {
+                    highest_rooted = rooted_height;
+                }
+            }
+        }
+
+        let mut trainers_per_height = BTreeMap::new();
+        for peer in online_trainers.iter() {
+            if let Some(temporal_height) = peer.temporal.map(|t| t.height)
+                && let Some(rooted_height) = peer.rooted.map(|t| t.height)
+            {
+                if temporal_height > highest_temporal {
+                    highest_temporal = temporal_height;
+                }
+                if rooted_height > highest_rooted {
+                    highest_rooted = rooted_height;
+                }
+                *trainers_per_height.entry(rooted_height).or_insert(0) += 1;
+            }
+        }
+
+        let mut remaining_to_bft = (online_trainers.len() * 2) / 3;
+        for (height, trainers) in trainers_per_height.into_iter() {
+            remaining_to_bft = remaining_to_bft.saturating_sub(trainers);
+            if remaining_to_bft == 0 {
+                return Ok((highest_temporal, highest_rooted, height));
+            }
+        }
+
+        Ok((highest_temporal, highest_rooted, 0))
     }
 
     /// Get peers with minimum height based on node_anr.ex implementation
@@ -824,7 +865,7 @@ impl NodePeers {
             online_peers
         } else {
             // If validators array has elements, only include validator peers
-            let validators_set: std::collections::HashSet<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();
+            let validators_set: std::collections::HashSet<&[u8; 48]> = validators.iter().collect();
             online_peers
                 .into_iter()
                 .filter(|peer| peer.pk.as_ref().map_or(false, |pk| validators_set.contains(pk)))
@@ -835,9 +876,7 @@ impl NodePeers {
         let rooted_peers: Vec<Ipv4Addr> = filtered_peers
             .iter()
             .filter_map(|peer| {
-                peer.rooted
-                    .as_ref()
-                    .and_then(|rooted| if rooted.header_unpacked.height >= height { Some(peer.ip) } else { None })
+                peer.rooted.as_ref().and_then(|rooted| if rooted.height >= height { Some(peer.ip) } else { None })
             })
             .collect();
 
@@ -845,9 +884,7 @@ impl NodePeers {
         let temporal_peers: Vec<Ipv4Addr> = filtered_peers
             .iter()
             .filter_map(|peer| {
-                peer.temporal
-                    .as_ref()
-                    .and_then(|temporal| if temporal.header_unpacked.height >= height { Some(peer.ip) } else { None })
+                peer.temporal.as_ref().and_then(|temporal| if temporal.height >= height { Some(peer.ip) } else { None })
             })
             .collect();
 
@@ -884,9 +921,14 @@ mod tests {
         let ip = Ipv4Addr::new(127, 0, 0, 1);
 
         let ts_m = get_unix_millis_now();
+        let mut test_pk = [0u8; 48];
+        test_pk[0] = 1;
+        test_pk[1] = 2;
+        test_pk[2] = 3;
+
         let peer = Peer {
             ip,
-            pk: Some(vec![1, 2, 3]),
+            pk: Some(test_pk),
             version: Some(Ver::new(1, 0, 0)),
             latency: Some(100),
             last_msg: ts_m,
@@ -895,7 +937,7 @@ mod tests {
             shared_secret: None,
             temporal: None,
             rooted: None,
-            last_seen: ts_m,
+            last_seen_ms: ts_m,
             last_msg_type: Some("ping".to_string()),
             handshake_status: HandshakeStatus::None,
         };

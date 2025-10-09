@@ -402,8 +402,20 @@ impl Fabric {
         if let Some((k, s, v)) = best { Ok((Some(k), Some(s), Some(v))) } else { Ok((None, None, None)) }
     }
 
-    pub fn set_temporal_height(&self, height: u32) -> Result<(), Error> {
-        Ok(self.db.put(CF_SYSCONF, b"temporal_height", &(height as u64).to_be_bytes())?)
+    /// Sets temporal entry hash and height
+    pub fn set_temporal(&self, entry: &Entry) -> Result<(), Error> {
+        let txn = self.db.begin_transaction()?;
+        txn.put(CF_SYSCONF, b"temporal_tip", &entry.hash)?;
+        txn.put(CF_SYSCONF, b"temporal_height", &(entry.header.height as u64).to_be_bytes())?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    pub fn get_temporal_hash(&self) -> Result<Option<[u8; 32]>, Error> {
+        match self.db.get(CF_SYSCONF, b"temporal_tip")? {
+            Some(rt) => Ok(Some(rt.try_into().map_err(|_| Error::KvCell("temporal_tip"))?)),
+            None => Ok(None),
+        }
     }
 
     pub fn get_temporal_height(&self) -> Result<Option<u32>, Error> {
@@ -415,24 +427,25 @@ impl Fabric {
         }
     }
 
-    pub fn set_rooted_tip(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        Ok(self.db.put(CF_SYSCONF, b"rooted_tip", hash)?)
+    /// Sets rooted entry hash and height
+    pub fn set_rooted(&self, entry: &Entry) -> Result<(), Error> {
+        let txn = self.db.begin_transaction()?;
+        txn.put(CF_SYSCONF, b"rooted_tip", &entry.hash)?;
+        txn.put(CF_SYSCONF, b"rooted_height", &(entry.header.height as u64).to_be_bytes())?;
+        txn.commit()?;
+        Ok(())
     }
 
-    pub fn get_rooted_tip(&self) -> Result<Option<[u8; 32]>, Error> {
+    pub fn get_rooted_hash(&self) -> Result<Option<[u8; 32]>, Error> {
         match self.db.get(CF_SYSCONF, b"rooted_tip")? {
             Some(rt) => Ok(Some(rt.try_into().map_err(|_| Error::KvCell("rooted_tip"))?)),
             None => Ok(None),
         }
     }
 
-    pub fn set_temporal_tip(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        Ok(self.db.put(CF_SYSCONF, b"temporal_tip", hash)?)
-    }
-
-    pub fn get_temporal_tip(&self) -> Result<Option<[u8; 32]>, Error> {
-        match self.db.get(CF_SYSCONF, b"temporal_tip")? {
-            Some(rt) => Ok(Some(rt.try_into().map_err(|_| Error::KvCell("temporal_tip"))?)),
+    pub fn get_rooted_height(&self) -> Result<Option<u32>, Error> {
+        match self.db.get(CF_SYSCONF, b"rooted_height")? {
+            Some(hb) => Ok(Some(u64::from_be_bytes(hb.try_into().map_err(|_| Error::KvCell("rooted_height"))?) as u32)),
             None => Ok(None),
         }
     }
