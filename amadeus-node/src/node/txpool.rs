@@ -193,6 +193,32 @@ impl TxPool {
     pub async fn size(&self) -> usize {
         self.pool.read().await.len()
     }
+
+    /// Delete transactions from pool by their packed representation
+    /// Matches Elixir TXPool.delete_packed - removes transactions that were included in an entry
+    pub async fn delete_packed(&self, txs_packed: &[Vec<u8>]) {
+        if txs_packed.is_empty() {
+            return;
+        }
+
+        let mut pool = self.pool.write().await;
+        let mut removed_count = 0;
+
+        for tx_packed in txs_packed {
+            // try to unpack and validate to get the TxU structure
+            if let Ok(txu) = validate(tx_packed, false) {
+                // construct the key used for storage (nonce || hash)
+                let key = vec![txu.tx.nonce.to_le_bytes().to_vec(), txu.hash.to_vec()].concat();
+                if pool.remove(&key).is_some() {
+                    removed_count += 1;
+                }
+            }
+        }
+
+        if removed_count > 0 {
+            tracing::debug!("removed {} transactions from pool", removed_count);
+        }
+    }
 }
 
 // TODO: Need to implement proper segment_vr_hash and diff_bits accessors

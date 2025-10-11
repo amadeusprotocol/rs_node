@@ -63,7 +63,7 @@ async fn api_metrics(State(ctx): State<Arc<Context>>) -> Json<Value> {
     if let Some(obj) = metrics_value.as_object_mut() {
         obj.insert(
             "block_height".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(ctx.get_block_height())),
+            serde_json::Value::Number(serde_json::Number::from(ctx.get_rooted_height())),
         );
         obj.insert(
             "temporal_height".to_string(),

@@ -21,7 +21,7 @@ use utoipa;
 )]
 pub async fn get_chain_stats(State(ctx): State<Arc<Context>>) -> Json<ChainStatsResponse> {
     let stats = ChainStats {
-        height: ctx.get_block_height(),
+        height: ctx.get_rooted_height(),
         total_transactions: 0,                  // placeholder - would need to query from fabric
         total_accounts: 0,                      // placeholder - would need to query from fabric
         network_hash_rate: "0 H/s".to_string(), // placeholder

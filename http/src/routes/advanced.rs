@@ -10,6 +10,5 @@ pub fn router(ctx: Arc<Context>) -> Router {
 async fn index(State(ctx): State<Arc<Context>>) -> Html<String> {
     let snapshot = ctx.get_metrics_snapshot();
     let peers = ctx.get_peers().await;
-    let entries = ctx.get_entries().await;
-    Html(views::advanced::page(&snapshot, &peers, &entries, &ctx))
+    Html(views::advanced::page(&snapshot, &peers, &ctx))
 }

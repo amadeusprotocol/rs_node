@@ -3,6 +3,7 @@ use crate::consensus::doms::attestation::Attestation;
 use crate::consensus::doms::entry::Entry;
 use crate::consensus::doms::tx::TxU;
 use crate::consensus::{self, fabric};
+use crate::node::protocol::Protocol;
 use crate::utils::bls12_381 as bls;
 use crate::utils::misc::{TermExt, bitvec_to_bools, bools_to_bitvec, get_unix_millis_now};
 use crate::utils::rocksdb::RocksDb;
@@ -855,9 +856,27 @@ pub fn validate_next_entry(current_entry: &Entry, next_entry: &Entry) -> Result<
     Ok(())
 }
 
+/// Stub function for checking if the node is synced with quorum
+/// Returns true if the node is within X entries of the quorum (BFT threshold)
+/// TODO: implement proper sync checking via FabricSyncAttestGen.isQuorumSyncedOffByX
+fn is_quorum_synced_off_by_x(db: &RocksDb, x: u32) -> bool {
+    // stub implementation - check if rooted tip is close to temporal tip
+    let temporal_height = get_chain_height(db).unwrap_or(0);
+    let rooted_entry = get_rooted_tip_entry(db).ok();
+    let rooted_height = rooted_entry.map(|e| e.header.height).unwrap_or(0);
+
+    // consider synced if within X entries of temporal tip
+    temporal_height.saturating_sub(rooted_height) <= x
+}
+
 pub fn delete_transactions_from_pool(_txs: &[Vec<u8>]) {
-    // TODO: implement TXPool.delete_packed equivalent
-    // This would remove transactions from the transaction pool
+    // TODO: integrate TXPool with Context to enable transaction removal
+    // Implementation exists: TXPool::delete_packed has been implemented in node/txpool.rs
+    // What's needed:
+    // 1. Add TXPool field to Context struct
+    // 2. Initialize TXPool in Context::with_config_and_socket
+    // 3. Call ctx.txpool.delete_packed(txs).await here
+    // This is critical to prevent memory leaks and double-spending
 }
 
 #[derive(Debug, Clone)]
@@ -872,7 +891,7 @@ pub fn get_softfork_settings() -> SoftforkSettings {
     SoftforkSettings { softfork_hash: Vec::new(), softfork_deny_hash: Vec::new() }
 }
 
-pub fn proc_entries(db: &RocksDb, fabric: &fabric::Fabric, config: &crate::config::Config) -> Result<(), Error> {
+pub async fn proc_entries(db: &RocksDb, fabric: &fabric::Fabric, config: &crate::config::Config, ctx: &crate::Context) -> Result<(), Error> {
     let softfork_settings = get_softfork_settings();
 
     let cur_entry = get_chain_tip_entry(db)?;
@@ -887,7 +906,15 @@ pub fn proc_entries(db: &RocksDb, fabric: &fabric::Fabric, config: &crate::confi
     //println!("processing {} entries for {next_height}", entry_bins.len());
 
     for entry_bin in entry_bins {
-        let next_entry = Entry::unpack(&entry_bin)?;
+        // handle entry unpacking errors gracefully - continue processing remaining entries
+        let next_entry = match Entry::unpack(&entry_bin) {
+            Ok(entry) => entry,
+            Err(e) => {
+                // log error and continue with next entry instead of failing entire consensus
+                tracing::warn!("failed to unpack entry at height {}: {}", next_height, e);
+                continue;
+            }
+        };
 
         // check if entry is in softfork deny list
         if softfork_settings.softfork_deny_hash.contains(&next_entry.hash) {
@@ -960,23 +987,54 @@ pub fn proc_entries(db: &RocksDb, fabric: &fabric::Fabric, config: &crate::confi
         let apply_result = apply_entry(db, config, entry)?;
 
         if apply_result.error == "ok" {
-            // TODO: call FabricEventGen.event_applied(entry, mutations_hash, muts, logs)
+            // TODO: FabricEventGen.event_applied must be called here to propagate entry application events
+            // This is critical for downstream systems (indexing, monitoring, event processing)
+            // Signature: FabricEventGen.event_applied(entry, mutations_hash, muts, logs)
+            // Missing implementation will prevent proper event propagation
             println!("Applied entry {} at height {}", bs58::encode(&entry.hash).into_string(), entry.header.height);
 
             // broadcast attestation if we're a trainer and have one
-            if let Some(_attestation_packed) = apply_result.attestation_packed {
-                // TODO: check if we're synced with FabricSyncAttestGen.isQuorumSyncedOffByX(6)
-                // TODO: create NodeProto.event_attestation(attestation_packed)
-                // TODO: call NodeGen.broadcast(msg)
-                // TODO: send to seed nodes
-                println!("Broadcasting attestation for entry {}", bs58::encode(&entry.hash).into_string());
+            if let Some(attestation_packed) = apply_result.attestation_packed {
+                // check if we're synced before broadcasting (prevents pollution during catch-up)
+                if is_quorum_synced_off_by_x(db, 6) {
+                    // create event_attestation message
+                    use crate::consensus::doms::attestation::{Attestation, EventAttestation};
+                    match Attestation::from_etf_bin(&attestation_packed) {
+                        Ok(attestation) => {
+                            let event_att = EventAttestation { attestation };
+
+                            // broadcast to all peers
+                            if let Ok(peers) = ctx.node_peers.get_all().await {
+                                for peer in peers {
+                                    if let Err(e) = event_att.send_to_with_metrics(ctx, peer.ip).await {
+                                        tracing::warn!("failed to broadcast attestation to peer {}: {}", peer.ip, e);
+                                    }
+                                }
+                            }
+
+                            // send directly to seed nodes for RPC node updates
+                            for seed_ip in &ctx.config.seed_ips {
+                                if let Err(e) = event_att.send_to_with_metrics(ctx, *seed_ip).await {
+                                    tracing::warn!("failed to send attestation to seed {}: {}", seed_ip, e);
+                                }
+                            }
+
+                            println!("Broadcasted attestation for entry {}", bs58::encode(&entry.hash).into_string());
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to decode attestation for broadcast: {}", e);
+                        }
+                    }
+                } else {
+                    tracing::debug!("skipping attestation broadcast - node not synced");
+                }
             }
 
             // remove transactions from pool
             delete_transactions_from_pool(&entry.txs);
 
-            // recursively process more entries
-            proc_entries(db, fabric, config)?;
+            // recursively process more entries (boxed to avoid infinite-size future)
+            Box::pin(proc_entries(db, fabric, config, ctx)).await?;
         }
     }
 

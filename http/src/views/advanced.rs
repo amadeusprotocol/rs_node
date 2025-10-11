@@ -41,7 +41,6 @@ fn generate_protocol_items(protocols: &HashMap<String, u64>) -> String {
 pub fn page(
     snapshot: &MetricsSnapshot,
     peers: &HashMap<String, PeerInfo>,
-    _entries: &Vec<(u64, u64, u64)>,
     ctx: &Context,
 ) -> String {
     // Calculate handshaked vs pending peer counts
@@ -63,7 +62,7 @@ pub fn page(
     let version = ctx.get_config().get_ver();
     let pubkey_bytes = ctx.get_config().get_pk();
     let pubkey = bs58::encode(pubkey_bytes).into_string();
-    let block_height = ctx.get_block_height();
+    let block_height = ctx.get_rooted_height();
     let temporal_height = ctx.get_temporal_height();
 
     // Get uptime in seconds from metrics snapshot

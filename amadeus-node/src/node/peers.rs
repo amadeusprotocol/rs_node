@@ -12,7 +12,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::task::spawn_blocking;
-use tracing::warn;
+use tracing::{info, warn};
 
 /// Represents the different stages of the handshake process
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -111,6 +111,13 @@ impl Peer {
     /// Check if the handshake is completed (either we sent what or received what)
     pub fn is_handshaked(&self) -> bool {
         self.handshake_status == HandshakeStatus::Completed
+    }
+
+    /// Check if a peer is online
+    pub fn is_online(&self) -> bool {
+        // Peer is online if last ping was within 6 seconds (6000 ms)
+        // Use saturating_sub to prevent overflow if last_ping > ts_m
+        get_unix_millis_now().saturating_sub(self.last_ping.unwrap_or_default()) <= 6_000
     }
 }
 
@@ -325,7 +332,7 @@ impl NodePeers {
 
     /// Get random online peers
     pub async fn random(&self, no: usize) -> Result<Vec<Peer>, Error> {
-        let online_peers = self.online().await?;
+        let online_peers = self.get_online().await?;
         if online_peers.is_empty() {
             return Ok(vec![]);
         }
@@ -340,7 +347,7 @@ impl NodePeers {
     }
 
     /// Get all peers
-    pub async fn all(&self) -> Result<Vec<Peer>, Error> {
+    pub async fn get_all(&self) -> Result<Vec<Peer>, Error> {
         let mut peers = Vec::new();
         self.peers
             .scan(|_, peer| {
@@ -351,12 +358,12 @@ impl NodePeers {
     }
 
     /// Get all online peers
-    pub async fn online(&self) -> Result<Vec<Peer>, Error> {
+    pub async fn get_online(&self) -> Result<Vec<Peer>, Error> {
         let mut online_peers = Vec::new();
 
         self.peers
             .scan(|_, peer| {
-                if Self::is_online(peer, None) {
+                if peer.is_online() {
                     online_peers.push(peer.clone());
                 }
             })
@@ -365,55 +372,9 @@ impl NodePeers {
         Ok(online_peers)
     }
 
-    /// Check if a peer is online
-    fn is_online(peer: &Peer, trainer_pk: Option<&[u8]>) -> bool {
-        let ts_m = get_unix_millis_now();
-
-        match (&peer.pk, peer.last_ping) {
-            (None, _) => false,
-            (Some(_), None) => false,
-            (Some(pk), Some(last_ping)) => {
-                // Check if this is our own trainer PK (always online)
-                if let Some(my_trainer_pk) = trainer_pk {
-                    if pk == my_trainer_pk {
-                        return true;
-                    }
-                }
-
-                // Peer is online if last ping was within 6 seconds (6000 ms)
-                // Use saturating_sub to prevent overflow if last_ping > ts_m
-                ts_m.saturating_sub(last_ping) <= 6_000
-            }
-        }
-    }
-
-    /// Get all trainer peers for given height
-    pub async fn all_trainers(
-        &self,
-        fabric: &crate::consensus::fabric::Fabric,
-        height: Option<u32>,
-    ) -> Result<Vec<Peer>, Error> {
-        let height = height.unwrap_or_else(|| fabric.chain_height());
-        let pks = fabric.trainers_for_height(height + 1).unwrap_or_default();
-        let pks_set: std::collections::HashSet<&[u8; 48]> = pks.iter().collect();
-
-        let mut trainers = Vec::new();
-        self.peers
-            .scan(|_, peer| {
-                if let Some(ref peer_pk) = peer.pk {
-                    if pks_set.contains(peer_pk) {
-                        trainers.push(peer.clone());
-                    }
-                }
-            })
-            .await;
-
-        Ok(trainers)
-    }
-
     /// Get summary of online peers
-    pub async fn summary_online(&self) -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u32>, Option<u32>)>, Error> {
-        let online_peers = self.online().await?;
+    pub async fn get_online_ip_l_th_rh(&self) -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u32>, Option<u32>)>, Error> {
+        let online_peers = self.get_online().await?;
         let mut summary = Vec::new();
 
         for peer in online_peers {
@@ -512,7 +473,7 @@ impl NodePeers {
                 let trainer_peers = self.for_height(fabric, height + 1).await?;
                 let trainer_ips: std::collections::HashSet<_> = trainer_peers.iter().map(|p| p.ip).collect();
 
-                let all_peers = self.all().await?;
+                let all_peers = self.get_all().await?;
                 let not_trainer_ips: Vec<_> =
                     all_peers.iter().map(|p| p.ip).filter(|ip| !trainer_ips.contains(ip)).collect();
 
@@ -534,85 +495,53 @@ impl NodePeers {
         }
     }
 
-    /// Get highest heights from online peers with filtering
-    pub async fn highest_height(&self, filter: HeightFilter) -> Result<Vec<u32>, Error> {
-        let summary = self.summary_online().await?;
-
-        let min_temporal = filter.min_temporal.unwrap_or(0);
-        let min_rooted = filter.min_rooted.unwrap_or(0);
-
-        let mut filtered: Vec<_> = summary
-            .into_iter()
-            .filter(|(_, _, temp, rooted)| temp.unwrap_or(0) >= min_temporal && rooted.unwrap_or(0) >= min_rooted)
-            .collect();
-
-        // Sort by temporal or rooted height
-        let sort_by_temporal = filter.sort.as_deref() != Some("rooted");
-
-        filtered.sort_by(|(_, _, temp1, rooted1), (_, _, temp2, rooted2)| {
-            let height1 = if sort_by_temporal { temp1.unwrap_or(0) } else { rooted1.unwrap_or(0) };
-            let height2 = if sort_by_temporal { temp2.unwrap_or(0) } else { rooted2.unwrap_or(0) };
-            height2.cmp(&height1) // descending order
-        });
-
-        // Apply latency filtering if specified
-        filtered = Self::apply_latency_filters(filtered, filter)?;
-
-        let heights = filtered
-            .into_iter()
-            .map(|(_, _, temp, rooted)| if sort_by_temporal { temp.unwrap_or(0) } else { rooted.unwrap_or(0) })
-            .collect();
-
-        Ok(heights)
-    }
-
-    fn apply_latency_filters(
-        mut filtered: Vec<(Ipv4Addr, Option<u64>, Option<u32>, Option<u32>)>,
-        filter: HeightFilter,
-    ) -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u32>, Option<u32>)>, Error> {
-        let take = filter.take.unwrap_or(3);
-
-        // Apply latency2 filter first
-        if let Some(latency2) = filter.latency2 {
-            let new_filtered: Vec<_> =
-                filtered.iter().filter(|(_, lat, _, _)| lat.unwrap_or(u64::MAX) <= latency2).cloned().collect();
-
-            if new_filtered.len() >= take {
-                let mut new_filter = filter;
-                new_filter.latency2 = None;
-                return Self::apply_latency_filters(new_filtered, new_filter);
-            }
-            // Continue with current filtered list
-        }
-
-        // Apply latency1 filter
-        if let Some(latency1) = filter.latency1 {
-            let new_filtered: Vec<_> =
-                filtered.iter().filter(|(_, lat, _, _)| lat.unwrap_or(u64::MAX) <= latency1).cloned().collect();
-
-            if new_filtered.len() >= take {
-                let mut new_filter = filter;
-                new_filter.latency1 = None;
-                return Self::apply_latency_filters(new_filtered, new_filter);
-            }
-            // Continue with current filtered list
-        }
-
-        // Apply main latency filter
-        if let Some(latency) = filter.latency {
-            let new_filtered: Vec<_> =
-                filtered.iter().filter(|(_, lat, _, _)| lat.unwrap_or(u64::MAX) <= latency).cloned().collect();
-
-            if new_filtered.len() >= take {
-                filtered = new_filtered;
-            }
-            // Continue with filtered list (either new or original)
-        }
-
-        // Truncate to requested size
-        filtered.truncate(take);
-        Ok(filtered)
-    }
+    // fn apply_latency_filters(
+    //     mut filtered: Vec<(Ipv4Addr, Option<u64>, Option<u32>, Option<u32>)>,
+    //     filter: HeightFilter,
+    // ) -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u32>, Option<u32>)>, Error> {
+    //     let take = filter.take.unwrap_or(3);
+    //
+    //     // Apply latency2 filter first
+    //     if let Some(latency2) = filter.latency2 {
+    //         let new_filtered: Vec<_> =
+    //             filtered.iter().filter(|(_, lat, _, _)| lat.unwrap_or(u64::MAX) <= latency2).cloned().collect();
+    //
+    //         if new_filtered.len() >= take {
+    //             let mut new_filter = filter;
+    //             new_filter.latency2 = None;
+    //             return Self::apply_latency_filters(new_filtered, new_filter);
+    //         }
+    //         // Continue with current filtered list
+    //     }
+    //
+    //     // Apply latency1 filter
+    //     if let Some(latency1) = filter.latency1 {
+    //         let new_filtered: Vec<_> =
+    //             filtered.iter().filter(|(_, lat, _, _)| lat.unwrap_or(u64::MAX) <= latency1).cloned().collect();
+    //
+    //         if new_filtered.len() >= take {
+    //             let mut new_filter = filter;
+    //             new_filter.latency1 = None;
+    //             return Self::apply_latency_filters(new_filtered, new_filter);
+    //         }
+    //         // Continue with current filtered list
+    //     }
+    //
+    //     // Apply main latency filter
+    //     if let Some(latency) = filter.latency {
+    //         let new_filtered: Vec<_> =
+    //             filtered.iter().filter(|(_, lat, _, _)| lat.unwrap_or(u64::MAX) <= latency).cloned().collect();
+    //
+    //         if new_filtered.len() >= take {
+    //             filtered = new_filtered;
+    //         }
+    //         // Continue with filtered list (either new or original)
+    //     }
+    //
+    //     // Truncate to requested size
+    //     filtered.truncate(take);
+    //     Ok(filtered)
+    // }
 
     pub async fn update_peer_ping_timestamp(&self, ip: Ipv4Addr, ts_m: u64) {
         // Update using ConcurrentMap's update method
@@ -841,6 +770,14 @@ impl NodePeers {
         for (height, trainers) in trainers_per_height.into_iter() {
             remaining_to_bft = remaining_to_bft.saturating_sub(trainers);
             if remaining_to_bft == 0 {
+                info!(
+                    "Temporal: {} Rooted: {} BFT: {} (2/3 from {} online trainers of {} total)",
+                    highest_temporal,
+                    highest_rooted,
+                    height,
+                    online_trainers.len(),
+                    trainer_pks.len()
+                );
                 return Ok((highest_temporal, highest_rooted, height));
             }
         }
@@ -848,47 +785,48 @@ impl NodePeers {
         Ok((highest_temporal, highest_rooted, 0))
     }
 
-    /// Get peers with minimum height based on node_anr.ex implementation
-    /// Returns (rooted_peers, temporal_peers) - peers that have >= height for rooted/temporal chains
-    /// If validators array is empty, returns any peer. If not empty, only returns validator peers.
-    pub async fn peers_w_min_height(
+    pub async fn get_trainer_ips_above_rooted(
         &self,
         height: u32,
-        validators: &[[u8; 48]],
-    ) -> Result<(Vec<Ipv4Addr>, Vec<Ipv4Addr>), Error> {
-        // Get handshaked and online peers similar to Elixir handshaked_and_online()
-        let online_peers = self.online().await?;
-
-        // Filter peers based on validators array
-        let filtered_peers: Vec<_> = if validators.is_empty() {
-            // If validators array is empty, include any peer
-            online_peers
-        } else {
-            // If validators array has elements, only include validator peers
-            let validators_set: std::collections::HashSet<&[u8; 48]> = validators.iter().collect();
-            online_peers
-                .into_iter()
-                .filter(|peer| peer.pk.as_ref().map_or(false, |pk| validators_set.contains(pk)))
-                .collect()
-        };
-
-        // Extract peers with sufficient rooted height
-        let rooted_peers: Vec<Ipv4Addr> = filtered_peers
-            .iter()
+        trainer_pks: &[[u8; 48]],
+    ) -> Result<Vec<Ipv4Addr>, Error> {
+        let online_trainers_above_temporal: Vec<Ipv4Addr> = self
+            .get_online_trainers(trainer_pks)
+            .await?
+            .into_iter()
             .filter_map(|peer| {
                 peer.rooted.as_ref().and_then(|rooted| if rooted.height >= height { Some(peer.ip) } else { None })
             })
             .collect();
 
-        // Extract peers with sufficient temporal height
-        let temporal_peers: Vec<Ipv4Addr> = filtered_peers
-            .iter()
+        Ok(online_trainers_above_temporal)
+    }
+
+    pub async fn get_trainer_ips_above_temporal(
+        &self,
+        height: u32,
+        trainer_pks: &[[u8; 48]],
+    ) -> Result<Vec<Ipv4Addr>, Error> {
+        let online_trainers_above_temporal: Vec<Ipv4Addr> = self
+            .get_online_trainers(trainer_pks)
+            .await?
+            .into_iter()
             .filter_map(|peer| {
                 peer.temporal.as_ref().and_then(|temporal| if temporal.height >= height { Some(peer.ip) } else { None })
             })
             .collect();
 
-        Ok((rooted_peers, temporal_peers))
+        Ok(online_trainers_above_temporal)
+    }
+
+    pub async fn get_online_trainers(&self, trainer_pks: &[[u8; 48]]) -> Result<Vec<Peer>, Error> {
+        let online_trainers: Vec<Peer> = self
+            .get_online()
+            .await?
+            .into_iter()
+            .filter(|peer| peer.pk.as_ref().map_or(false, |pk| trainer_pks.contains(pk)))
+            .collect();
+        Ok(online_trainers)
     }
 }
 
