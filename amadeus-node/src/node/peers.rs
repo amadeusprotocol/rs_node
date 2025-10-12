@@ -828,6 +828,66 @@ impl NodePeers {
             .collect();
         Ok(online_trainers)
     }
+
+    /// Get peers summary with counts
+    pub async fn get_peers_summary(&self, my_ip: Ipv4Addr, trainer_pks: &[[u8; 48]]) -> Result<PeersSummary, Error> {
+        let all_peers = self.get_all().await?;
+        let mut online = 0;
+        let mut connecting = 0;
+        let mut trainers = 0;
+        let mut peers_map = HashMap::new();
+
+        for peer in all_peers {
+            if peer.ip == my_ip {
+                continue;
+            }
+
+            match peer.handshake_status {
+                HandshakeStatus::Completed => {
+                    online += 1;
+                    if peer.pk.as_ref().map_or(false, |pk| trainer_pks.contains(pk)) {
+                        trainers += 1;
+                    }
+                }
+                HandshakeStatus::Initiated => connecting += 1,
+                _ => {}
+            }
+
+            let peer_info = PeerInfo {
+                last_ts: peer.last_seen_ms,
+                last_msg: peer.last_msg_type.unwrap_or_else(|| "unknown".to_string()),
+                handshake_status: peer.handshake_status.clone(),
+                version: peer.version,
+                height: peer.temporal.map(|t| t.height).unwrap_or(0),
+                temporal_height: peer.temporal.map(|t| t.height).unwrap_or(0),
+                rooted_height: peer.rooted.map(|r| r.height).unwrap_or(0),
+                latency: peer.latency.unwrap_or(0),
+            };
+            peers_map.insert(peer.ip.to_string(), peer_info);
+        }
+
+        Ok(PeersSummary { online, connecting, trainers, peers: peers_map })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerInfo {
+    pub last_ts: u64,
+    pub last_msg: String,
+    pub handshake_status: HandshakeStatus,
+    pub version: Option<Ver>,
+    pub height: u32,
+    pub temporal_height: u32,
+    pub rooted_height: u32,
+    pub latency: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeersSummary {
+    pub online: usize,
+    pub connecting: usize,
+    pub trainers: usize,
+    pub peers: HashMap<String, PeerInfo>,
 }
 
 #[derive(Debug)]

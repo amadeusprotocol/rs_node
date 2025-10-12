@@ -1,4 +1,4 @@
-use amadeus_node::Context;
+use amadeus_node::{Context, SoftforkStatus};
 use axum::{
     Json, Router,
     extract::State,
@@ -44,12 +44,23 @@ pub fn api_router(ctx: Arc<Context>) -> Router {
 }
 
 pub fn v2_router(ctx: Arc<Context>) -> Router {
-    Router::new().route("/peers", get(api_peers)).route("/metrics", get(api_metrics)).with_state(ctx)
+    Router::new()
+        .route("/peers", get(api_peers))
+        .route("/metrics", get(api_metrics))
+        .route("/softfork", get(api_softfork))
+        .with_state(ctx)
 }
 
 async fn api_peers(State(ctx): State<Arc<Context>>) -> Json<Value> {
-    let peers = ctx.get_peers().await;
-    Json(serde_json::to_value(peers).unwrap_or_default())
+    match ctx.get_peers_summary().await {
+        Ok(summary) => Json(serde_json::to_value(summary).unwrap_or_default()),
+        Err(_) => Json(serde_json::json!({
+            "online": 0,
+            "connecting": 0,
+            "trainers": 0,
+            "peers": {}
+        }))
+    }
 }
 
 async fn api_metrics(State(ctx): State<Arc<Context>>) -> Json<Value> {
@@ -95,4 +106,8 @@ async fn api_metrics(State(ctx): State<Arc<Context>>) -> Json<Value> {
     }
 
     Json(metrics_value)
+}
+
+async fn api_softfork(State(ctx): State<Arc<Context>>) -> Json<SoftforkStatus> {
+    Json(ctx.get_softfork_status())
 }

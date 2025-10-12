@@ -70,14 +70,17 @@ pub async fn get_all_anrs(State(ctx): State<Arc<Context>>) -> Json<AnrsResponse>
 )]
 pub async fn get_all_nodes(State(ctx): State<Arc<Context>>) -> Json<serde_json::Value> {
     // get peer information formatted for web display with online status based on handshake
-    let peers = ctx.get_peers().await;
+    let peers_summary = match ctx.get_peers_summary().await {
+        Ok(summary) => summary.peers,
+        Err(_) => std::collections::HashMap::new(),
+    };
     let all_anrs = ctx.get_all_anrs().await;
 
     // create a map from IP to public key via ANRs
     let ip_to_pk: std::collections::HashMap<String, String> =
         all_anrs.iter().map(|anr| (anr.ip4.to_string(), bs58::encode(&anr.pk).into_string())).collect();
 
-    let nodes: std::collections::HashMap<String, NodeInfo> = peers
+    let nodes: std::collections::HashMap<String, NodeInfo> = peers_summary
         .into_iter()
         .map(|(ip, peer_info)| {
             let node_info = NodeInfo {

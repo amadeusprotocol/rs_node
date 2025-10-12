@@ -5,7 +5,7 @@ use utoipa::ToSchema;
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiResponse<T> {
     pub error: String,
-    #[serde(flatten)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<T>,
 }
 

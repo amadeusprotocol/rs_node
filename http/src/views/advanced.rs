@@ -1,5 +1,5 @@
-use amadeus_node::node::peers::HandshakeStatus;
-use amadeus_node::{Context, MetricsSnapshot, PeerInfo};
+use amadeus_node::node::peers::PeersSummary;
+use amadeus_node::{Context, MetricsSnapshot};
 use std::collections::HashMap;
 
 fn format_number(n: u64) -> String {
@@ -38,25 +38,9 @@ fn generate_protocol_items(protocols: &HashMap<String, u64>) -> String {
         .join("\n")
 }
 
-pub fn page(
-    snapshot: &MetricsSnapshot,
-    peers: &HashMap<String, PeerInfo>,
-    ctx: &Context,
-) -> String {
-    // Calculate handshaked vs pending peer counts
-    let mut handshaked_count = 0;
-    let mut pending_count = 0;
-
-    for peer_info in peers.values() {
-        match peer_info.handshake_status {
-            HandshakeStatus::Completed => {
-                handshaked_count += 1;
-            }
-            _ => {
-                pending_count += 1;
-            }
-        }
-    }
+pub fn page(snapshot: &MetricsSnapshot, peers_summary: &Option<PeersSummary>, ctx: &Context) -> String {
+    let (online_count, connecting_count, trainers_count) =
+        peers_summary.as_ref().map(|s| (s.online, s.connecting, s.trainers)).unwrap_or((0, 0, 0));
 
     let uptime = ctx.get_uptime();
     let version = ctx.get_config().get_ver();
@@ -1284,6 +1268,28 @@ pub fn page(
             }}
         }}
 
+        /* Softfork button */
+        .softfork-button {{
+            display: none;
+            background: none;
+            border: none;
+            padding: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-right: 8px;
+        }}
+
+        .softfork-button:hover {{
+            filter: brightness(0.85);
+            transform: scale(1.1);
+        }}
+
+        .softfork-button svg {{
+            width: 20px;
+            height: 20px;
+            display: block;
+        }}
+
         /* Search button for small screens */
         .search-button {{
             display: none;
@@ -1448,6 +1454,11 @@ pub fn page(
             </div>
         </div>
         <div class="header-right">
+            <button class="softfork-button" id="softfork-button" type="button" title="Softfork Active">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24">
+                    <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 4a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-5a1 1 0 0 1-1-1zM3 14h12a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v12"/>
+                </svg>
+            </button>
             <div class="search-container">
                 <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
@@ -1514,10 +1525,10 @@ pub fn page(
                 </div>
             </div>
 
-            <!-- Peer Nodes Card -->
+            <!-- Online Peers Card -->
             <div class="metric-card">
                 <div class="metric-header">
-                    <div class="metric-title">Peer Nodes</div>
+                    <div class="metric-title">Online Peers</div>
                     <button class="info-btn">
                         <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
@@ -1530,30 +1541,27 @@ pub fn page(
                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="peer-icon">
                                 <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 7a4 4 0 1 0 8 0a4 4 0 1 0-8 0M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2m1-17.87a4 4 0 0 1 0 7.75M21 21v-2a4 4 0 0 0-3-3.85"/>
                             </svg>
-                            <div class="peer-label">HANDSHAKED:</div>
+                            <div class="peer-label">TOTAL:</div>
                         </div>
-                        <div class="peer-value" id="handshaked-count">{}</div>
+                        <div class="peer-value" id="online-count">{}</div>
+                    </div>
+                    <div class="peer-row">
+                        <div class="peer-left">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="peer-icon">
+                                <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21v-6m2 0v-1.5m0 9V21m-2-3h3m-1 0h.5a1.5 1.5 0 0 1 0 3H16m3-3h.5a1.5 1.5 0 0 0 0-3H16M8 7a4 4 0 1 0 8 0a4 4 0 0 0-8 0M6 21v-2a4 4 0 0 1 4-4h3"/>
+                            </svg>
+                            <div class="peer-label">TRAINERS:</div>
+                        </div>
+                        <div class="peer-value" id="trainers-count">{}</div>
                     </div>
                     <div class="peer-row">
                         <div class="peer-left">
                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="peer-icon">
                                 <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7a4 4 0 1 0 8 0a4 4 0 0 0-8 0M6 21v-2a4 4 0 0 1 4-4h3.5m5.5 7v.01M19 19a2.003 2.003 0 0 0 .914-3.782a1.98 1.98 0 0 0-2.414.483"/>
                             </svg>
-                            <div class="peer-label">PENDING:</div>
+                            <div class="peer-label">CONNECTING:</div>
                         </div>
-                        <div class="peer-value" id="pending-count">{}</div>
-                    </div>
-                    <div class="peer-row">
-                        <div class="peer-left">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="peer-icon">
-                                <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
-                                    <path d="M3 12a9 9 0 0 0 9 9a9 9 0 0 0 9-9a9 9 0 0 0-9-9"/>
-                                    <path d="M17 12a5 5 0 1 0-5 5"/>
-                                </g>
-                            </svg>
-                            <div class="peer-label">TODO:</div>
-                        </div>
-                        <div class="peer-value">0</div>
+                        <div class="peer-value" id="connecting-count">{}</div>
                     </div>
                     <div class="peer-row">
                         <div class="peer-left">
@@ -1620,10 +1628,10 @@ pub fn page(
                 </div>
             </div>
 
-            <!-- Uptime Card -->
+            <!-- Health Card -->
             <div class="metric-card">
                 <div class="metric-header">
-                    <div class="metric-title">Uptime</div>
+                    <div class="metric-title">Health</div>
                     <button class="info-btn">
                         <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
@@ -1864,10 +1872,10 @@ pub fn page(
 
     <script>
         // Peers table sorting state
-        let peersData = [];
+        window.peersData = [];
         window.currentSortColumn = '';
         window.currentSortDirection = '';
-        
+
         function sortPeersTable(column, userClick = true) {{
             // Only toggle sort direction if user clicked (not on data refresh)
             if (userClick) {{
@@ -1916,7 +1924,7 @@ pub fn page(
             }}
             
             // Sort the data
-            peersData.sort((a, b) => {{
+            window.peersData.sort((a, b) => {{
                 let aVal, bVal;
                 
                 switch(column) {{
@@ -1998,13 +2006,13 @@ pub fn page(
         function renderPeersTable() {{
             const tbody = document.getElementById('peers-table-body');
             if (!tbody) return;
-            
-            if (peersData.length === 0) {{
+
+            if (window.peersData.length === 0) {{
                 tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px; color: #9ca3af; font-style: italic;">No peers connected</td></tr>';
                 return;
             }}
-            
-            const rows = peersData.map(item => {{
+
+            const rows = window.peersData.map(item => {{
                 const address = item.address;
                 const peerInfo = item.peerInfo;
                 
@@ -2131,11 +2139,12 @@ pub fn page(
         async function refreshDashboardData() {{
             if (isRefreshing) return;
             isRefreshing = true;
-            
+
             try {{
-                const [metricsRes, peersRes] = await Promise.all([
+                const [metricsRes, peersRes, softforkRes] = await Promise.all([
                     fetch('/v2/metrics'),
-                    fetch('/v2/peers')
+                    fetch('/v2/peers'),
+                    fetch('/v2/softfork')
                 ]);
 
                 if (metricsRes.ok && peersRes.ok) {{
@@ -2149,6 +2158,28 @@ pub fn page(
                     // API requests failed - show offline state
                     console.warn('API requests failed - showing offline state');
                     updateMetricsDisplay(null, {{}});
+                }}
+
+                // Update softfork button visibility and color
+                if (softforkRes.ok) {{
+                    const softforkStatus = await softforkRes.json();
+                    const softforkButton = document.getElementById('softfork-button');
+                    if (softforkButton) {{
+                        if (softforkStatus === "" || softforkStatus === "healthy") {{
+                            // Healthy state - hide button
+                            softforkButton.style.display = 'none';
+                        }} else if (softforkStatus === "minor") {{
+                            // Minor fork - show yellow
+                            softforkButton.style.display = 'block';
+                            softforkButton.style.color = 'hsl(45 93% 60%)';
+                            softforkButton.title = 'Minor Softfork (gap 2-10)';
+                        }} else if (softforkStatus === "major") {{
+                            // Major fork - show red
+                            softforkButton.style.display = 'block';
+                            softforkButton.style.color = 'hsl(0 84% 60%)';
+                            softforkButton.title = 'Major Softfork (gap > 10)';
+                        }}
+                    }}
                 }}
             }} catch (error) {{
                 console.warn('Failed to refresh dashboard data:', error);
@@ -2198,28 +2229,21 @@ pub fn page(
                 temporalHeightElement.textContent = metrics.temporal_height.toLocaleString();
             }}
             
-            // Update peer node counts (second card)
-            let handshakedCount = 0;
-            let pendingCount = 0;
-            
-            Object.values(peers).forEach(peer => {{
-                if (peer.handshake_status === 'completed') {{
-                    handshakedCount++;
-                }} else {{
-                    pendingCount++;
-                }}
-            }});
-            
-            const handshakedElement = document.getElementById('handshaked-count');
-            const pendingElement = document.getElementById('pending-count');
+            // Update peer node counts from /v2/peers API
+            const onlineElement = document.getElementById('online-count');
+            const trainersElement = document.getElementById('trainers-count');
+            const connectingElement = document.getElementById('connecting-count');
             const tasksElement = document.getElementById('tasks-count');
             const errorsElement = document.getElementById('errors-count');
-            
-            if (handshakedElement) {{
-                handshakedElement.textContent = handshakedCount.toLocaleString();
+
+            if (onlineElement && peers.online !== undefined) {{
+                onlineElement.textContent = peers.online.toLocaleString();
             }}
-            if (pendingElement) {{
-                pendingElement.textContent = pendingCount.toLocaleString();
+            if (trainersElement && peers.trainers !== undefined) {{
+                trainersElement.textContent = peers.trainers.toLocaleString();
+            }}
+            if (connectingElement && peers.connecting !== undefined) {{
+                connectingElement.textContent = peers.connecting.toLocaleString();
             }}
             if (tasksElement && metrics.tasks !== undefined) {{
                 tasksElement.textContent = metrics.tasks.toLocaleString();
@@ -2386,12 +2410,14 @@ pub fn page(
             container.innerHTML = items || '<div class="empty-state">No data available</div>';
         }}
         
-        function updatePeersTable(peers) {{
+        function updatePeersTable(peersData) {{
+            // Extract peers object from API response (new format has online, connecting, trainers, peers fields)
+            const peers = peersData.peers || peersData;
             const peerEntries = Object.entries(peers);
-            
+
             // Update global peers data for sorting
-            peersData = peerEntries.map(([address, peerInfo]) => ({{ address, peerInfo }}));
-            
+            window.peersData = peerEntries.map(([address, peerInfo]) => ({{ address, peerInfo }}));
+
             // Apply current sort if any
             if (window.currentSortColumn && window.currentSortDirection) {{
                 // Re-sort with current settings (userClick = false to prevent toggling)
@@ -2485,8 +2511,9 @@ pub fn page(
         version,
         block_height,
         temporal_height,
-        handshaked_count,
-        pending_count,
+        online_count,
+        trainers_count,
+        connecting_count,
         network_in_bytes_str,
         network_in_pps_str,
         network_out_bytes_str,

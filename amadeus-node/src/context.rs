@@ -1,5 +1,5 @@
 use crate::node::anr::{Anr, NodeAnrs};
-use crate::node::peers::HandshakeStatus;
+use crate::node::peers::{HandshakeStatus, PeersSummary};
 use crate::node::protocol::*;
 use crate::node::protocol::{Catchup, CatchupHeight, Instruction, NewPhoneWhoDis, NewPhoneWhoDisReply};
 use crate::node::{anr, peers};
@@ -9,10 +9,22 @@ use crate::utils::misc::{format_duration, get_unix_millis_now};
 use crate::{SystemStats, Ver, config, consensus, get_system_stats, metrics, node, utils};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tracing::{debug, info, instrument, warn};
+
+/// Softfork status based on temporal-rooted height gap
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SoftforkStatus {
+    /// No fork, healthy state (gap 0 or 1)
+    #[serde(rename = "")]
+    Healthy,
+    /// Minor fork (gap 2-10, may auto-resolve)
+    Minor,
+    /// Major fork (gap > 10, manual intervention needed)
+    Major,
+}
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
 pub enum Error {
@@ -49,18 +61,6 @@ pub struct Context {
     pub(crate) node_anrs: NodeAnrs,
     pub(crate) fabric: crate::consensus::fabric::Fabric,
     pub(crate) socket: Arc<dyn UdpSocketExt>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PeerInfo {
-    pub last_ts: u64,
-    pub last_msg: String,
-    pub handshake_status: HandshakeStatus,
-    pub version: Option<Ver>,
-    pub height: u32, // Keep for backward compatibility
-    pub temporal_height: u32,
-    pub rooted_height: u32,
-    pub latency: u64,
 }
 
 impl Context {
@@ -434,34 +434,23 @@ impl Context {
         false
     }
 
-    pub async fn get_peers(&self) -> HashMap<String, PeerInfo> {
+    pub async fn get_peers_summary(&self) -> Result<PeersSummary, Error> {
         let my_ip = self.config.get_public_ipv4();
-        let mut result = HashMap::new();
-        if let Ok(all_peers) = self.node_peers.get_all().await {
-            for peer in all_peers {
-                if peer.ip == my_ip {
-                    continue; // skip self
-                }
+        let temporal_height = self.get_temporal_height();
+        let trainer_pks = self.fabric.trainers_for_height(temporal_height as u32 + 1).unwrap_or_default();
+        self.node_peers.get_peers_summary(my_ip, &trainer_pks).await.map_err(Into::into)
+    }
 
-                let temporal_height = peer.temporal.map(|t| t.height).unwrap_or(0);
-                let rooted_height = peer.rooted.map(|r| r.height).unwrap_or(0);
+    pub fn get_softfork_status(&self) -> SoftforkStatus {
+        let temporal_height = self.get_temporal_height();
+        let rooted_height = self.get_rooted_height();
+        let gap = temporal_height.saturating_sub(rooted_height);
 
-                let peer_info = PeerInfo {
-                    last_ts: peer.last_seen_ms,
-                    last_msg: peer.last_msg_type.unwrap_or_else(|| "unknown".to_string()),
-                    handshake_status: peer.handshake_status.clone(),
-                    version: peer.version.clone(),
-                    height: temporal_height, // Keep for backward compatibility
-                    temporal_height,
-                    rooted_height,
-                    latency: peer.latency.unwrap_or(0),
-                };
-
-                result.insert(peer.ip.to_string(), peer_info);
-            }
+        match gap {
+            0 | 1 => SoftforkStatus::Healthy,
+            2..=10 => SoftforkStatus::Minor,
+            _ => SoftforkStatus::Major,
         }
-
-        result
     }
 
     pub fn get_config(&self) -> &config::Config {
