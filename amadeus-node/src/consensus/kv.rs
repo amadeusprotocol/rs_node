@@ -21,6 +21,9 @@ pub struct Mutation {
 struct KvCtx {
     mutations: VecDeque<Mutation>,
     mutations_reverse: VecDeque<Mutation>,
+    mutations_gas: VecDeque<Mutation>,
+    mutations_gas_reverse: VecDeque<Mutation>,
+    use_gas_context: bool,
 }
 
 use std::cell::RefCell;
@@ -56,6 +59,34 @@ pub fn reset() {
     get_store_mut(|ctx| {
         ctx.mutations.clear();
         ctx.mutations_reverse.clear();
+        ctx.mutations_gas.clear();
+        ctx.mutations_gas_reverse.clear();
+        ctx.use_gas_context = false;
+    });
+}
+
+/// Switch to gas mutation context - all subsequent mutations will go to gas context
+pub fn use_gas_context(enable: bool) {
+    get_store_mut(|ctx| ctx.use_gas_context = enable);
+}
+
+/// Clear only gas mutations (used when starting gas tracking after WASM execution)
+pub fn reset_gas_mutations() {
+    get_store_mut(|ctx| {
+        ctx.mutations_gas.clear();
+        ctx.mutations_gas_reverse.clear();
+    });
+}
+
+/// Save current mutations to gas context and restore previous mutations
+pub fn save_to_gas_and_restore(saved_muts: Vec<Mutation>, saved_muts_rev: Vec<Mutation>) {
+    get_store_mut(|ctx| {
+        // Save current mutations to gas
+        ctx.mutations_gas = ctx.mutations.clone();
+        ctx.mutations_gas_reverse = ctx.mutations_reverse.clone();
+        // Restore saved mutations
+        ctx.mutations = saved_muts.into();
+        ctx.mutations_reverse = saved_muts_rev.into();
     });
 }
 
@@ -85,14 +116,19 @@ pub fn kv_put(db: &RocksDb, key: &str, value: &[u8]) {
         // Store in RocksDB
         let _ = db.put("sysconf", key.as_bytes(), value);
 
+        // Choose mutation context based on flag
+        let (fwd, rev) = if ctx.use_gas_context {
+            (&mut ctx.mutations_gas, &mut ctx.mutations_gas_reverse)
+        } else {
+            (&mut ctx.mutations, &mut ctx.mutations_reverse)
+        };
+
         // forward mutation tracks new value
-        ctx.mutations.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(value.to_vec()) });
+        fwd.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(value.to_vec()) });
         // reverse mutation: if existed put old value, else delete
         match existed {
-            Some(old) => {
-                ctx.mutations_reverse.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(old) })
-            }
-            None => ctx.mutations_reverse.push_back(Mutation { op: Op::Delete, key: key.to_string(), value: None }),
+            Some(old) => rev.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(old) }),
+            None => rev.push_back(Mutation { op: Op::Delete, key: key.to_string(), value: None }),
         }
     });
 }
@@ -108,12 +144,17 @@ pub fn kv_increment(db: &RocksDb, key: &str, delta: i64) -> i64 {
         // Store updated value in RocksDB
         let _ = db.put("sysconf", key.as_bytes(), &new_bytes);
 
-        ctx.mutations.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(new_bytes) });
+        // Choose mutation context based on flag
+        let (fwd, rev) = if ctx.use_gas_context {
+            (&mut ctx.mutations_gas, &mut ctx.mutations_gas_reverse)
+        } else {
+            (&mut ctx.mutations, &mut ctx.mutations_reverse)
+        };
+
+        fwd.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(new_bytes) });
         match old_bytes {
-            Some(old) => {
-                ctx.mutations_reverse.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(old) })
-            }
-            None => ctx.mutations_reverse.push_back(Mutation { op: Op::Delete, key: key.to_string(), value: None }),
+            Some(old) => rev.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(old) }),
+            None => rev.push_back(Mutation { op: Op::Delete, key: key.to_string(), value: None }),
         }
         newv
     })
@@ -123,8 +164,15 @@ pub fn kv_delete(db: &RocksDb, key: &str) {
     get_store_mut(|ctx| {
         if let Some(old) = db.get("sysconf", key.as_bytes()).unwrap_or(None) {
             let _ = db.delete("sysconf", key.as_bytes());
-            ctx.mutations.push_back(Mutation { op: Op::Delete, key: key.to_string(), value: None });
-            ctx.mutations_reverse.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(old) });
+
+            let (fwd, rev) = if ctx.use_gas_context {
+                (&mut ctx.mutations_gas, &mut ctx.mutations_gas_reverse)
+            } else {
+                (&mut ctx.mutations, &mut ctx.mutations_reverse)
+            };
+
+            fwd.push_back(Mutation { op: Op::Delete, key: key.to_string(), value: None });
+            rev.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(old) });
         }
     });
 }
@@ -172,8 +220,14 @@ pub fn kv_clear(db: &RocksDb, prefix: &str) -> usize {
                 // Delete from RocksDB
                 let _ = db.delete("sysconf", &k);
 
-                ctx.mutations.push_back(Mutation { op: Op::Delete, key: key_str.clone(), value: None });
-                ctx.mutations_reverse.push_back(Mutation { op: Op::Put, key: key_str, value: Some(v) });
+                let (fwd, rev) = if ctx.use_gas_context {
+                    (&mut ctx.mutations_gas, &mut ctx.mutations_gas_reverse)
+                } else {
+                    (&mut ctx.mutations, &mut ctx.mutations_reverse)
+                };
+
+                fwd.push_back(Mutation { op: Op::Delete, key: key_str.clone(), value: None });
+                rev.push_back(Mutation { op: Op::Put, key: key_str, value: Some(v) });
                 count += 1;
             }
         }
@@ -200,15 +254,18 @@ pub fn kv_set_bit(db: &RocksDb, key: &str, bit_idx: u32, bloom_size_opt: Option<
 
         // Record mutations (forward: set_bit; reverse: clear_bit or delete if not existed)
         let existed = db.get("sysconf", key.as_bytes()).unwrap_or(None).is_some();
-        ctx.mutations.push_back(Mutation { op: Op::SetBit { bit_idx, bloom_size }, key: key.to_string(), value: None });
-        if existed {
-            ctx.mutations_reverse.push_back(Mutation {
-                op: Op::ClearBit { bit_idx },
-                key: key.to_string(),
-                value: None,
-            });
+
+        let (fwd, rev) = if ctx.use_gas_context {
+            (&mut ctx.mutations_gas, &mut ctx.mutations_gas_reverse)
         } else {
-            ctx.mutations_reverse.push_back(Mutation { op: Op::Delete, key: key.to_string(), value: None });
+            (&mut ctx.mutations, &mut ctx.mutations_reverse)
+        };
+
+        fwd.push_back(Mutation { op: Op::SetBit { bit_idx, bloom_size }, key: key.to_string(), value: None });
+        if existed {
+            rev.push_back(Mutation { op: Op::ClearBit { bit_idx }, key: key.to_string(), value: None });
+        } else {
+            rev.push_back(Mutation { op: Op::Delete, key: key.to_string(), value: None });
         }
 
         // Set the bit and store in RocksDB
@@ -298,7 +355,8 @@ pub fn mutations_from_etf(bin: &[u8]) -> Result<Vec<Mutation>, std::io::Error> {
 
         let (op, value) = match op_code {
             0 => {
-                let value_len = u32::from_le_bytes([bin[cursor], bin[cursor + 1], bin[cursor + 2], bin[cursor + 3]]) as usize;
+                let value_len =
+                    u32::from_le_bytes([bin[cursor], bin[cursor + 1], bin[cursor + 2], bin[cursor + 3]]) as usize;
                 cursor += 4;
                 let value = bin[cursor..cursor + value_len].to_vec();
                 cursor += value_len;
@@ -331,6 +389,12 @@ pub fn mutations() -> Vec<Mutation> {
 }
 pub fn mutations_reverse() -> Vec<Mutation> {
     get_store(|ctx| ctx.mutations_reverse.iter().cloned().collect())
+}
+pub fn mutations_gas() -> Vec<Mutation> {
+    get_store(|ctx| ctx.mutations_gas.iter().cloned().collect())
+}
+pub fn mutations_gas_reverse() -> Vec<Mutation> {
+    get_store(|ctx| ctx.mutations_gas_reverse.iter().cloned().collect())
 }
 
 pub fn revert(db: &RocksDb, m_rev: &[Mutation]) {

@@ -227,20 +227,40 @@ pub fn select_validators(leaders: &[[u8; 48]]) -> Vec<[u8; 48]> {
 pub struct Epoch;
 
 impl Epoch {
-    /// Dispatch a call, state mutations are TODO
-    pub fn call(&self, op: EpochCall, env: &CallEnv) -> Result<(), EpochError> {
+    /// Dispatch a call with db access
+    pub fn call(&self, op: EpochCall, env: &CallEnv, db: &crate::utils::rocksdb::RocksDb) -> Result<(), EpochError> {
         match op {
-            EpochCall::SubmitSol { sol } => self.submit_sol(env, &sol),
-            EpochCall::SetEmissionAddress { address } => self.set_emission_address(env, &address),
+            EpochCall::SubmitSol { sol } => self.submit_sol(env, db, &sol),
+            EpochCall::SetEmissionAddress { address } => self.set_emission_address(env, db, &address),
             EpochCall::SlashTrainer { epoch, malicious_pk, signature, mask, trainers } => {
                 self.slash_trainer(env, epoch, &malicious_pk, &signature, &mask, trainers)
             }
         }
     }
 
-    fn submit_sol(&self, env: &CallEnv, sol_bytes: &[u8]) -> Result<(), EpochError> {
+    fn submit_sol(
+        &self,
+        env: &CallEnv,
+        db: &crate::utils::rocksdb::RocksDb,
+        sol_bytes: &[u8],
+    ) -> Result<(), EpochError> {
+        use crate::consensus::kv;
+
         let hash = blake3::hash(sol_bytes);
-        // TODO: compute bloom segments from hash and set bits in KV: kv_set_bit("bic:epoch:solbloom:{page}", bit_offset)
+
+        // Bloom filter: set 3 bits from hash segments (matching Elixir implementation)
+        let seg0 = u32::from_le_bytes([hash[0], hash[1], hash[2], hash[3]]) % 65536;
+        let seg1 = u32::from_le_bytes([hash[4], hash[5], hash[6], hash[7]]) % 65536;
+        let seg2 = u32::from_le_bytes([hash[8], hash[9], hash[10], hash[11]]) % 65536;
+
+        // Check all 3 bits - if any were already set, sol is duplicate
+        for (page, bit) in [(0, seg0), (1, seg1), (2, seg2)] {
+            let key = format!("bic:epoch:solbloom:{}", page);
+            let was_set = !kv::kv_set_bit(db, &key, bit, Some(65536));
+            if was_set {
+                return Err(EpochError::InvalidSol); // duplicate sol
+            }
+        }
 
         // unpack and verify epoch
         let parsed = Solution::unpack(sol_bytes).map_err(|_| EpochError::InvalidSol)?;
@@ -264,16 +284,28 @@ impl Epoch {
             return Err(EpochError::InvalidPop);
         }
 
-        // TODO: bloom filter set bits in KV, ensure uniqueness, increment solutions_count for pk
+        // Increment solution count for this address
+        let count_key = format!("bic:epoch:solutions_count:{}", bs58::encode(&pk).into_string());
+        kv::kv_increment(db, &count_key, 1);
+
         Ok(())
     }
 
-    fn set_emission_address(&self, _env: &CallEnv, address: &[u8; 48]) -> Result<(), EpochError> {
-        // Elixir checks byte_size(address) == 48
+    fn set_emission_address(
+        &self,
+        env: &CallEnv,
+        db: &crate::utils::rocksdb::RocksDb,
+        address: &[u8; 48],
+    ) -> Result<(), EpochError> {
+        use crate::consensus::kv;
+
         if address.len() != 48 {
             return Err(EpochError::InvalidAddressPk);
         }
-        // TODO: kv_put("bic:epoch:emission_address:{caller}", address)
+
+        let key = format!("bic:epoch:emission_address:{}", bs58::encode(&env.account_caller).into_string());
+        kv::kv_put(db, &key, address);
+
         Ok(())
     }
 
@@ -311,10 +343,178 @@ impl Epoch {
         Ok(())
     }
 
-    /// Epoch transition (Elixir next/1). Placeholder without KV.
-    pub fn next(&self, _env: &CallEnv) -> Result<(), EpochError> {
-        // TODO: pay emissions by solutions_count leaders, clear bloom and counters, choose new trainers
-        unimplemented!("TODO: implement epoch transition logic")
+    /// Epoch transition: distribute emissions, select validators, clear bloom filters
+    pub fn next(&self, db: &crate::utils::rocksdb::RocksDb, env: &CallEnv) -> Result<(), EpochError> {
+        use crate::consensus::kv;
+
+        let epoch_cur = env.entry_epoch;
+        let epoch_next = epoch_cur + 1;
+
+        // Get all solution counts from KV prefix scan
+        let prefix = b"bic:epoch:solutions_count:";
+        let mut leaders: Vec<([u8; 48], i64)> = db
+            .iter_prefix("contractstate", prefix)
+            .ok()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(key, value)| {
+                let key_str = String::from_utf8(key).ok()?;
+                let b58_pk = key_str.strip_prefix("bic:epoch:solutions_count:")?;
+                let pk_bytes = bs58::decode(b58_pk).into_vec().ok()?;
+                if pk_bytes.len() == 48 && value.len() == 8 {
+                    let count = i64::from_be_bytes(value.try_into().ok()?);
+                    let mut pk = [0u8; 48];
+                    pk.copy_from_slice(&pk_bytes);
+                    Some((pk, count))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        leaders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
+
+        // Get current trainers
+        let trainers = db
+            .get("contractstate", format!("bic:epoch:trainers:{}", epoch_cur).as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|bytes| {
+                if bytes.len() % 48 == 0 {
+                    Some(
+                        bytes
+                            .chunks_exact(48)
+                            .map(|c| {
+                                let mut pk = [0u8; 48];
+                                pk.copy_from_slice(c);
+                                pk
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+
+        // Distribute emissions based on epoch range
+        let emission = epoch_emission(epoch_cur);
+        let pb67 = peddlebike67();
+
+        if epoch_cur >= 295 && epoch_cur < 420 {
+            // 420 model: 1/7 to early adopters, 6/7 to peddlebike67
+            let early_adopter = emission / 7;
+            let community_fund = emission - early_adopter;
+
+            // Distribute community fund evenly to peddlebike67
+            let n = pb67.len() as u64;
+            let q = community_fund / n;
+            let r = community_fund % n;
+            for (i, pk) in pb67.iter().enumerate() {
+                let coins = if (i as u64) < r { q + 1 } else { q } as i64;
+                let emission_addr = db
+                    .get(
+                        "contractstate",
+                        format!("bic:epoch:emission_address:{}", bs58::encode(pk).into_string()).as_bytes(),
+                    )
+                    .ok()
+                    .flatten()
+                    .and_then(|b| {
+                        if b.len() == 48 {
+                            let mut a = [0u8; 48];
+                            a.copy_from_slice(&b);
+                            Some(a)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(*pk);
+                kv::kv_increment(
+                    db,
+                    &format!("bic:coin:balance:{}:AMA", bs58::encode(&emission_addr).into_string()),
+                    coins,
+                );
+            }
+
+            // Distribute early adopter emission
+            let trainers_to_recv: Vec<_> =
+                leaders.iter().filter(|(pk, _)| trainers.contains(pk) && !pb67.contains(pk)).take(TOP_X).collect();
+            let total_sols: i64 = trainers_to_recv.iter().map(|(_, c)| c).sum();
+            if total_sols > 0 {
+                for (pk, sols) in trainers_to_recv {
+                    let coins = (*sols as u64 * early_adopter / total_sols as u64) as i64;
+                    let emission_addr = db
+                        .get(
+                            "contractstate",
+                            format!("bic:epoch:emission_address:{}", bs58::encode(pk).into_string()).as_bytes(),
+                        )
+                        .ok()
+                        .flatten()
+                        .and_then(|b| {
+                            if b.len() == 48 {
+                                let mut a = [0u8; 48];
+                                a.copy_from_slice(&b);
+                                Some(a)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(*pk);
+                    kv::kv_increment(
+                        db,
+                        &format!("bic:coin:balance:{}:AMA", bs58::encode(&emission_addr).into_string()),
+                        coins,
+                    );
+                }
+            }
+        } else {
+            // Standard model: proportional to solution counts
+            let trainers_to_recv: Vec<_> = leaders.iter().filter(|(pk, _)| trainers.contains(pk)).take(TOP_X).collect();
+            let total_sols: i64 = trainers_to_recv.iter().map(|(_, c)| c).sum();
+            if total_sols > 0 {
+                for (pk, sols) in trainers_to_recv {
+                    let coins = (*sols as u64 * emission / total_sols as u64) as i64;
+                    let emission_addr = db
+                        .get(
+                            "contractstate",
+                            format!("bic:epoch:emission_address:{}", bs58::encode(pk).into_string()).as_bytes(),
+                        )
+                        .ok()
+                        .flatten()
+                        .and_then(|b| {
+                            if b.len() == 48 {
+                                let mut a = [0u8; 48];
+                                a.copy_from_slice(&b);
+                                Some(a)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(*pk);
+                    kv::kv_increment(
+                        db,
+                        &format!("bic:coin:balance:{}:AMA", bs58::encode(&emission_addr).into_string()),
+                        coins,
+                    );
+                }
+            }
+        }
+
+        // Clear bloom filters and solution counters
+        for page in 0..3 {
+            kv::kv_delete(db, &format!("bic:epoch:solbloom:{}", page));
+        }
+        for (pk, _) in &leaders {
+            kv::kv_delete(db, &format!("bic:epoch:solutions_count:{}", bs58::encode(pk).into_string()));
+        }
+
+        // Select new validators and store for next epoch
+        let leader_pks: Vec<[u8; 48]> = leaders.into_iter().map(|(pk, _)| pk).collect();
+        let new_validators = select_validators(&leader_pks);
+        let trainers_bin: Vec<u8> = new_validators.iter().flat_map(|pk| pk.iter().copied()).collect();
+        kv::kv_put(db, &format!("bic:epoch:trainers:{}", epoch_next), &trainers_bin);
+        kv::kv_put(db, &format!("bic:epoch:trainers:height:{:012}", env.entry_height + 1), &trainers_bin);
+
+        Ok(())
     }
 }
 
@@ -354,17 +554,4 @@ pub fn unmask_trainers(trainers: &[[u8; 48]], mask: &Vec<bool>) -> Vec<[u8; 48]>
         }
     }
     res
-}
-
-fn bit_is_set(mask: &[u8], idx: usize, mask_bits: usize) -> bool {
-    if idx >= mask_bits {
-        return false;
-    }
-    let byte_idx = idx / 8;
-    let bit_idx = idx % 8; // LSB-first as in Elixir bitstrings
-    if byte_idx >= mask.len() {
-        return false;
-    }
-    let b = mask[byte_idx];
-    ((b >> bit_idx) & 1) == 1
 }

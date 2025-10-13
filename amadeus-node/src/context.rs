@@ -85,22 +85,25 @@ impl Context {
 
         {
             // temporary hack to set rooted height after loading from ex snapshot
-            let rooted_hash = fabric.get_rooted_hash()?.unwrap();
-            let rooted_entry = fabric.get_entry_by_hash(&rooted_hash).unwrap();
-            fabric.set_rooted(&rooted_entry)?;
+            // only initialize if rooted hash exists (skip for empty/test databases)
+            if let Some(rooted_hash) = fabric.get_rooted_hash()? {
+                if let Some(rooted_entry) = fabric.get_entry_by_hash(&rooted_hash) {
+                    fabric.set_rooted(&rooted_entry)?;
 
-            // Also set temporal tip (needed by proc_entries and proc_consensus)
-            // If temporal_tip doesn't exist, initialize it with rooted_tip
-            if let Some(temporal_hash) = fabric.get_temporal_hash()? {
-                if let Some(temporal_entry) = fabric.get_entry_by_hash(&temporal_hash) {
-                    fabric.set_temporal(&temporal_entry)?;
-                } else {
-                    // Temporal hash exists but entry not found, initialize with rooted
-                    fabric.set_temporal(&rooted_entry)?;
+                    // Also set temporal tip (needed by proc_entries and proc_consensus)
+                    // If temporal_tip doesn't exist, initialize it with rooted_tip
+                    if let Some(temporal_hash) = fabric.get_temporal_hash()? {
+                        if let Some(temporal_entry) = fabric.get_entry_by_hash(&temporal_hash) {
+                            fabric.set_temporal(&temporal_entry)?;
+                        } else {
+                            // Temporal hash exists but entry not found, initialize with rooted
+                            fabric.set_temporal(&rooted_entry)?;
+                        }
+                    } else {
+                        // Temporal tip doesn't exist, initialize with rooted
+                        fabric.set_temporal(&rooted_entry)?;
+                    }
                 }
-            } else {
-                // Temporal tip doesn't exist, initialize with rooted
-                fabric.set_temporal(&rooted_entry)?;
             }
         }
 
@@ -335,7 +338,7 @@ impl Context {
         if behind_bft > 0 {
             info!("Behind BFT: Syncing {} entries", behind_bft);
             let online_trainer_ips = self.node_peers.get_trainer_ips_above_rooted(peers_bft, &trainer_pks).await?;
-            let heights: Vec<u32> = (temporal_height + 1..=peers_bft).take(100).collect();
+            let heights: Vec<u32> = (rooted_height + 1..=peers_bft).take(100).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
                 .map(|height| CatchupHeight { height, c: Some(true), e: Some(true), a: None, hashes: None })

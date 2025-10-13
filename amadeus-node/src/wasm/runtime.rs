@@ -314,28 +314,117 @@ mod host_functions {
         }
     }
 
-    /// Cross-contract call (simplified version)
+    /// Cross-contract call via recursive execution
     pub fn cross_contract_call(
         mut ctx: FunctionEnvMut<WasmContext>,
-        _contract_ptr: i32,
-        _contract_len: i32,
-        _function_ptr: i32,
-        _function_len: i32,
-        _args_ptr: i32,
-        _args_len: i32,
-        _symbol_ptr: i32,
-        _symbol_len: i32,
-        _amount_ptr: i32,
-        _amount_len: i32,
-        _exec_points: i64,
+        contract_ptr: i32,
+        contract_len: i32,
+        function_ptr: i32,
+        function_len: i32,
+        args_ptr: i32,
+        args_len: i32,
+        symbol_ptr: i32,
+        symbol_len: i32,
+        amount_ptr: i32,
+        amount_len: i32,
+        exec_points: i64,
     ) -> (i32, i32) {
-        let (context, _store) = ctx.data_and_store_mut();
-        context.add_exec_cost(100); // High cost for cross-contract calls
+        let (context, store) = ctx.data_and_store_mut();
+        context.add_exec_cost(100);
 
-        // For now, return error (implementation would require recursive WASM execution)
+        // Prevent infinite recursion
+        if context.env.call_counter >= 16 {
+            let mut logs = context.logs.lock().unwrap();
+            logs.push("[CROSS_CALL] Max call depth exceeded".to_string());
+            return (-1, 0);
+        }
+
+        // Read parameters from WASM memory
+        let contract = match context.read_bytes_with_store(&store, contract_ptr as u32, contract_len as u32) {
+            Ok(c) => c,
+            Err(_) => return (-1, 0),
+        };
+        let function = match context.read_string_with_store(&store, function_ptr as u32, function_len as u32) {
+            Ok(f) => f,
+            Err(_) => return (-1, 0),
+        };
+
+        // Read args as single blob (WASM contracts pass serialized args)
+        let args_bytes = match context.read_bytes_with_store(&store, args_ptr as u32, args_len as u32) {
+            Ok(a) => a,
+            Err(_) => return (-1, 0),
+        };
+        // For simplicity, pass as single argument
+        let args: Vec<Vec<u8>> = if args_bytes.is_empty() { vec![] } else { vec![args_bytes] };
+
+        // Handle attached tokens
+        let symbol = context.read_string_with_store(&store, symbol_ptr as u32, symbol_len as u32).unwrap_or_default();
+        let amount_str =
+            context.read_string_with_store(&store, amount_ptr as u32, amount_len as u32).unwrap_or_default();
+
+        if !symbol.is_empty() && !amount_str.is_empty() {
+            if let Ok(amount) = amount_str.parse::<i64>() {
+                if amount > 0 && contract.len() == 48 {
+                    let mut contract_pk = [0u8; 48];
+                    contract_pk.copy_from_slice(&contract);
+                    let caller_key = format!(
+                        "bic:coin:balance:{}:{}",
+                        bs58::encode(&context.env.account_caller).into_string(),
+                        symbol
+                    );
+                    let contract_key =
+                        format!("bic:coin:balance:{}:{}", bs58::encode(&contract_pk).into_string(), symbol);
+                    kv::kv_increment(&context.db, &caller_key, -amount);
+                    kv::kv_increment(&context.db, &contract_key, amount);
+                }
+            }
+        }
+
+        // Load target contract bytecode
+        if contract.len() != 48 {
+            let mut logs = context.logs.lock().unwrap();
+            logs.push("[CROSS_CALL] Invalid contract address".to_string());
+            return (-1, 0);
+        }
+        let mut contract_pk = [0u8; 48];
+        contract_pk.copy_from_slice(&contract);
+
+        let bytecode = match crate::bic::contract::bytecode(&context.db, &contract_pk) {
+            Some(b) => b,
+            None => {
+                let mut logs = context.logs.lock().unwrap();
+                logs.push("[CROSS_CALL] Contract not found".to_string());
+                return (-1, 0);
+            }
+        };
+
+        // Create new execution environment
+        let mut new_env = context.env.clone();
+        new_env.call_counter += 1;
+        new_env.account_caller = context.env.account_current.clone().try_into().unwrap_or([0u8; 48]);
+        new_env.account_current = contract;
+        new_env.call_exec_points_remaining = exec_points as u64;
+
+        // Execute recursively
+        drop(store); // Release store reference before recursive call
+        let result = match execute(&new_env, &context.db, &bytecode, &function, &args) {
+            Ok(r) => r,
+            Err(e) => {
+                let mut logs = context.logs.lock().unwrap();
+                logs.push(format!("[CROSS_CALL] Execution failed: {}", e));
+                return (-1, 0);
+            }
+        };
+
+        // Append logs from nested call
         let mut logs = context.logs.lock().unwrap();
-        logs.push("[CROSS_CALL] Cross-contract calls not yet implemented".to_string());
-        (-1, 0)
+        logs.extend(result.logs);
+
+        // Update exec cost
+        context.add_exec_cost(result.exec_used);
+
+        // Return result (simplified - return success indicator)
+        (0, 0)
     }
 
     /// Crypto: Blake3 hash

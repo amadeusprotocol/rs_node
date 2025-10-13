@@ -59,7 +59,7 @@ async fn api_peers(State(ctx): State<Arc<Context>>) -> Json<Value> {
             "connecting": 0,
             "trainers": 0,
             "peers": {}
-        }))
+        })),
     }
 }
 

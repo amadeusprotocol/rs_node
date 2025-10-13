@@ -353,9 +353,9 @@ fn freivalds_inner_scalar(
     let mut U = [[0i32; 16]; 3];
     for r in 0..3 {
         for i in 0..16 {
-            let mut sum = 0;
+            let mut sum = 0i32;
             for j in 0..16 {
-                sum += C[i][j] * Rs[r][j] as i32;
+                sum = sum.wrapping_add(C[i][j].wrapping_mul(Rs[r][j] as i32));
             }
             U[r][i] = sum;
         }
@@ -364,14 +364,14 @@ fn freivalds_inner_scalar(
     let mut P = [[0i32; 3]; 50_240];
     for k in 0..50_240 {
         let row = &B[k];
-        let mut s0 = 0;
-        let mut s1 = 0;
-        let mut s2 = 0;
+        let mut s0 = 0i32;
+        let mut s1 = 0i32;
+        let mut s2 = 0i32;
         for j in 0..16 {
             let b = row[j] as i32;
-            s0 += b * Rs[0][j] as i32;
-            s1 += b * Rs[1][j] as i32;
-            s2 += b * Rs[2][j] as i32;
+            s0 = s0.wrapping_add(b.wrapping_mul(Rs[0][j] as i32));
+            s1 = s1.wrapping_add(b.wrapping_mul(Rs[1][j] as i32));
+            s2 = s2.wrapping_add(b.wrapping_mul(Rs[2][j] as i32));
         }
         P[k][0] = s0;
         P[k][1] = s1;
@@ -380,15 +380,15 @@ fn freivalds_inner_scalar(
 
     for i in 0..16 {
         let rowA = &A[i];
-        let mut v0 = 0;
-        let mut v1 = 0;
-        let mut v2 = 0;
+        let mut v0 = 0i32;
+        let mut v1 = 0i32;
+        let mut v2 = 0i32;
         for k in 0..50_240 {
             let a = rowA[k] as i32;
             let p = P[k];
-            v0 += a * p[0];
-            v1 += a * p[1];
-            v2 += a * p[2];
+            v0 = v0.wrapping_add(a.wrapping_mul(p[0]));
+            v1 = v1.wrapping_add(a.wrapping_mul(p[1]));
+            v2 = v2.wrapping_add(a.wrapping_mul(p[2]));
         }
         if v0 != U[0][i] || v1 != U[1][i] || v2 != U[2][i] {
             return false;

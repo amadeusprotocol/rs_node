@@ -373,6 +373,237 @@ pub struct ApplyResult {
     pub muts: Vec<crate::consensus::kv::Mutation>,
 }
 
+/// Execute a single transaction, routing to the appropriate contract handler
+/// Returns (error, logs, mutations, mutations_reverse, mutations_gas, mutations_gas_reverse)
+fn execute_transaction(
+    db: &RocksDb,
+    next_entry: &Entry,
+    txu: &TxU,
+) -> (String, Vec<String>, Vec<crate::consensus::kv::Mutation>, Vec<crate::consensus::kv::Mutation>, Vec<crate::consensus::kv::Mutation>, Vec<crate::consensus::kv::Mutation>) {
+    use crate::consensus::kv;
+
+    let action = match txu.tx.actions.first() {
+        Some(a) => a,
+        None => return ("no_actions".to_string(), vec![], vec![], vec![], vec![], vec![]),
+    };
+
+    kv::reset();
+
+    let call_env = crate::bic::epoch::CallEnv {
+        entry_epoch: next_entry.header.height as u64 / 100_000,
+        entry_height: next_entry.header.height as u64,
+        entry_signer: next_entry.header.signer,
+        entry_vr: next_entry.header.vr.to_vec(),
+        tx_hash: txu.hash.to_vec(),
+        tx_signer: txu.tx.signer,
+        account_caller: txu.tx.signer,
+        account_current: vec![],
+        call_counter: 0,
+        call_exec_points: 10_000_000,
+        call_exec_points_remaining: 10_000_000,
+        attached_symbol: action.attached_symbol.clone().unwrap_or_default(),
+        attached_amount: action.attached_amount.clone().unwrap_or_default(),
+        seed: next_entry.header.dr,
+        seedf64: 0.5,
+        readonly: false,
+    };
+
+    let (error, logs) = match action.contract.as_slice() {
+        b"Epoch" => execute_epoch_call(db, &call_env, &action.function, &action.args),
+        b"Coin" => execute_coin_call(db, txu.tx.signer, &action.function, &action.args),
+        b"Contract" => execute_contract_call(db, txu.tx.signer, &action.function, &action.args),
+        contract if contract.len() == 48 => execute_wasm_call(db, &call_env, contract, &action.function, &action.args),
+        _ => ("invalid_contract".to_string(), vec![]),
+    };
+
+    (error, logs, kv::mutations(), kv::mutations_reverse(), kv::mutations_gas(), kv::mutations_gas_reverse())
+}
+
+fn execute_epoch_call(
+    db: &RocksDb,
+    env: &crate::bic::epoch::CallEnv,
+    function: &str,
+    args: &[Vec<u8>],
+) -> (String, Vec<String>) {
+    parse_epoch_call(function, args)
+        .and_then(|call| crate::bic::epoch::Epoch.call(call, env, db).map_err(|e| e.to_string()))
+        .map(|_| ("ok".to_string(), vec![]))
+        .unwrap_or_else(|e| (e, vec![]))
+}
+
+fn execute_coin_call(db: &RocksDb, caller: [u8; 48], function: &str, args: &[Vec<u8>]) -> (String, Vec<String>) {
+    let env = crate::bic::coin::CallEnv { account_caller: caller };
+    crate::bic::coin::call(db, function, &env, args)
+        .map(|_| ("ok".to_string(), vec![]))
+        .unwrap_or_else(|e| (e.to_string(), vec![]))
+}
+
+fn execute_contract_call(db: &RocksDb, caller: [u8; 48], function: &str, args: &[Vec<u8>]) -> (String, Vec<String>) {
+    let env = crate::bic::contract::CallEnv { account_caller: caller };
+    crate::bic::contract::call(db, function, &env, args)
+        .map(|_| ("ok".to_string(), vec![]))
+        .unwrap_or_else(|e| (e.to_string(), vec![]))
+}
+
+fn execute_wasm_call(
+    db: &RocksDb,
+    env: &crate::bic::epoch::CallEnv,
+    contract: &[u8],
+    function: &str,
+    args: &[Vec<u8>],
+) -> (String, Vec<String>) {
+    use crate::consensus::kv;
+
+    let contract_pk: [u8; 48] = contract.try_into().expect("contract len checked");
+
+    // Handle attached tokens BEFORE WASM execution (regular mutations)
+    if !env.attached_symbol.is_empty() && !env.attached_amount.is_empty() {
+        let amount_str = String::from_utf8_lossy(&env.attached_amount);
+        let amount = amount_str.parse::<i64>().unwrap_or(0);
+        if amount > 0 {
+            let symbol_str = String::from_utf8_lossy(&env.attached_symbol);
+            let signer_key = format!("bic:coin:balance:{}:{}", bs58::encode(&env.tx_signer).into_string(), symbol_str);
+            let contract_key = format!("bic:coin:balance:{}:{}", bs58::encode(&contract_pk).into_string(), symbol_str);
+            kv::kv_increment(db, &signer_key, -amount);
+            kv::kv_increment(db, &contract_key, amount);
+        }
+    }
+
+    // Execute WASM (regular mutations)
+    match crate::bic::contract::bytecode(db, &contract_pk) {
+        Some(wasm_bytes) => {
+            match crate::wasm::runtime::execute(env, db, &wasm_bytes, function, args) {
+                Ok(result) => {
+                    // Save regular mutations and switch to gas context
+                    let muts = kv::mutations();
+                    let muts_rev = kv::mutations_reverse();
+                    kv::save_to_gas_and_restore(vec![], vec![]); // clear and prepare gas context
+
+                    // Charge gas (gas mutations)
+                    let exec_used = (result.exec_used * 100) as i64;
+                    let signer_key = format!("bic:coin:balance:{}:AMA", bs58::encode(&env.tx_signer).into_string());
+                    kv::use_gas_context(true);
+                    kv::kv_increment(db, &signer_key, -exec_used);
+
+                    if env.entry_epoch >= 295 {
+                        let half_exec_cost = exec_used / 2;
+                        let entry_signer_key =
+                            format!("bic:coin:balance:{}:AMA", bs58::encode(&env.entry_signer).into_string());
+                        let burn_key = "bic:coin:balance:11111111111111111111111111111111111111111111111111111111:AMA";
+                        kv::kv_increment(db, &entry_signer_key, half_exec_cost);
+                        kv::kv_increment(db, &burn_key, half_exec_cost);
+                    } else {
+                        let entry_signer_key =
+                            format!("bic:coin:balance:{}:AMA", bs58::encode(&env.entry_signer).into_string());
+                        kv::kv_increment(db, &entry_signer_key, exec_used);
+                    }
+                    kv::use_gas_context(false);
+
+                    // Restore regular mutations
+                    kv::save_to_gas_and_restore(muts, muts_rev);
+
+                    ("ok".to_string(), result.logs)
+                }
+                Err(e) => (e.to_string(), vec![]),
+            }
+        }
+        None => ("contract_not_found".to_string(), vec![]),
+    }
+}
+
+fn parse_epoch_call(function: &str, args: &[Vec<u8>]) -> Result<crate::bic::epoch::EpochCall, String> {
+    use crate::bic::epoch::EpochCall;
+
+    match function {
+        "submit_sol" => Ok(EpochCall::SubmitSol { sol: args.first().ok_or("missing sol arg")?.clone() }),
+        "set_emission_address" => {
+            let addr_bytes = args.first().ok_or("missing address arg")?;
+            let address = addr_bytes.as_slice().try_into().map_err(|_| "invalid address length")?;
+            Ok(EpochCall::SetEmissionAddress { address })
+        }
+        "slash_trainer" => {
+            let epoch_bytes = args.first().ok_or("missing epoch")?;
+            let epoch = u32::from_le_bytes(epoch_bytes.get(..4).ok_or("invalid epoch")?.try_into().unwrap()) as u64;
+            let malicious_pk = args.get(1).ok_or("missing pk")?.as_slice().try_into().map_err(|_| "invalid pk")?;
+            let signature = args.get(2).ok_or("missing signature")?.clone();
+            let mask = crate::utils::misc::bitvec_to_bools(args.get(3).ok_or("missing mask")?.clone());
+            Ok(EpochCall::SlashTrainer { epoch, malicious_pk, signature, mask, trainers: None })
+        }
+        _ => Err(format!("unknown function: {}", function)),
+    }
+}
+
+/// Pre-process transactions: update nonces, deduct gas
+fn call_txs_pre(db: &RocksDb, next_entry: &Entry, txus: &[TxU]) {
+    use crate::consensus::kv;
+    kv::reset();
+
+    let epoch = next_entry.header.height / 100_000;
+    let entry_signer_key = format!("bic:coin:balance:{}:AMA", bs58::encode(&next_entry.header.signer).into_string());
+    let burn_key = "bic:coin:balance:11111111111111111111111111111111111111111111111111111111:AMA";
+
+    for txu in txus {
+        // Update nonce
+        kv::kv_put(
+            db,
+            &format!("bic:base:nonce:{}", bs58::encode(&txu.tx.signer).into_string()),
+            &(txu.tx.nonce as i64).to_string().into_bytes(),
+        );
+
+        // Calculate and deduct exec cost (inline calc_exec_cost)
+        let bytes = txu.tx_encoded.len() + 32 + 96;
+        let exec_cost = if epoch >= 295 { (1 + bytes / 1024) as i64 * 100 } else { (3 + bytes / 256 * 3) as i64 * 100 };
+
+        kv::kv_increment(
+            db,
+            &format!("bic:coin:balance:{}:AMA", bs58::encode(&txu.tx.signer).into_string()),
+            -exec_cost,
+        );
+
+        // Credit entry signer and burn address
+        if epoch >= 295 {
+            kv::kv_increment(db, &entry_signer_key, exec_cost / 2);
+            kv::kv_increment(db, burn_key, exec_cost / 2);
+        } else {
+            kv::kv_increment(db, &entry_signer_key, exec_cost);
+        }
+    }
+}
+
+/// Exit logic: segment VR updates and epoch transitions
+fn call_exit(db: &RocksDb, next_entry: &Entry) {
+    use crate::consensus::kv;
+    kv::reset();
+
+    // Update segment VR hash every 1000 blocks
+    if next_entry.header.height % 1000 == 0 {
+        kv::kv_put(db, "bic:epoch:segment_vr_hash", &crate::utils::blake3::hash(&next_entry.header.vr));
+    }
+
+    // Epoch transition every 100k blocks
+    if next_entry.header.height % 100_000 == 99_999 {
+        let env = crate::bic::epoch::CallEnv {
+            entry_epoch: next_entry.header.height as u64 / 100_000,
+            entry_height: next_entry.header.height as u64,
+            entry_signer: next_entry.header.signer,
+            entry_vr: next_entry.header.vr.to_vec(),
+            tx_hash: vec![],
+            tx_signer: [0u8; 48],
+            account_caller: [0u8; 48],
+            account_current: vec![],
+            call_counter: 0,
+            call_exec_points: 0,
+            call_exec_points_remaining: 0,
+            attached_symbol: vec![],
+            attached_amount: vec![],
+            seed: [0u8; 32],
+            seedf64: 0.0,
+            readonly: true,
+        };
+        let _ = crate::bic::epoch::Epoch.next(db, &env);
+    }
+}
+
 pub fn apply_entry(db: &RocksDb, config: &crate::config::Config, next_entry: &Entry) -> Result<ApplyResult, Error> {
     // check height validity
     let current_height = get_chain_height(db).unwrap_or(0);
@@ -386,11 +617,6 @@ pub fn apply_entry(db: &RocksDb, config: &crate::config::Config, next_entry: &En
         });
     }
 
-    // reset consensus KV tracking
-    crate::consensus::kv::reset();
-
-    let _mapenv = make_mapenv(next_entry);
-
     // decode transactions
     let mut txus = Vec::new();
     for tx_packed in &next_entry.txs {
@@ -400,16 +626,41 @@ pub fn apply_entry(db: &RocksDb, config: &crate::config::Config, next_entry: &En
         }
     }
 
-    // TODO: call BIC contracts with transactions
-    // For now, we'll create placeholder mutations and results
+    // pre-process transactions (nonce updates, gas deduction)
+    call_txs_pre(db, next_entry, &txus);
+    let mut muts = crate::consensus::kv::mutations();
+    let mut muts_rev = crate::consensus::kv::mutations_reverse();
+
+    // execute transactions with gas separation (matches Elixir logic)
     let mut tx_results = Vec::new();
-    for _txu in &txus {
-        tx_results.push(TxResult { error: "ok".to_string(), logs: vec![] });
+    for txu in &txus {
+        let (error, logs, m3, m_rev3, m3_gas, m3_gas_rev) = execute_transaction(db, next_entry, txu);
+
+        if error == "ok" {
+            // success: combine regular + gas mutations
+            muts.extend(m3);
+            muts.extend(m3_gas);
+            muts_rev.extend(m_rev3);
+            muts_rev.extend(m3_gas_rev);
+        } else {
+            // failure: revert regular mutations, keep only gas mutations
+            crate::consensus::kv::revert(db, &m_rev3);
+            muts.extend(m3_gas);
+            muts_rev.extend(m3_gas_rev);
+        }
+
+        tx_results.push(TxResult { error, logs });
     }
 
-    // get mutations from consensus KV
-    let muts = crate::consensus::kv::mutations();
-    let muts_rev = crate::consensus::kv::mutations_reverse();
+    // call exit logic (segment VR updates, epoch transitions)
+    call_exit(db, next_entry);
+
+    // get exit mutations and combine
+    let muts_exit = crate::consensus::kv::mutations();
+    let muts_exit_rev = crate::consensus::kv::mutations_reverse();
+    muts.extend(muts_exit);
+    muts_rev.extend(muts_exit_rev);
+
     let mutations_hash = crate::consensus::kv::hash_mutations(&muts);
 
     // sign attestation
@@ -741,6 +992,11 @@ pub fn my_attestation_by_entryhash(db: &RocksDb, entry_hash: &[u8; 32]) -> Optio
 }
 
 pub fn proc_consensus(db: &RocksDb, fabric: &fabric::Fabric) -> Result<(), Error> {
+    // Skip processing if no temporal_tip yet (fresh node waiting for first entry)
+    if get_temporal_tip_hash(db)?.is_none() {
+        return Ok(());
+    }
+
     let initial_rooted_hash = get_rooted_tip_hash(db)?.unwrap_or([0u8; 32]);
 
     loop {
@@ -949,6 +1205,11 @@ pub async fn proc_entries(
     config: &crate::config::Config,
     ctx: &crate::Context,
 ) -> Result<(), Error> {
+    // Skip processing if no temporal_tip yet (fresh node waiting for first entry)
+    if get_temporal_tip_hash(db)?.is_none() {
+        return Ok(());
+    }
+
     let softfork_settings = get_softfork_settings();
 
     // use a loop instead of tail recursion (Rust doesn't optimize tail calls)
