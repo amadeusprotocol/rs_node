@@ -251,6 +251,81 @@ pub fn hash_mutations(muts: &[Mutation]) -> [u8; 32] {
     *h.as_bytes()
 }
 
+pub fn mutations_to_etf(muts: &[Mutation]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    for m in muts {
+        match &m.op {
+            Op::Put => buf.push(0u8),
+            Op::Delete => buf.push(1u8),
+            Op::SetBit { .. } => buf.push(2u8),
+            Op::ClearBit { .. } => buf.push(3u8),
+        }
+        let k = m.key.as_bytes();
+        buf.extend_from_slice(&(k.len() as u32).to_le_bytes());
+        buf.extend_from_slice(k);
+        match (&m.op, &m.value) {
+            (Op::Put, Some(v)) => {
+                buf.extend_from_slice(&(v.len() as u32).to_le_bytes());
+                buf.extend_from_slice(v);
+            }
+            (Op::SetBit { bit_idx, bloom_size }, _) => {
+                buf.extend_from_slice(&bit_idx.to_le_bytes());
+                buf.extend_from_slice(&bloom_size.to_le_bytes());
+            }
+            (Op::ClearBit { bit_idx }, _) => {
+                buf.extend_from_slice(&bit_idx.to_le_bytes());
+            }
+            _ => {}
+        }
+    }
+    buf
+}
+
+pub fn mutations_from_etf(bin: &[u8]) -> Result<Vec<Mutation>, std::io::Error> {
+    let mut mutations = Vec::new();
+    let mut cursor = 0;
+
+    while cursor < bin.len() {
+        let op_code = bin[cursor];
+        cursor += 1;
+
+        let key_len = u32::from_le_bytes([bin[cursor], bin[cursor + 1], bin[cursor + 2], bin[cursor + 3]]) as usize;
+        cursor += 4;
+
+        let key = String::from_utf8(bin[cursor..cursor + key_len].to_vec())
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid UTF-8 in key"))?;
+        cursor += key_len;
+
+        let (op, value) = match op_code {
+            0 => {
+                let value_len = u32::from_le_bytes([bin[cursor], bin[cursor + 1], bin[cursor + 2], bin[cursor + 3]]) as usize;
+                cursor += 4;
+                let value = bin[cursor..cursor + value_len].to_vec();
+                cursor += value_len;
+                (Op::Put, Some(value))
+            }
+            1 => (Op::Delete, None),
+            2 => {
+                let bit_idx = u32::from_le_bytes([bin[cursor], bin[cursor + 1], bin[cursor + 2], bin[cursor + 3]]);
+                cursor += 4;
+                let bloom_size = u32::from_le_bytes([bin[cursor], bin[cursor + 1], bin[cursor + 2], bin[cursor + 3]]);
+                cursor += 4;
+                (Op::SetBit { bit_idx, bloom_size }, None)
+            }
+            3 => {
+                let bit_idx = u32::from_le_bytes([bin[cursor], bin[cursor + 1], bin[cursor + 2], bin[cursor + 3]]);
+                cursor += 4;
+                (Op::ClearBit { bit_idx }, None)
+            }
+            _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid op code")),
+        };
+
+        mutations.push(Mutation { op, key, value });
+    }
+
+    Ok(mutations)
+}
+
 pub fn mutations() -> Vec<Mutation> {
     get_store(|ctx| ctx.mutations.iter().cloned().collect())
 }

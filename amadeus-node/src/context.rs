@@ -83,6 +83,27 @@ impl Context {
 
         let fabric = Fabric::new(&config.get_root()).await?;
 
+        {
+            // temporary hack to set rooted height after loading from ex snapshot
+            let rooted_hash = fabric.get_rooted_hash()?.unwrap();
+            let rooted_entry = fabric.get_entry_by_hash(&rooted_hash).unwrap();
+            fabric.set_rooted(&rooted_entry)?;
+
+            // Also set temporal tip (needed by proc_entries and proc_consensus)
+            // If temporal_tip doesn't exist, initialize it with rooted_tip
+            if let Some(temporal_hash) = fabric.get_temporal_hash()? {
+                if let Some(temporal_entry) = fabric.get_entry_by_hash(&temporal_hash) {
+                    fabric.set_temporal(&temporal_entry)?;
+                } else {
+                    // Temporal hash exists but entry not found, initialize with rooted
+                    fabric.set_temporal(&rooted_entry)?;
+                }
+            } else {
+                // Temporal tip doesn't exist, initialize with rooted
+                fabric.set_temporal(&rooted_entry)?;
+            }
+        }
+
         let metrics = Metrics::new();
         let node_peers = peers::NodePeers::default();
         let node_anrs = NodeAnrs::new();
@@ -279,7 +300,11 @@ impl Context {
 
     #[instrument(skip(self), name = "catchup_task")]
     async fn catchup_task(&self) -> Result<(), Error> {
-        let temporal_height = self.fabric.get_temporal_height()?.unwrap_or_default();
+        let temporal_height = match self.fabric.get_temporal_height() {
+            Ok(Some(h)) => h,
+            Ok(None) => 0,
+            Err(e) => return Err(e.into()),
+        };
         let rooted_height = self.fabric.get_rooted_height()?.unwrap_or_default();
         info!("Temporal: {} Rooted: {}", temporal_height, rooted_height);
 
@@ -293,7 +318,7 @@ impl Context {
         if (temporal_height - rooted_height) > 1000 {
             // For some reason the node stopped rooting entries
             // This is corner case that must be handled immediately!
-            info!("Stopped syncing: getting {} consensuses", behind_rooted);
+            info!("Stopped syncing: getting {} consensuses starting {}", behind_rooted, rooted_height + 1);
             let online_trainer_ips = self.node_peers.get_trainer_ips_above_rooted(peers_rooted, &trainer_pks).await?;
             let heights: Vec<u32> = (rooted_height + 1..=peers_rooted).take(1000).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
@@ -310,7 +335,7 @@ impl Context {
         if behind_bft > 0 {
             info!("Behind BFT: Syncing {} entries", behind_bft);
             let online_trainer_ips = self.node_peers.get_trainer_ips_above_rooted(peers_bft, &trainer_pks).await?;
-            let heights: Vec<u32> = (rooted_height + 1..=peers_bft).take(1000).collect();
+            let heights: Vec<u32> = (temporal_height + 1..=peers_bft).take(100).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
                 .map(|height| CatchupHeight { height, c: Some(true), e: Some(true), a: None, hashes: None })
@@ -657,8 +682,8 @@ impl Context {
 
             Instruction::ReceivedEntry { entry } => {
                 // Handle received blockchain entry (from catchup)
-                info!("received entry, height: {}", entry.header.height);
-                let seen_time = crate::utils::misc::get_unix_millis_now();
+                // info!("received entry, height: {}", entry.header.height);
+                let seen_time = get_unix_millis_now();
                 match entry.pack() {
                     Ok(entry_bin) => {
                         if let Err(e) = self.fabric.insert_entry(
@@ -689,8 +714,33 @@ impl Context {
 
             Instruction::ReceivedConsensus { consensus } => {
                 // Handle received consensus (from catchup)
-                let mask = consensus.mask.clone().unwrap_or_default();
-                let score = consensus.score.unwrap_or(1.0); // Default to full score if not set
+                debug!(
+                    "received consensus for entry {}, mutations_hash {}, score {:?}",
+                    bs58::encode(&consensus.entry_hash).into_string(),
+                    bs58::encode(&consensus.mutations_hash).into_string(),
+                    consensus.score
+                );
+                // When mask is None, it means all trainers signed (100% consensus in Elixir)
+                // We need to create a full mask with all bits set to true
+                let mask = match consensus.mask.clone() {
+                    Some(m) => m,
+                    None => {
+                        // Get entry to determine height and trainers
+                        if let Some(entry) = self.fabric.get_entry_by_hash(&consensus.entry_hash) {
+                            if let Some(trainers) = self.fabric.trainers_for_height(entry.header.height) {
+                                // Create full mask: all trainers signed
+                                vec![true; trainers.len()]
+                            } else {
+                                warn!("No trainers found for height {}, skipping consensus", entry.header.height);
+                                return Ok(());
+                            }
+                        } else {
+                            warn!("Entry not found for consensus, skipping");
+                            return Ok(());
+                        }
+                    }
+                };
+                let score = consensus.score.unwrap_or(1.0);
                 if let Err(e) = self.fabric.insert_consensus(
                     consensus.entry_hash,
                     consensus.mutations_hash,
@@ -700,7 +750,7 @@ impl Context {
                 ) {
                     warn!("Failed to insert consensus: {}", e);
                 } else {
-                    debug!("Successfully inserted consensus");
+                    debug!("Successfully inserted consensus with score {}", score);
                 }
             }
 

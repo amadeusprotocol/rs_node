@@ -5,7 +5,7 @@ use crate::utils::rocksdb::{self, RocksDb};
 use crate::utils::safe_etf::encode_safe_deterministic;
 use eetf::{Atom, BigInteger, Binary, Term};
 use std::collections::HashMap;
-use tracing::{Instrument, info};
+use tracing::{Instrument, debug, info};
 // TODO: make the database trait that the fabric will use
 
 #[derive(Debug, thiserror::Error)]
@@ -253,7 +253,7 @@ impl Fabric {
         entry_bin: &[u8],
         seen_millis: u64,
     ) -> Result<(), Error> {
-        // idempotent: if already present under default CF, do nothing
+        // store entry if not already present
         if self.db.get(CF_DEFAULT, hash)?.is_none() {
             self.db.put(CF_DEFAULT, hash, entry_bin)?;
 
@@ -261,23 +261,29 @@ impl Fabric {
             let seen_time_term = Term::from(BigInteger { value: seen_millis.into() });
             let seen_time_bin = encode_safe_deterministic(&seen_time_term);
             self.db.put(CF_MY_SEEN_TIME_FOR_ENTRY, hash, &seen_time_bin)?;
-
-            // index by height and slot -> key format allows efficient range queries
-            // use compound key to support multiple entries per height/slot
-            let b58_hash = bs58::encode(hash).into_string();
-            let height_key = format!("{:016}:{}", height, &b58_hash);
-            self.db.put(CF_ENTRY_BY_HEIGHT, height_key.as_bytes(), hash)?;
-
-            let slot_key = format!("{:016}:{}", slot, &b58_hash);
-            self.db.put(CF_ENTRY_BY_SLOT, slot_key.as_bytes(), hash)?;
         }
+
+        // ALWAYS index by height and slot, even if entry already exists
+        // this is crucial for entries loaded from snapshots that aren't indexed yet
+        // Key format matches Elixir: "#{height}:#{hash}" - no padding, raw hash bytes
+        let mut height_key = height.to_string().into_bytes();
+        height_key.push(b':');
+        height_key.extend_from_slice(hash);
+        self.db.put(CF_ENTRY_BY_HEIGHT, &height_key, hash)?;
+
+        let mut slot_key = slot.to_string().into_bytes();
+        slot_key.push(b':');
+        slot_key.extend_from_slice(hash);
+        self.db.put(CF_ENTRY_BY_SLOT, &slot_key, hash)?;
 
         Ok(())
     }
 
     pub fn entries_by_height(&self, height: u64) -> Result<Vec<Vec<u8>>, Error> {
-        let height_prefix = format!("{:016}:", height);
-        let kvs = self.db.iter_prefix(CF_ENTRY_BY_HEIGHT, height_prefix.as_bytes())?;
+        // Match Elixir format: "#{height}:" with no padding
+        let mut height_prefix = height.to_string().into_bytes();
+        height_prefix.push(b':');
+        let kvs = self.db.iter_prefix(CF_ENTRY_BY_HEIGHT, &height_prefix)?;
         let mut out = Vec::new();
         for (_k, v) in kvs.into_iter() {
             if let Some(entry_bin) = self.db.get(CF_DEFAULT, &v)? {
@@ -288,8 +294,10 @@ impl Fabric {
     }
 
     pub fn entries_by_slot(&self, slot: u32) -> Result<Vec<Vec<u8>>, Error> {
-        let slot_prefix = format!("{:016}:", slot);
-        let kvs = self.db.iter_prefix(CF_ENTRY_BY_SLOT, slot_prefix.as_bytes())?;
+        // Match Elixir format: "#{slot}:" with no padding
+        let mut slot_prefix = slot.to_string().into_bytes();
+        slot_prefix.push(b':');
+        let kvs = self.db.iter_prefix(CF_ENTRY_BY_SLOT, &slot_prefix)?;
         let mut out = Vec::new();
         for (_k, v) in kvs.into_iter() {
             if let Some(entry_bin) = self.db.get(CF_DEFAULT, &v)? {
@@ -336,7 +344,7 @@ impl Fabric {
         if att.signer == config.get_pk() {
             return Ok(Some(att));
         }
-        println!("imported database, resigning attestation {}", bs58::encode(entry_hash).into_string());
+        debug!("imported database, resigning attestation {}", bs58::encode(entry_hash).into_string());
         let pk = config.get_pk();
         let sk = config.get_sk();
         let new_a = Attestation::sign_with(&pk, &sk, entry_hash, &att.mutations_hash)?;
@@ -381,8 +389,15 @@ impl Fabric {
         trainers: &[[u8; 48]],
         entry_hash: &[u8],
     ) -> Result<(Option<[u8; 32]>, Option<f64>, Option<StoredConsensus>), Error> {
-        let Some(bin) = self.db.get(CF_CONSENSUS_BY_ENTRYHASH, entry_hash)? else { return Ok((None, None, None)) };
+        let Some(bin) = self.db.get(CF_CONSENSUS_BY_ENTRYHASH, entry_hash)? else {
+            debug!(
+                "best_consensus_by_entryhash: no consensus data found for entry {}",
+                bs58::encode(entry_hash).into_string()
+            );
+            return Ok((None, None, None));
+        };
         let map = unpack_consensus_map(&bin)?;
+        debug!("best_consensus_by_entryhash: unpacked consensus map with {} entries", map.len());
         let max_score = trainers.len() as f64;
         let mut best: Option<([u8; 32], f64, StoredConsensus)> = None;
         for (k, v) in map.into_iter() {
@@ -393,13 +408,25 @@ impl Fabric {
                 }
             }
             let score = if max_score > 0.0 { score_units / max_score } else { 0.0 };
+            debug!(
+                "best_consensus_by_entryhash: mutations_hash={}, score={:.2}, mask_len={}",
+                bs58::encode(&k).into_string(),
+                score,
+                v.mask.len()
+            );
             match &mut best {
                 None => best = Some((k, score, v)),
                 Some((_bk, bs, _bv)) if score > *bs => best = Some((k, score, v)),
                 _ => {}
             }
         }
-        if let Some((k, s, v)) = best { Ok((Some(k), Some(s), Some(v))) } else { Ok((None, None, None)) }
+        if let Some((k, s, v)) = best {
+            debug!("best_consensus_by_entryhash: returning best with score {:.2}", s);
+            Ok((Some(k), Some(s), Some(v)))
+        } else {
+            debug!("best_consensus_by_entryhash: no best found, returning None");
+            Ok((None, None, None))
+        }
     }
 
     /// Sets temporal entry hash and height
@@ -421,7 +448,23 @@ impl Fabric {
     pub fn get_temporal_height(&self) -> Result<Option<u32>, Error> {
         match self.db.get(CF_SYSCONF, b"temporal_height")? {
             Some(hb) => {
-                Ok(Some(u64::from_be_bytes(hb.try_into().map_err(|_| Error::KvCell("temporal_height"))?) as u32))
+                // Try u64 big-endian bytes (8 bytes)
+                if hb.len() == 8 {
+                    let arr: [u8; 8] = hb.try_into().map_err(|_| Error::KvCell("temporal_height"))?;
+                    return Ok(Some(u64::from_be_bytes(arr) as u32));
+                }
+                // Try u32 big-endian bytes (4 bytes)
+                if hb.len() == 4 {
+                    let arr: [u8; 4] = hb.try_into().map_err(|_| Error::KvCell("temporal_height"))?;
+                    return Ok(Some(u32::from_be_bytes(arr)));
+                }
+                // Try ETF term (for Elixir compatibility)
+                if let Ok(term) = Term::decode(&mut std::io::Cursor::new(&hb)) {
+                    if let Some(height) = TermExt::get_integer(&term) {
+                        return Ok(Some(height as u32));
+                    }
+                }
+                Err(Error::KvCell("temporal_height"))
             }
             None => Ok(None),
         }
@@ -445,7 +488,25 @@ impl Fabric {
 
     pub fn get_rooted_height(&self) -> Result<Option<u32>, Error> {
         match self.db.get(CF_SYSCONF, b"rooted_height")? {
-            Some(hb) => Ok(Some(u64::from_be_bytes(hb.try_into().map_err(|_| Error::KvCell("rooted_height"))?) as u32)),
+            Some(hb) => {
+                // Try u64 big-endian bytes (8 bytes)
+                if hb.len() == 8 {
+                    let arr: [u8; 8] = hb.try_into().map_err(|_| Error::KvCell("rooted_height"))?;
+                    return Ok(Some(u64::from_be_bytes(arr) as u32));
+                }
+                // Try u32 big-endian bytes (4 bytes)
+                if hb.len() == 4 {
+                    let arr: [u8; 4] = hb.try_into().map_err(|_| Error::KvCell("rooted_height"))?;
+                    return Ok(Some(u32::from_be_bytes(arr)));
+                }
+                // Try ETF term (for Elixir compatibility)
+                if let Ok(term) = Term::decode(&mut std::io::Cursor::new(&hb)) {
+                    if let Some(height) = TermExt::get_integer(&term) {
+                        return Ok(Some(height as u32));
+                    }
+                }
+                Err(Error::KvCell("rooted_height"))
+            }
             None => Ok(None),
         }
     }
@@ -467,8 +528,10 @@ fn clean_muts_rev_range(db: &RocksDb, start: u32, end: u32) -> Result<(), crate:
     let txn = db.begin_transaction()?;
     let mut ops = 0usize;
     for height in start..=end {
-        let height_prefix = format!("{:016}:", height);
-        let kvs = match db.iter_prefix(CF_ENTRY_BY_HEIGHT, height_prefix.as_bytes()) {
+        // Match Elixir format: "#{height}:" with no padding
+        let mut height_prefix = height.to_string().into_bytes();
+        height_prefix.push(b':');
+        let kvs = match db.iter_prefix(CF_ENTRY_BY_HEIGHT, &height_prefix) {
             Ok(k) => k,
             Err(_) => continue,
         };

@@ -10,6 +10,7 @@ use crate::utils::rocksdb::RocksDb;
 use crate::utils::safe_etf::encode_safe_deterministic;
 use eetf::{Atom, Binary, Term};
 use std::collections::HashMap;
+use tracing::warn;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -60,7 +61,9 @@ impl Consensus {
         let map = Term::decode(bin)?.get_term_map().ok_or(Error::WrongType("consensus map"))?;
         let entry_hash = map.get_binary("entry_hash").ok_or(Error::Missing("entry_hash"))?;
         let mutations_hash = map.get_binary("mutations_hash").ok_or(Error::Missing("mutations_hash"))?;
-        let mask = map.get_binary("mask").map(bitvec_to_bools);
+        // Empty mask binary (0 bytes) means None (all trainers signed), not Some(empty vec)
+        let mask =
+            map.get_binary::<Vec<u8>>("mask").map(|bytes| bitvec_to_bools(bytes)).filter(|mask| !mask.is_empty());
         let agg_sig = map.get_binary("aggsig").ok_or(Error::Missing("aggsig"))?;
         Ok(Self { entry_hash, mutations_hash, mask, agg_sig, score: None })
     }
@@ -179,8 +182,23 @@ pub fn get_rooted_tip_entry(db: &RocksDb) -> Result<Entry, Error> {
 pub fn get_chain_height(db: &RocksDb) -> Result<u32, Error> {
     match db.get("sysconf", b"temporal_height")? {
         Some(hb) => {
-            let arr: [u8; 8] = hb.try_into().map_err(|_| Error::Missing("temporal_height"))?;
-            Ok(u64::from_be_bytes(arr) as u32)
+            // Try u64 big-endian bytes (8 bytes)
+            if hb.len() == 8 {
+                let arr: [u8; 8] = hb.try_into().map_err(|_| Error::WrongType("invalid kv cell: temporal_height"))?;
+                return Ok(u64::from_be_bytes(arr) as u32);
+            }
+            // Try u32 big-endian bytes (4 bytes)
+            if hb.len() == 4 {
+                let arr: [u8; 4] = hb.try_into().map_err(|_| Error::WrongType("invalid kv cell: temporal_height"))?;
+                return Ok(u32::from_be_bytes(arr));
+            }
+            // Try ETF term (for Elixir compatibility)
+            if let Ok(term) = Term::decode(&mut std::io::Cursor::new(&hb)) {
+                if let Some(height) = term.get_integer() {
+                    return Ok(height as u32);
+                }
+            }
+            Err(Error::WrongType("invalid kv cell: temporal_height"))
         }
         None => Err(Error::Missing("temporal_height")),
     }
@@ -273,23 +291,13 @@ pub fn chain_tip(db: &RocksDb) -> Result<Option<[u8; 32]>, Error> {
 }
 
 pub fn chain_muts_rev(db: &RocksDb, hash: &[u8; 32]) -> Option<Vec<crate::consensus::kv::Mutation>> {
-    db.get("muts_rev", hash).ok().flatten().and_then(|bin| {
-        // decode ETF term to mutations list
-        use std::io::Cursor;
-        let _term = eetf::Term::decode(&mut Cursor::new(&bin)).ok()?;
-        // TODO: implement proper mutation deserialization from ETF
-        None
-    })
+    let bin = db.get("muts_rev", hash).ok()??;
+    crate::consensus::kv::mutations_from_etf(&bin).ok()
 }
 
 pub fn chain_muts(db: &RocksDb, hash: &[u8; 32]) -> Option<Vec<crate::consensus::kv::Mutation>> {
-    db.get("muts", hash).ok().flatten().and_then(|bin| {
-        // decode ETF term to mutations list
-        use std::io::Cursor;
-        let _term = eetf::Term::decode(&mut Cursor::new(&bin)).ok()?;
-        // TODO: implement proper mutation deserialization from ETF
-        None
-    })
+    let bin = db.get("muts", hash).ok()??;
+    crate::consensus::kv::mutations_from_etf(&bin).ok()
 }
 
 #[derive(Debug, Clone)]
@@ -401,7 +409,7 @@ pub fn apply_entry(db: &RocksDb, config: &crate::config::Config, next_entry: &En
 
     // get mutations from consensus KV
     let muts = crate::consensus::kv::mutations();
-    let _muts_rev = crate::consensus::kv::mutations_reverse();
+    let muts_rev = crate::consensus::kv::mutations_reverse();
     let mutations_hash = crate::consensus::kv::hash_mutations(&muts);
 
     // sign attestation
@@ -411,7 +419,7 @@ pub fn apply_entry(db: &RocksDb, config: &crate::config::Config, next_entry: &En
     let attestation_packed = attestation.to_etf_bin()?;
 
     // store my attestation
-    db.put("my_attestation_for_entry", &next_entry.hash, &attestation_packed)?;
+    db.put("my_attestation_for_entry|entryhash", &next_entry.hash, &attestation_packed)?;
 
     // check if we're a trainer for this height
     let trainers =
@@ -421,28 +429,35 @@ pub fn apply_entry(db: &RocksDb, config: &crate::config::Config, next_entry: &En
     // record seen time
     let seen_time = get_unix_millis_now();
     let seen_time_bin = encode_safe_deterministic(&Term::from(eetf::BigInteger { value: seen_time.into() }));
-    db.put("my_seen_time_for_entry", &next_entry.hash, &seen_time_bin)?;
+    db.put("my_seen_time_entry|entryhash", &next_entry.hash, &seen_time_bin)?;
 
     // update chain tip
     db.put("sysconf", b"temporal_tip", &next_entry.hash)?;
-    db.put("sysconf", b"temporal_height", &next_entry.header.height.to_be_bytes())?;
+    // store temporal_height as u64 big-endian bytes
+    db.put("sysconf", b"temporal_height", &(next_entry.header.height as u64).to_be_bytes())?;
 
     // store mutations reverse for potential rewind
-    let muts_rev_bin = encode_safe_deterministic(&eetf::Term::from(eetf::List { elements: vec![] })); // TODO: proper encoding
+    let muts_rev_bin = crate::consensus::kv::mutations_to_etf(&muts_rev);
     db.put("muts_rev", &next_entry.hash, &muts_rev_bin)?;
 
     // store entry itself if not already there
     if db.get("default", &next_entry.hash)?.is_none() {
         let entry_bin = next_entry.pack()?;
         db.put("default", &next_entry.hash, &entry_bin)?;
-
-        // index by height and slot
-        let height_key = format!("{:016}:{}", next_entry.header.height, bs58::encode(&next_entry.hash).into_string());
-        db.put("entry_by_height", height_key.as_bytes(), &next_entry.hash)?;
-
-        let slot_key = format!("{:016}:{}", next_entry.header.slot, bs58::encode(&next_entry.hash).into_string());
-        db.put("entry_by_slot", slot_key.as_bytes(), &next_entry.hash)?;
     }
+
+    // always index by height and slot (even if entry already exists)
+    // this ensures entries from snapshots get indexed properly
+    // Key format matches Elixir: "#{height}:#{hash}" - no padding, raw hash bytes
+    let mut height_key = next_entry.header.height.to_string().into_bytes();
+    height_key.push(b':');
+    height_key.extend_from_slice(&next_entry.hash);
+    db.put("entry_by_height|height:entryhash", &height_key, &next_entry.hash)?;
+
+    let mut slot_key = next_entry.header.slot.to_string().into_bytes();
+    slot_key.push(b':');
+    slot_key.extend_from_slice(&next_entry.hash);
+    db.put("entry_by_slot|slot:entryhash", &slot_key, &next_entry.hash)?;
 
     // store transactions with results
     for (tx_packed, _result) in next_entry.txs.iter().zip(tx_results.iter()) {
@@ -567,7 +582,8 @@ pub fn chain_rewind(db: &RocksDb, target_hash: &[u8; 32]) -> Result<bool, Error>
 
     // update chain tips
     db.put("sysconf", b"temporal_tip", &entry.hash)?;
-    db.put("sysconf", b"temporal_height", &entry.header.height.to_be_bytes())?;
+    // store temporal_height as u64 big-endian bytes
+    db.put("sysconf", b"temporal_height", &(entry.header.height as u64).to_be_bytes())?;
 
     // update rooted tip if needed
     if let Ok(Some(rooted_hash)) = get_rooted_tip_hash(db) {
@@ -587,16 +603,21 @@ fn chain_rewind_internal(db: &RocksDb, current_entry: &Entry, target_hash: &[u8;
 
     // remove current entry from indices
     db.delete("default", &current_entry.hash)?;
-    db.delete("my_seen_time_for_entry", &current_entry.hash)?;
+    db.delete("my_seen_time_entry|entryhash", &current_entry.hash)?;
 
-    let height_key = format!("{:016}:{}", current_entry.header.height, bs58::encode(&current_entry.hash).into_string());
-    db.delete("entry_by_height", height_key.as_bytes())?;
+    // Match Elixir format: "#{height}:#{hash}" - no padding, raw hash bytes
+    let mut height_key = current_entry.header.height.to_string().into_bytes();
+    height_key.push(b':');
+    height_key.extend_from_slice(&current_entry.hash);
+    db.delete("entry_by_height|height:entryhash", &height_key)?;
 
-    let slot_key = format!("{:016}:{}", current_entry.header.slot, bs58::encode(&current_entry.hash).into_string());
-    db.delete("entry_by_slot", slot_key.as_bytes())?;
+    let mut slot_key = current_entry.header.slot.to_string().into_bytes();
+    slot_key.push(b':');
+    slot_key.extend_from_slice(&current_entry.hash);
+    db.delete("entry_by_slot|slot:entryhash", &slot_key)?;
 
-    db.delete("consensus_by_entryhash", &current_entry.hash)?;
-    db.delete("my_attestation_for_entry", &current_entry.hash)?;
+    db.delete("consensus_by_entryhash|Map<mutationshash,consensus>", &current_entry.hash)?;
+    db.delete("my_attestation_for_entry|entryhash", &current_entry.hash)?;
 
     // remove transaction indices
     for tx_packed in &current_entry.txs {
@@ -715,106 +736,113 @@ pub fn set_rooted_tip(db: &RocksDb, hash: &[u8; 32]) -> Result<(), Error> {
 }
 
 pub fn my_attestation_by_entryhash(db: &RocksDb, entry_hash: &[u8; 32]) -> Option<Attestation> {
-    let bin = db.get("my_attestation_for_entry", entry_hash).ok()??;
+    let bin = db.get("my_attestation_for_entry|entryhash", entry_hash).ok()??;
     Attestation::from_etf_bin(&bin).ok()
 }
 
-pub fn proc_consensus_1(db: &RocksDb, fabric: &fabric::Fabric, next_height: u32) -> Result<(), Error> {
-    let next_entries = best_entry_for_height(db, fabric, next_height)?;
+pub fn proc_consensus(db: &RocksDb, fabric: &fabric::Fabric) -> Result<(), Error> {
+    let initial_rooted_hash = get_rooted_tip_hash(db)?.unwrap_or([0u8; 32]);
 
-    if let Some(best_entry_info) = next_entries.first() {
+    loop {
+        let entry_root = get_rooted_tip_entry(db)?;
+        let entry_temp = get_chain_tip_entry(db)?;
+        let height_root = entry_root.header.height;
+        let height_temp = entry_temp.header.height;
+
+        // nothing more to process
+        if height_root >= height_temp {
+            warn!(
+                "proc_consensus: rooted_height {} >= temporal_height {}, nothing to process",
+                height_root, height_temp
+            );
+            break;
+        }
+
+        let next_height = height_root + 1;
+        tracing::debug!(
+            "proc_consensus: processing height {} (rooted={}, temporal={})",
+            next_height,
+            height_root,
+            height_temp
+        );
+
+        let next_entries = best_entry_for_height(db, fabric, next_height)?;
+
+        let Some(best_entry_info) = next_entries.first() else {
+            warn!(
+                "proc_consensus: no entries with consensus at height {} (rooted={}, temporal={})",
+                next_height, height_root, height_temp
+            );
+            break;
+        };
+
         let score = best_entry_info.score.unwrap_or(0.0);
+        let best_entry = &best_entry_info.entry;
 
-        // check if score is >= 0.67 (67% consensus threshold)
-        if score >= 0.67 {
-            let best_entry = &best_entry_info.entry;
-            let mutations_hash = best_entry_info.mutations_hash.unwrap();
+        // not enough consensus
+        if score < 0.67 {
+            warn!(
+                "proc_consensus: insufficient consensus score {:.2} (need 0.67) for entry {} at height {}",
+                score,
+                bs58::encode(&best_entry.hash).into_string(),
+                best_entry.header.height
+            );
+            break;
+        }
 
-            // get our local attestation for this entry
-            let my_attestation = my_attestation_by_entryhash(db, &best_entry.hash);
+        let mutations_hash = best_entry_info.mutations_hash.unwrap();
 
-            match my_attestation {
-                None => {
-                    // softfork: rewind to previous entry
-                    println!(
-                        "softfork: rewind to entry {}, height {}",
+        // get our local attestation for this entry to verify we applied it with same mutations
+        let my_attestation = my_attestation_by_entryhash(db, &best_entry.hash);
+
+        match my_attestation {
+            None => {
+                // softfork: consensus chose entry we don't have applied, need to rewind
+                warn!(
+                    "proc_consensus softfork: consensus chose entry {} at height {} but we don't have it applied, rewinding",
+                    bs58::encode(&best_entry.hash).into_string(),
+                    best_entry.header.height
+                );
+                // rewind to previous entry and try again
+                let prev_entry = get_rooted_tip_entry(db)?;
+                chain_rewind(db, &prev_entry.hash)?;
+                break; // exit after rewind
+            }
+            Some(my_att) => {
+                if mutations_hash != my_att.mutations_hash {
+                    warn!(
+                        "proc_consensus EMERGENCY: consensus mutations {} differ from ours {} for entry {} at height {}",
+                        bs58::encode(&mutations_hash).into_string(),
+                        bs58::encode(&my_att.mutations_hash).into_string(),
                         bs58::encode(&best_entry.hash).into_string(),
                         best_entry.header.height
                     );
-
-                    // get previous entry hash to rewind to
-                    let rewind_hash = if next_height > 1 {
-                        let prev_entries = best_entry_for_height(db, fabric, next_height - 1)?;
-                        if let Some(prev_entry) = prev_entries.first() {
-                            prev_entry.entry.hash
-                        } else {
-                            get_temporal_tip_hash(db)?.unwrap_or([0u8; 32])
-                        }
-                    } else {
-                        get_temporal_tip_hash(db)?.unwrap_or([0u8; 32])
-                    };
-
-                    chain_rewind(db, &rewind_hash)?;
-                    // recursively process consensus again
-                    proc_consensus(db, fabric)?;
-                }
-                Some(my_att) => {
-                    if mutations_hash != my_att.mutations_hash {
-                        // EMERGENCY: consensus chose different mutations than ours
-                        let height = best_entry.header.height;
-                        let slot = best_entry.header.slot;
-
-                        println!(
-                            "EMERGENCY: consensus chose entry {} for height/slot {}/{}",
-                            bs58::encode(&best_entry.hash).into_string(),
-                            height,
-                            slot
-                        );
-                        println!(
-                            "but our mutations are {} while consensus is {}",
-                            bs58::encode(&my_att.mutations_hash).into_string(),
-                            bs58::encode(&mutations_hash).into_string()
-                        );
-                        println!("EMERGENCY: consensus halted as state is out of sync with network");
-
-                        // rewind to previous entry
-                        let prev_entries = best_entry_for_height(db, fabric, next_height - 1)?;
-                        if let Some(prev_entry) = prev_entries.first() {
-                            chain_rewind(db, &prev_entry.entry.hash)?;
-                        }
-
-                        // halt the process - in a real implementation this would exit
-                        return Err(Error::NotImplemented("emergency_halt"));
-                    } else {
-                        // consensus matches our attestation - set as rooted tip
-                        // TODO: call FabricEventGen.event_rooted(best_entry, mutations_hash)
-                        set_rooted_tip(db, &best_entry.hash)?;
-
-                        // recursively process consensus for next height
-                        proc_consensus(db, fabric)?;
-                    }
+                    // halt consensus processing - state divergence detected
+                    break;
+                } else {
+                    // mutations match, safe to root the entry
+                    tracing::info!(
+                        "proc_consensus: rooting entry {} at height {} with score {:.2}",
+                        bs58::encode(&best_entry.hash).into_string(),
+                        best_entry.header.height,
+                        score
+                    );
+                    set_rooted_tip(db, &best_entry.hash)?;
+                    // continue loop to process next height
                 }
             }
         }
     }
 
-    Ok(())
-}
-
-pub fn proc_consensus(db: &RocksDb, fabric: &fabric::Fabric) -> Result<(), Error> {
-    let entry_root = get_rooted_tip_entry(db)?;
-    let entry_temp = get_chain_tip_entry(db)?;
-    let height_root = entry_root.header.height;
-    let height_temp = entry_temp.header.height;
-
-    if height_root < height_temp {
-        proc_consensus_1(db, fabric, height_root + 1)?;
-
-        // check if rooted tip changed
-        let new_rooted_tip = get_rooted_tip_hash(db)?.unwrap_or([0u8; 32]);
-        if new_rooted_tip != entry_root.hash {
-            // TODO: trigger event_consensus and NodeGen.broadcast_tip()
-        }
+    // check if rooted tip changed
+    let final_rooted_hash = get_rooted_tip_hash(db)?.unwrap_or([0u8; 32]);
+    if final_rooted_hash != initial_rooted_hash {
+        tracing::info!(
+            "proc_consensus: rooted tip changed from {} to {}",
+            bs58::encode(&initial_rooted_hash).into_string(),
+            bs58::encode(&final_rooted_hash).into_string()
+        );
+        // TODO: trigger event_consensus and NodeGen.broadcast_tip()
     }
 
     Ok(())
@@ -891,152 +919,121 @@ pub fn get_softfork_settings() -> SoftforkSettings {
     SoftforkSettings { softfork_hash: Vec::new(), softfork_deny_hash: Vec::new() }
 }
 
-pub async fn proc_entries(db: &RocksDb, fabric: &fabric::Fabric, config: &crate::config::Config, ctx: &crate::Context) -> Result<(), Error> {
+/// Helper function to check if entry is in its designated slot
+fn is_entry_in_slot(db: &RocksDb, entry: &Entry, cur_slot: u32) -> bool {
+    let next_slot = entry.header.slot;
+    let slot_trainer = trainer_for_slot(db, entry.header.height, next_slot);
+
+    // check incremental slot
+    let slot_delta = next_slot as i64 - cur_slot as i64;
+    if slot_delta != 1 {
+        return false;
+    }
+
+    // check trainer authorization
+    match slot_trainer {
+        Some(expected_trainer) if entry.header.signer == expected_trainer => true,
+        Some(_) if entry.mask.is_some() => {
+            // aggregate signature path - check if score >= 0.67
+            let trainers = consensus::trainers_for_height(db, entry.header.height).unwrap_or_default();
+            let score = score_mask_unit(entry.mask.as_ref().unwrap(), trainers.len());
+            score >= 0.67
+        }
+        _ => false,
+    }
+}
+
+pub async fn proc_entries(
+    db: &RocksDb,
+    fabric: &fabric::Fabric,
+    config: &crate::config::Config,
+    ctx: &crate::Context,
+) -> Result<(), Error> {
     let softfork_settings = get_softfork_settings();
 
-    let cur_entry = get_chain_tip_entry(db)?;
-    let cur_slot = cur_entry.header.slot;
-    let height = cur_entry.header.height;
-    let next_height = height + 1;
+    // use a loop instead of tail recursion (Rust doesn't optimize tail calls)
+    loop {
+        let cur_entry = get_chain_tip_entry(db)?;
+        let cur_slot = cur_entry.header.slot;
+        let next_height = cur_entry.header.height + 1;
 
-    // get entries for next height
-    let entry_bins = fabric.entries_by_height(next_height as u64)?;
-    let mut next_entries = Vec::new();
+        // filter and sort entries using functional pipeline matching Elixir logic
+        let mut next_entries: Vec<Entry> = fabric
+            .entries_by_height(next_height as u64)?
+            .into_iter()
+            .filter_map(|entry_bin| {
+                Entry::unpack(&entry_bin)
+                    .map_err(|e| tracing::warn!("failed to unpack entry at height {}: {}", next_height, e))
+                    .ok()
+            })
+            .filter(|next_entry| {
+                // all conditions must be true (matches Elixir cond logic)
+                is_entry_in_slot(db, next_entry, cur_slot)
+                    && !softfork_settings.softfork_deny_hash.contains(&next_entry.hash)
+                    && validate_next_entry(&cur_entry, next_entry).is_ok()
+            })
+            .collect();
 
-    //println!("processing {} entries for {next_height}", entry_bins.len());
+        // sort by tuple (matches Elixir sort_by with tuple comparison)
+        next_entries.sort_by_key(|entry| {
+            (
+                softfork_settings.softfork_hash.contains(&entry.hash), // false (not in list) comes first
+                entry.header.slot,
+                entry.mask.is_some(), // false (no mask) comes first (Elixir !mask)
+                entry.hash,
+            )
+        });
 
-    for entry_bin in entry_bins {
-        // handle entry unpacking errors gracefully - continue processing remaining entries
-        let next_entry = match Entry::unpack(&entry_bin) {
-            Ok(entry) => entry,
-            Err(e) => {
-                // log error and continue with next entry instead of failing entire consensus
-                tracing::warn!("failed to unpack entry at height {}: {}", next_height, e);
-                continue;
-            }
+        // process first entry if available (matches Elixir pattern matching)
+        let Some(entry) = next_entries.first() else {
+            return Ok(());
         };
 
-        // check if entry is in softfork deny list
-        if softfork_settings.softfork_deny_hash.contains(&next_entry.hash) {
-            continue;
-        }
-
-        // validate entry structure and transitions
-        if validate_next_entry(&cur_entry, &next_entry).is_err() {
-            continue;
-        }
-
-        // check slot validation
-        let next_slot = next_entry.header.slot;
-        let slot_trainer = trainer_for_slot(db, next_entry.header.height, next_slot);
-
-        let in_slot = if let Some(expected_trainer) = slot_trainer {
-            if next_entry.header.signer == expected_trainer {
-                true
-            } else if next_entry.mask.is_some() {
-                // aggregate signature path - check if score >= 0.67
-                let trainers = consensus::trainers_for_height(db, next_entry.header.height).unwrap_or_default();
-                let score = score_mask_unit(&next_entry.mask.as_ref().unwrap(), trainers.len());
-                score >= 0.67
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        // check incremental slot
-        let slot_delta = next_slot as i64 - cur_slot as i64;
-
-        // filter entry based on conditions
-        if in_slot && slot_delta == 1 {
-            next_entries.push(next_entry);
-        }
-    }
-
-    // sort entries by priority:
-    // 1. entries NOT in softfork_hash come first
-    // 2. by slot
-    // 3. entries without mask come first
-    // 4. by hash
-    next_entries.sort_by(|a, b| {
-        let a_in_softfork = softfork_settings.softfork_hash.contains(&a.hash);
-        let b_in_softfork = softfork_settings.softfork_hash.contains(&b.hash);
-
-        let softfork_cmp = a_in_softfork.cmp(&b_in_softfork);
-        if softfork_cmp != std::cmp::Ordering::Equal {
-            return softfork_cmp;
-        }
-
-        let slot_cmp = a.header.slot.cmp(&b.header.slot);
-        if slot_cmp != std::cmp::Ordering::Equal {
-            return slot_cmp;
-        }
-
-        let mask_cmp = a.mask.is_none().cmp(&b.mask.is_none());
-        if mask_cmp != std::cmp::Ordering::Equal {
-            return mask_cmp;
-        }
-
-        a.hash.cmp(&b.hash)
-    });
-
-    // process the first (best) entry if available
-    if let Some(entry) = next_entries.first() {
-        // apply the entry
+        // apply entry (matches Elixir Task.async pattern but synchronously)
         let apply_result = apply_entry(db, config, entry)?;
+        if apply_result.error != "ok" {
+            return Ok(());
+        }
 
-        if apply_result.error == "ok" {
-            // TODO: FabricEventGen.event_applied must be called here to propagate entry application events
-            // This is critical for downstream systems (indexing, monitoring, event processing)
-            // Signature: FabricEventGen.event_applied(entry, mutations_hash, muts, logs)
-            // Missing implementation will prevent proper event propagation
-            println!("Applied entry {} at height {}", bs58::encode(&entry.hash).into_string(), entry.header.height);
+        // TODO: FabricEventGen.event_applied(entry, mutations_hash, muts, logs)
+        tracing::info!("Applied entry {} at height {}", bs58::encode(&entry.hash).into_string(), entry.header.height);
 
-            // broadcast attestation if we're a trainer and have one
-            if let Some(attestation_packed) = apply_result.attestation_packed {
-                // check if we're synced before broadcasting (prevents pollution during catch-up)
-                if is_quorum_synced_off_by_x(db, 6) {
-                    // create event_attestation message
-                    use crate::consensus::doms::attestation::{Attestation, EventAttestation};
-                    match Attestation::from_etf_bin(&attestation_packed) {
-                        Ok(attestation) => {
-                            let event_att = EventAttestation { attestation };
-
-                            // broadcast to all peers
-                            if let Ok(peers) = ctx.node_peers.get_all().await {
-                                for peer in peers {
-                                    if let Err(e) = event_att.send_to_with_metrics(ctx, peer.ip).await {
-                                        tracing::warn!("failed to broadcast attestation to peer {}: {}", peer.ip, e);
-                                    }
-                                }
-                            }
-
-                            // send directly to seed nodes for RPC node updates
-                            for seed_ip in &ctx.config.seed_ips {
-                                if let Err(e) = event_att.send_to_with_metrics(ctx, *seed_ip).await {
-                                    tracing::warn!("failed to send attestation to seed {}: {}", seed_ip, e);
-                                }
-                            }
-
-                            println!("Broadcasted attestation for entry {}", bs58::encode(&entry.hash).into_string());
-                        }
-                        Err(e) => {
-                            tracing::warn!("failed to decode attestation for broadcast: {}", e);
-                        }
-                    }
-                } else {
-                    tracing::debug!("skipping attestation broadcast - node not synced");
-                }
+        // broadcast attestation if synced and we're a trainer
+        if let Some(attestation_packed) = apply_result.attestation_packed {
+            if is_quorum_synced_off_by_x(db, 6) {
+                broadcast_attestation(ctx, &attestation_packed, &entry.hash).await;
             }
+        }
 
-            // remove transactions from pool
-            delete_transactions_from_pool(&entry.txs);
+        // remove transactions from pool (matches Elixir TXPool.delete_packed)
+        delete_transactions_from_pool(&entry.txs);
 
-            // recursively process more entries (boxed to avoid infinite-size future)
-            Box::pin(proc_entries(db, fabric, config, ctx)).await?;
+        // continue loop to process more entries
+    }
+}
+
+/// Helper to broadcast attestation to peers and seed nodes
+async fn broadcast_attestation(ctx: &crate::Context, attestation_packed: &[u8], entry_hash: &[u8; 32]) {
+    use crate::consensus::doms::attestation::{Attestation, EventAttestation};
+
+    let Ok(attestation) = Attestation::from_etf_bin(attestation_packed) else {
+        tracing::warn!("failed to decode attestation for broadcast");
+        return;
+    };
+
+    let event_att = EventAttestation { attestation };
+
+    // broadcast to all peers (matches NodeGen.broadcast)
+    if let Ok(peers) = ctx.node_peers.get_all().await {
+        for peer in peers {
+            let _ = event_att.send_to_with_metrics(ctx, peer.ip).await;
         }
     }
 
-    Ok(())
+    // send to seed nodes for RPC updates (matches seedanrs_as_peers logic)
+    for seed_ip in &ctx.config.seed_ips {
+        let _ = event_att.send_to_with_metrics(ctx, *seed_ip).await;
+    }
+
+    tracing::info!("Broadcasted attestation for entry {}", bs58::encode(entry_hash).into_string());
 }
