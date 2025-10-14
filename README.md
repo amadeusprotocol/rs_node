@@ -205,10 +205,8 @@ mutexes, and instead to use channels for communication between the threads.
 ## Adding core library to other project
 
 ```bash
-cargo add ama_core --git https://github.com/valentynfaychuk/rs_node --package ama_core --branch main
-# Or add following to Cargo.toml
 # [dependencies]
-# ama_core = { package = "ama_core", git = "https://github.com/valentynfaychuk/rs_node", branch = "main" }
+# amadeus-node = { package = "amadeus-node", git = "https://github.com/valentynfaychuk/rs_node", branch = "main" }
 ```
 
 ## Contributing
