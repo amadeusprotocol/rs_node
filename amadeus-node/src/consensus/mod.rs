@@ -6,6 +6,9 @@ pub mod fabric;
 pub mod genesis;
 pub mod kv;
 
+#[cfg(test)]
+pub mod test_mutations_hash;
+
 pub use agg_sig::{
     AggSig, DST, DST_ANR, DST_ANR_CHALLENGE, DST_ATT, DST_ENTRY, DST_MOTION, DST_NODE, DST_POP, DST_TX, DST_VRF,
 };

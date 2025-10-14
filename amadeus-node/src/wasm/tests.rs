@@ -6,7 +6,7 @@ use std::sync::Once;
 
 static INIT: Once = Once::new();
 const TEST_DB: &str = "target/test_wasm";
-const CONTRACTS_DIR: &str = "../contracts"; // because core is in the workspace
+const CONTRACTS_DIR: &str = "../assets/contracts"; // because core is in the workspace
 
 fn setup_test_env() -> CallEnv {
     // Don't use INIT.call_once(), just initialize fresh each time like other tests

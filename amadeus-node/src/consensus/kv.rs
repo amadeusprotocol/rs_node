@@ -95,7 +95,7 @@ pub fn reset_for_tests(db: &RocksDb) {
     reset(); // Clear mutations
 
     loop {
-        let items = match db.iter_prefix("sysconf", b"") {
+        let items = match db.iter_prefix("contractstate", b"") {
             Ok(items) => items,
             Err(_) => break,
         };
@@ -103,7 +103,7 @@ pub fn reset_for_tests(db: &RocksDb) {
             break;
         }
         for (k, _v) in items {
-            let _ = db.delete("sysconf", &k);
+            let _ = db.delete("contractstate", &k);
         }
     }
 }
@@ -111,10 +111,10 @@ pub fn reset_for_tests(db: &RocksDb) {
 pub fn kv_put(db: &RocksDb, key: &str, value: &[u8]) {
     get_store_mut(|ctx| {
         // Get existing value from RocksDB for reverse mutation
-        let existed = db.get("sysconf", key.as_bytes()).unwrap_or(None);
+        let existed = db.get("contractstate", key.as_bytes()).unwrap_or(None);
 
         // Store in RocksDB
-        let _ = db.put("sysconf", key.as_bytes(), value);
+        let _ = db.put("contractstate", key.as_bytes(), value);
 
         // Choose mutation context based on flag
         let (fwd, rev) = if ctx.use_gas_context {
@@ -136,13 +136,13 @@ pub fn kv_put(db: &RocksDb, key: &str, value: &[u8]) {
 pub fn kv_increment(db: &RocksDb, key: &str, delta: i64) -> i64 {
     get_store_mut(|ctx| {
         // Get current value from RocksDB
-        let cur = db.get("sysconf", key.as_bytes()).unwrap_or(None).and_then(|v| ascii_i64(&v)).unwrap_or(0);
+        let cur = db.get("contractstate", key.as_bytes()).unwrap_or(None).and_then(|v| ascii_i64(&v)).unwrap_or(0);
         let newv = cur.saturating_add(delta);
         let new_bytes = i64_ascii(newv);
-        let old_bytes = db.get("sysconf", key.as_bytes()).unwrap_or(None);
+        let old_bytes = db.get("contractstate", key.as_bytes()).unwrap_or(None);
 
         // Store updated value in RocksDB
-        let _ = db.put("sysconf", key.as_bytes(), &new_bytes);
+        let _ = db.put("contractstate", key.as_bytes(), &new_bytes);
 
         // Choose mutation context based on flag
         let (fwd, rev) = if ctx.use_gas_context {
@@ -162,8 +162,8 @@ pub fn kv_increment(db: &RocksDb, key: &str, delta: i64) -> i64 {
 
 pub fn kv_delete(db: &RocksDb, key: &str) {
     get_store_mut(|ctx| {
-        if let Some(old) = db.get("sysconf", key.as_bytes()).unwrap_or(None) {
-            let _ = db.delete("sysconf", key.as_bytes());
+        if let Some(old) = db.get("contractstate", key.as_bytes()).unwrap_or(None) {
+            let _ = db.delete("contractstate", key.as_bytes());
 
             let (fwd, rev) = if ctx.use_gas_context {
                 (&mut ctx.mutations_gas, &mut ctx.mutations_gas_reverse)
@@ -178,7 +178,7 @@ pub fn kv_delete(db: &RocksDb, key: &str) {
 }
 
 pub fn kv_get(db: &RocksDb, key: &str) -> Option<Vec<u8>> {
-    db.get("sysconf", key.as_bytes()).unwrap_or(None)
+    db.get("contractstate", key.as_bytes()).unwrap_or(None)
 }
 
 pub fn kv_get_to_i64(db: &RocksDb, key: &str) -> Option<i64> {
@@ -186,11 +186,11 @@ pub fn kv_get_to_i64(db: &RocksDb, key: &str) -> Option<i64> {
 }
 
 pub fn kv_exists(db: &RocksDb, key: &str) -> bool {
-    db.get("sysconf", key.as_bytes()).unwrap_or(None).is_some()
+    db.get("contractstate", key.as_bytes()).unwrap_or(None).is_some()
 }
 
 pub fn kv_get_prefix(db: &RocksDb, prefix: &str) -> Vec<(String, Vec<u8>)> {
-    match db.iter_prefix("sysconf", prefix.as_bytes()) {
+    match db.iter_prefix("contractstate", prefix.as_bytes()) {
         Ok(items) => items
             .into_iter()
             .filter_map(|(k, v)| {
@@ -205,7 +205,7 @@ pub fn kv_get_prefix(db: &RocksDb, prefix: &str) -> Vec<(String, Vec<u8>)> {
 pub fn kv_clear(db: &RocksDb, prefix: &str) -> usize {
     get_store_mut(|ctx| {
         // Get all keys with this prefix from RocksDB
-        let items = match db.iter_prefix("sysconf", prefix.as_bytes()) {
+        let items = match db.iter_prefix("contractstate", prefix.as_bytes()) {
             Ok(items) => items,
             Err(_) => return 0,
         };
@@ -218,7 +218,7 @@ pub fn kv_clear(db: &RocksDb, prefix: &str) -> usize {
             };
             if key_str.starts_with(prefix) {
                 // Delete from RocksDB
-                let _ = db.delete("sysconf", &k);
+                let _ = db.delete("contractstate", &k);
 
                 let (fwd, rev) = if ctx.use_gas_context {
                     (&mut ctx.mutations_gas, &mut ctx.mutations_gas_reverse)
@@ -242,7 +242,7 @@ pub fn kv_set_bit(db: &RocksDb, key: &str, bit_idx: u32, bloom_size_opt: Option<
     let byte_len = (bloom_size as usize).div_ceil(8);
     get_store_mut(|ctx| {
         // Get existing page from RocksDB or create new one
-        let mut page = db.get("sysconf", key.as_bytes()).unwrap_or(None).unwrap_or_else(|| vec![0u8; byte_len]);
+        let mut page = db.get("contractstate", key.as_bytes()).unwrap_or(None).unwrap_or_else(|| vec![0u8; byte_len]);
 
         let byte_i = (bit_idx / 8) as usize;
         let bit_in_byte = (bit_idx % 8) as u8; // LSB first to match Elixir bitstring semantics
@@ -253,7 +253,7 @@ pub fn kv_set_bit(db: &RocksDb, key: &str, bit_idx: u32, bloom_size_opt: Option<
         }
 
         // Record mutations (forward: set_bit; reverse: clear_bit or delete if not existed)
-        let existed = db.get("sysconf", key.as_bytes()).unwrap_or(None).is_some();
+        let existed = db.get("contractstate", key.as_bytes()).unwrap_or(None).is_some();
 
         let (fwd, rev) = if ctx.use_gas_context {
             (&mut ctx.mutations_gas, &mut ctx.mutations_gas_reverse)
@@ -270,41 +270,134 @@ pub fn kv_set_bit(db: &RocksDb, key: &str, bit_idx: u32, bloom_size_opt: Option<
 
         // Set the bit and store in RocksDB
         page[byte_i] |= mask;
-        let _ = db.put("sysconf", key.as_bytes(), &page);
+        let _ = db.put("contractstate", key.as_bytes(), &page);
         true
     })
 }
 
 pub fn hash_mutations(muts: &[Mutation]) -> [u8; 32] {
-    // Deterministic compact encoding: [op_code,u32(len(key)),key_bytes, ...]
-    // op codes: 0=Put,1=Delete,2=SetBit,3=ClearBit; value included only for Put as length+bytes
-    let mut buf = Vec::new();
+    use crate::utils::safe_etf::encode_safe_deterministic;
+    use eetf::{Atom, Binary, FixInteger, List, Map, Term};
+    use std::collections::HashMap;
+
+    // Convert mutations to ETF format (list of maps) matching Elixir structure
+    let mut etf_muts = Vec::new();
     for m in muts {
-        match &m.op {
-            Op::Put => buf.push(0u8),
-            Op::Delete => buf.push(1u8),
-            Op::SetBit { .. } => buf.push(2u8),
-            Op::ClearBit { .. } => buf.push(3u8),
-        }
-        let k = m.key.as_bytes();
-        buf.extend_from_slice(&(k.len() as u32).to_le_bytes());
-        buf.extend_from_slice(k);
+        let mut map = HashMap::new();
+
+        // Add op key
+        let op_atom = match &m.op {
+            Op::Put => Atom::from("put"),
+            Op::Delete => Atom::from("delete"),
+            Op::SetBit { .. } => Atom::from("set_bit"),
+            Op::ClearBit { .. } => Atom::from("clear_bit"),
+        };
+        map.insert(Term::Atom(Atom::from("op")), Term::Atom(op_atom));
+
+        // Add key
+        map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: m.key.as_bytes().to_vec() }));
+
+        // Add value field based on op type
         match (&m.op, &m.value) {
             (Op::Put, Some(v)) => {
-                buf.extend_from_slice(&(v.len() as u32).to_le_bytes());
-                buf.extend_from_slice(v);
+                map.insert(Term::Atom(Atom::from("value")), Term::Binary(Binary { bytes: v.clone() }));
             }
             (Op::SetBit { bit_idx, bloom_size }, _) => {
-                buf.extend_from_slice(&bit_idx.to_le_bytes());
-                buf.extend_from_slice(&bloom_size.to_le_bytes());
+                map.insert(Term::Atom(Atom::from("value")), Term::FixInteger(FixInteger { value: *bit_idx as i32 }));
+                map.insert(Term::Atom(Atom::from("bloomsize")), Term::FixInteger(FixInteger { value: *bloom_size as i32 }));
             }
             (Op::ClearBit { bit_idx }, _) => {
-                buf.extend_from_slice(&bit_idx.to_le_bytes());
+                map.insert(Term::Atom(Atom::from("value")), Term::FixInteger(FixInteger { value: *bit_idx as i32 }));
             }
             _ => {}
         }
+
+        etf_muts.push(Term::Map(Map { map }));
     }
-    let h = blake3::hash(&buf);
+
+    // Create list term
+    let list_term = Term::List(List { elements: etf_muts });
+
+    // Encode with deterministic ETF encoding (matching Elixir's :erlang.term_to_binary(m, [:deterministic]))
+    let encoded = encode_safe_deterministic(&list_term);
+
+    // Hash the encoded bytes
+    let h = blake3::hash(&encoded);
+    *h.as_bytes()
+}
+
+/// Hash mutations with transaction results prepended (matching Elixir: hash_mutations(l ++ m))
+/// where l is the list of transaction results and m is the list of mutations
+pub fn hash_mutations_with_results(
+    results: &[crate::consensus::consensus::TxResult],
+    muts: &[Mutation],
+) -> [u8; 32] {
+    use crate::utils::safe_etf::encode_safe_deterministic;
+    use eetf::{Atom, Binary, FixInteger, List, Map, Term};
+    use std::collections::HashMap;
+
+    let mut etf_list = Vec::new();
+
+    // First, add transaction results to the list (matching Elixir's l)
+    for result in results {
+        let mut map = HashMap::new();
+        map.insert(Term::Atom(Atom::from("error")), Term::Atom(Atom::from(result.error.as_str())));
+
+        // Add logs if not empty (matching Elixir result map structure)
+        if !result.logs.is_empty() {
+            let logs_terms: Vec<Term> = result
+                .logs
+                .iter()
+                .map(|log| Term::Binary(Binary { bytes: log.as_bytes().to_vec() }))
+                .collect();
+            map.insert(Term::Atom(Atom::from("logs")), Term::List(List { elements: logs_terms }));
+        }
+
+        etf_list.push(Term::Map(Map { map }));
+    }
+
+    // Then, add mutations to the list (matching Elixir's m)
+    for m in muts {
+        let mut map = HashMap::new();
+
+        // Add op key
+        let op_atom = match &m.op {
+            Op::Put => Atom::from("put"),
+            Op::Delete => Atom::from("delete"),
+            Op::SetBit { .. } => Atom::from("set_bit"),
+            Op::ClearBit { .. } => Atom::from("clear_bit"),
+        };
+        map.insert(Term::Atom(Atom::from("op")), Term::Atom(op_atom));
+
+        // Add key
+        map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: m.key.as_bytes().to_vec() }));
+
+        // Add value field based on op type
+        match (&m.op, &m.value) {
+            (Op::Put, Some(v)) => {
+                map.insert(Term::Atom(Atom::from("value")), Term::Binary(Binary { bytes: v.clone() }));
+            }
+            (Op::SetBit { bit_idx, bloom_size }, _) => {
+                map.insert(Term::Atom(Atom::from("value")), Term::FixInteger(FixInteger { value: *bit_idx as i32 }));
+                map.insert(Term::Atom(Atom::from("bloomsize")), Term::FixInteger(FixInteger { value: *bloom_size as i32 }));
+            }
+            (Op::ClearBit { bit_idx }, _) => {
+                map.insert(Term::Atom(Atom::from("value")), Term::FixInteger(FixInteger { value: *bit_idx as i32 }));
+            }
+            _ => {}
+        }
+
+        etf_list.push(Term::Map(Map { map }));
+    }
+
+    // Create list term
+    let list_term = Term::List(List { elements: etf_list });
+
+    // Encode with deterministic ETF encoding
+    let encoded = encode_safe_deterministic(&list_term);
+
+    // Hash the encoded bytes
+    let h = blake3::hash(&encoded);
     *h.as_bytes()
 }
 
@@ -403,28 +496,28 @@ pub fn revert(db: &RocksDb, m_rev: &[Mutation]) {
             match &m.op {
                 Op::Put => {
                     if let Some(v) = &m.value {
-                        let _ = db.put("sysconf", m.key.as_bytes(), v);
+                        let _ = db.put("contractstate", m.key.as_bytes(), v);
                     }
                 }
                 Op::Delete => {
-                    let _ = db.delete("sysconf", m.key.as_bytes());
+                    let _ = db.delete("contractstate", m.key.as_bytes());
                 }
                 Op::ClearBit { bit_idx } => {
-                    if let Some(mut page) = db.get("sysconf", m.key.as_bytes()).unwrap_or(None) {
+                    if let Some(mut page) = db.get("contractstate", m.key.as_bytes()).unwrap_or(None) {
                         let byte_i = (*bit_idx / 8) as usize;
                         let bit_in_byte = (*bit_idx % 8) as u8;
                         let mask = 1u8 << bit_in_byte;
                         page[byte_i] &= !mask;
-                        let _ = db.put("sysconf", m.key.as_bytes(), &page);
+                        let _ = db.put("contractstate", m.key.as_bytes(), &page);
                     }
                 }
                 Op::SetBit { bit_idx, .. } => {
-                    if let Some(mut page) = db.get("sysconf", m.key.as_bytes()).unwrap_or(None) {
+                    if let Some(mut page) = db.get("contractstate", m.key.as_bytes()).unwrap_or(None) {
                         let byte_i = (*bit_idx / 8) as usize;
                         let bit_in_byte = (*bit_idx % 8) as u8;
                         let mask = 1u8 << bit_in_byte;
                         page[byte_i] |= mask;
-                        let _ = db.put("sysconf", m.key.as_bytes(), &page);
+                        let _ = db.put("contractstate", m.key.as_bytes(), &page);
                     }
                 }
             }

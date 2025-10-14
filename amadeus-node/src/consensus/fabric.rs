@@ -520,6 +520,110 @@ impl Fabric {
         // Delegate to existing consensus helper using Fabric's RocksDb handle
         crate::consensus::trainers_for_height(self.db(), height)
     }
+
+    // === Contractstate CF proxy methods ===
+    pub fn get_contractstate(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        Ok(self.db.get("contractstate", key)?)
+    }
+
+    pub fn put_contractstate(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
+        self.db.put("contractstate", key, value)?;
+        Ok(())
+    }
+
+    pub fn delete_contractstate(&self, key: &[u8]) -> Result<(), Error> {
+        self.db.delete("contractstate", key)?;
+        Ok(())
+    }
+
+    // === Muts/Muts_rev CF proxy methods ===
+    pub fn get_muts_rev(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, Error> {
+        Ok(self.db.get("muts_rev", hash)?)
+    }
+
+    pub fn put_muts_rev(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
+        self.db.put("muts_rev", hash, data)?;
+        Ok(())
+    }
+
+    pub fn delete_muts_rev(&self, hash: &[u8; 32]) -> Result<(), Error> {
+        self.db.delete("muts_rev", hash)?;
+        Ok(())
+    }
+
+    pub fn get_muts(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, Error> {
+        Ok(self.db.get("muts", hash)?)
+    }
+
+    pub fn put_muts(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
+        self.db.put("muts", hash, data)?;
+        Ok(())
+    }
+
+    // === Attestation CF proxy methods ===
+    pub fn put_attestation(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
+        self.db.put(CF_MY_ATTESTATION_FOR_ENTRY, hash, data)?;
+        Ok(())
+    }
+
+    pub fn delete_attestation(&self, hash: &[u8; 32]) -> Result<(), Error> {
+        self.db.delete(CF_MY_ATTESTATION_FOR_ENTRY, hash)?;
+        Ok(())
+    }
+
+    // === Seen time CF proxy methods ===
+    pub fn put_seen_time(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
+        self.db.put(CF_MY_SEEN_TIME_FOR_ENTRY, hash, data)?;
+        Ok(())
+    }
+
+    pub fn delete_seen_time(&self, hash: &[u8; 32]) -> Result<(), Error> {
+        self.db.delete(CF_MY_SEEN_TIME_FOR_ENTRY, hash)?;
+        Ok(())
+    }
+
+    // === Consensus CF proxy methods ===
+    pub fn delete_consensus(&self, hash: &[u8; 32]) -> Result<(), Error> {
+        self.db.delete(CF_CONSENSUS_BY_ENTRYHASH, hash)?;
+        Ok(())
+    }
+
+    // === Entry indexing proxy methods ===
+    pub fn delete_entry(&self, hash: &[u8; 32]) -> Result<(), Error> {
+        self.db.delete(CF_DEFAULT, hash)?;
+        Ok(())
+    }
+
+    pub fn delete_entry_by_height(&self, height_key: &[u8]) -> Result<(), Error> {
+        self.db.delete(CF_ENTRY_BY_HEIGHT, height_key)?;
+        Ok(())
+    }
+
+    pub fn delete_entry_by_slot(&self, slot_key: &[u8]) -> Result<(), Error> {
+        self.db.delete(CF_ENTRY_BY_SLOT, slot_key)?;
+        Ok(())
+    }
+
+    // === TX CF proxy methods ===
+    pub fn delete_tx(&self, hash: &[u8; 32]) -> Result<(), Error> {
+        self.db.delete("tx", hash)?;
+        Ok(())
+    }
+
+    pub fn delete_tx_account_nonce(&self, key: &[u8]) -> Result<(), Error> {
+        self.db.delete("tx_account_nonce", key)?;
+        Ok(())
+    }
+
+    // === Default CF proxy methods ===
+    pub fn put_entry_raw(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
+        self.db.put(CF_DEFAULT, hash, data)?;
+        Ok(())
+    }
+
+    pub fn get_entry_raw(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, Error> {
+        Ok(self.db.get(CF_DEFAULT, hash)?)
+    }
 }
 
 // Helper used by Fabric::cleanup to remove muts_rev keys for entries within a height range

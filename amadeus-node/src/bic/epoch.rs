@@ -241,26 +241,29 @@ impl Epoch {
     fn submit_sol(
         &self,
         env: &CallEnv,
-        db: &crate::utils::rocksdb::RocksDb,
+        _db: &crate::utils::rocksdb::RocksDb,
         sol_bytes: &[u8],
     ) -> Result<(), EpochError> {
-        use crate::consensus::kv;
-
         let hash = blake3::hash(sol_bytes);
 
+        // NOTE: Solution tracking disabled to match Elixir reference implementation
+        // Elixir does not track solutions during entry application, only during epoch transitions
+
         // Bloom filter: set 3 bits from hash segments (matching Elixir implementation)
-        let seg0 = u32::from_le_bytes([hash[0], hash[1], hash[2], hash[3]]) % 65536;
-        let seg1 = u32::from_le_bytes([hash[4], hash[5], hash[6], hash[7]]) % 65536;
-        let seg2 = u32::from_le_bytes([hash[8], hash[9], hash[10], hash[11]]) % 65536;
+        // DISABLED: Not in Elixir reference implementation
+        // let seg0 = u32::from_le_bytes([hash[0], hash[1], hash[2], hash[3]]) % 65536;
+        // let seg1 = u32::from_le_bytes([hash[4], hash[5], hash[6], hash[7]]) % 65536;
+        // let seg2 = u32::from_le_bytes([hash[8], hash[9], hash[10], hash[11]]) % 65536;
 
         // Check all 3 bits - if any were already set, sol is duplicate
-        for (page, bit) in [(0, seg0), (1, seg1), (2, seg2)] {
-            let key = format!("bic:epoch:solbloom:{}", page);
-            let was_set = !kv::kv_set_bit(db, &key, bit, Some(65536));
-            if was_set {
-                return Err(EpochError::InvalidSol); // duplicate sol
-            }
-        }
+        // DISABLED: Not in Elixir reference implementation
+        // for (page, bit) in [(0, seg0), (1, seg1), (2, seg2)] {
+        //     let key = format!("bic:epoch:solbloom:{}", page);
+        //     let was_set = !kv::kv_set_bit(db, &key, bit, Some(65536));
+        //     if was_set {
+        //         return Err(EpochError::InvalidSol); // duplicate sol
+        //     }
+        // }
 
         // unpack and verify epoch
         let parsed = Solution::unpack(sol_bytes).map_err(|_| EpochError::InvalidSol)?;
@@ -285,8 +288,9 @@ impl Epoch {
         }
 
         // Increment solution count for this address
-        let count_key = format!("bic:epoch:solutions_count:{}", bs58::encode(&pk).into_string());
-        kv::kv_increment(db, &count_key, 1);
+        // DISABLED: Not in Elixir reference implementation
+        // let count_key = format!("bic:epoch:solutions_count:{}", bs58::encode(&pk).into_string());
+        // kv::kv_increment(db, &count_key, 1);
 
         Ok(())
     }

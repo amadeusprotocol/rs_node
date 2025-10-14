@@ -77,10 +77,10 @@ cargo cli tx --sk sk.local Contract test "[]"
 cargo cli tx --sk sk.local Contract test "[]" --url http://localhost
 
 # Deploy a contract (prints base58-encoded tx)
-cargo cli contract-tx --sk sk.local contracts/simple_counter.wasm
+cargo cli contract-tx --sk sk.local assets/contracts/simple_counter.wasm
 
 # Deploy a contract and send via HTTP to a specific node
-cargo cli contract-tx --sk sk.local contracts/simple_counter.wasm --url http://72.9.144.110
+cargo cli contract-tx --sk sk.local assets/contracts/simple_counter.wasm --url http://72.9.144.110
 ```
 
 ### Node debugging
@@ -133,7 +133,7 @@ the replay addressing, feel free to choose any interface.
 ```bash
 cargo node
 # best to run the replay in another terminal
-tcpreplay -i en0 --pps 1000 pcaps/test.pcap.local
+tcpreplay -i en0 --pps 1000 assets/pcaps/test.pcap.local
 ```
 
 Optionally you can watch the replay as it happens:
@@ -152,7 +152,7 @@ tcpdump -i any udp dst port 36969 -w test.pcap -c 10000
 
 #### Troubleshooting replay
 
-Replaying `pcaps/test.pcap.local` sends exactly 10000 packets, if you
+Replaying `assets/pcaps/test.pcap.local` sends exactly 10000 packets, if you
 see that not all packets from the capture reach the light client, it
 could be because the kernel buffers are too small to handle the replay
 at a given rate, you need to increase the kernel buffers for UDP
@@ -170,7 +170,7 @@ If you see that no packets can reach the light client, the reason could
 be that your IP address changed (e.g. after restart), simply rerun:
 
 ```bash
-rm pcaps/*.local && ./scripts/rewrite-pcaps.sh en0
+rm assets/pcaps/*.local && ./scripts/rewrite-pcaps.sh en0
 ```
 
 ## Debugging the RocksDB

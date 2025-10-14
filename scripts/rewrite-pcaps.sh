@@ -11,7 +11,7 @@ usage() {
 
   $0 <interface>
 
-Rewrites all *.pcap files in the pcaps/ directory to be replayable on the given interface.
+Rewrites all *.pcap files in the assets/pcaps/ directory to be replayable on the given interface.
 - Detects interface IP and MAC addresses automatically
 - Sets both src/dst Ethernet MACs to the interface MAC
 - Rewrites destination IPs to the interface IPv4
@@ -46,7 +46,7 @@ fi
 
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
-pcaps_dir="$repo_root/pcaps"
+pcaps_dir="$repo_root/assets/pcaps"
 
 if [[ ! -d "$pcaps_dir" ]]; then
   echo "Info: directory '$pcaps_dir' does not exist; nothing to rewrite." >&2

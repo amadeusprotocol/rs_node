@@ -2,20 +2,20 @@
 
 set -euo pipefail
 
-# Compile all WAT contracts in the contracts/ directory into WASM.
+# Compile all WAT contracts in the assets/contracts/ directory into WASM.
 # Prefer `wat2wasm` (wabt). If unavailable, try `wasm-tools parse`.
 # Skips files that are already up-to-date.
 
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
-contracts_dir="$repo_root/contracts"
+contracts_dir="$repo_root/assets/contracts"
 
 usage() {
   cat <<EOF
 
   $0
 
-Compiles all *.wat files in the contracts/ directory into *.wasm next to them.
+Compiles all *.wat files in the assets/contracts/ directory into *.wasm next to them.
 - Prefers 'wat2wasm' (from wabt). Falls back to 'wasm-tools parse' if available.
 - Skips recompilation if the .wasm file is newer than the .wat source.
 
