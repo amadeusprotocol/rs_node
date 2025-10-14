@@ -281,11 +281,7 @@ mod host_functions {
         let (context, store) = ctx.data_and_store_mut();
         context.add_exec_cost(1);
 
-        if let Some(memory) = &context.memory {
-            memory.view(&store).size().0 as i32 / 65536 // Convert bytes to pages
-        } else {
-            0
-        }
+        if let Some(memory) = &context.memory { memory.size(&store).0 as i32 } else { 0 }
     }
 
     /// System: abort
