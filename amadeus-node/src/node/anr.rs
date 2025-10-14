@@ -617,21 +617,21 @@ impl NodeAnrs {
         let all = self.get_all().await;
         debug!("seeded {} ANRs from config", all.len());
     }
-
-    /// Clear all anrs (useful for testing)
-    pub async fn clear_all(&self) {
-        self.store.write().await.clear()
-    }
-
-    /// Get count of anrs
-    pub async fn count(&self) -> usize {
-        self.store.read().await.len()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl NodeAnrs {
+        pub async fn clear_all(&self) {
+            self.store.write().await.clear()
+        }
+
+        pub async fn count(&self) -> usize {
+            self.store.read().await.len()
+        }
+    }
 
     #[tokio::test]
     async fn test_anr_operations() {

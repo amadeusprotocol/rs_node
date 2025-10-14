@@ -12,9 +12,7 @@ use std::collections::HashMap;
 /// Returns integer cost in cents
 pub fn exec_cost_from_len(tx_encoded_len: usize) -> u64 {
     let bytes = tx_encoded_len + 32 + 96;
-    let cost_units = 3 + (bytes / 256) * 3; // integer division
-    // cost in cents
-    crate::bic::coin::to_cents(cost_units as u64)
+    crate::bic::coin::to_cents((1 + bytes / 1024) as u64)
 }
 
 /// Blake3-based deterministic seed
