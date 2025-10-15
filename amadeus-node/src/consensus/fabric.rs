@@ -33,12 +33,13 @@ pub enum Error {
 }
 
 const CF_DEFAULT: &str = "default";
-const CF_ENTRY_BY_HEIGHT: &str = "entry_by_height|height:entryhash";
-const CF_ENTRY_BY_SLOT: &str = "entry_by_slot|slot:entryhash";
-const CF_MY_SEEN_TIME_FOR_ENTRY: &str = "my_seen_time_entry|entryhash";
-const CF_MY_ATTESTATION_FOR_ENTRY: &str = "my_attestation_for_entry|entryhash";
+const CF_ENTRY: &str = "entry";
 const CF_CONSENSUS_BY_ENTRYHASH: &str = "consensus_by_entryhash|Map<mutationshash,consensus>";
 const CF_SYSCONF: &str = "sysconf";
+const CF_ENTRY_BY_HEIGHT: &str = "entry_by_height|height->entryhash";
+const CF_ENTRY_BY_SLOT: &str = "entry_by_slot|slot->entryhash";
+const CF_MY_SEEN_TIME_FOR_ENTRY: &str = "my_seen_time_entry|entryhash->ts_sec";
+const CF_MY_ATTESTATION_FOR_ENTRY: &str = "my_attestation_for_entry|entryhash->attestation";
 
 /// Initialize Fabric DB area (creates/open RocksDB with the required CFs)
 async fn init_kvdb(base: &str) -> Result<RocksDb, Error> {
@@ -230,9 +231,9 @@ impl Fabric {
             let s = start_height + idx * 10_000;
             let e = s + 9_999;
             // spawn blocking work inline (db is sync API; wrap in spawn_blocking if needed later)
-            let db2 = self.db.clone();
+            let fab = self.clone();
             handles.push(tokio::spawn(async move {
-                clean_muts_rev_range(&db2, s, e).ok();
+                fab.clean_muts_rev_range(s, e).ok();
             }));
         }
         for h in handles {
@@ -254,8 +255,9 @@ impl Fabric {
         seen_millis: u64,
     ) -> Result<(), Error> {
         // store entry if not already present
-        if self.db.get(CF_DEFAULT, hash)?.is_none() {
-            self.db.put(CF_DEFAULT, hash, entry_bin)?;
+        let entry_cf = CF_ENTRY;
+        if self.db.get(entry_cf, hash)?.is_none() {
+            self.db.put(entry_cf, hash, entry_bin)?;
 
             // Store seen time using ETF deterministic format like Elixir
             let seen_time_term = Term::from(BigInteger { value: seen_millis.into() });
@@ -285,8 +287,9 @@ impl Fabric {
         height_prefix.push(b':');
         let kvs = self.db.iter_prefix(CF_ENTRY_BY_HEIGHT, &height_prefix)?;
         let mut out = Vec::new();
+        let entry_cf = CF_ENTRY;
         for (_k, v) in kvs.into_iter() {
-            if let Some(entry_bin) = self.db.get(CF_DEFAULT, &v)? {
+            if let Some(entry_bin) = self.db.get(entry_cf, &v)? {
                 out.push(entry_bin);
             }
         }
@@ -299,8 +302,9 @@ impl Fabric {
         slot_prefix.push(b':');
         let kvs = self.db.iter_prefix(CF_ENTRY_BY_SLOT, &slot_prefix)?;
         let mut out = Vec::new();
+        let entry_cf = CF_ENTRY;
         for (_k, v) in kvs.into_iter() {
-            if let Some(entry_bin) = self.db.get(CF_DEFAULT, &v)? {
+            if let Some(entry_bin) = self.db.get(entry_cf, &v)? {
                 out.push(entry_bin);
             }
         }
@@ -308,7 +312,8 @@ impl Fabric {
     }
 
     pub fn get_entry_by_hash(&self, hash: &[u8; 32]) -> Option<Entry> {
-        let bin = self.db.get(CF_DEFAULT, hash).ok()??;
+        let entry_cf = CF_ENTRY;
+        let bin = self.db.get(entry_cf, hash).ok()??;
         let entry = Entry::unpack(&bin).ok()?;
         Some(entry)
     }
@@ -590,7 +595,8 @@ impl Fabric {
 
     // === Entry indexing proxy methods ===
     pub fn delete_entry(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        self.db.delete(CF_DEFAULT, hash)?;
+        let entry_cf = CF_ENTRY;
+        self.db.delete(entry_cf, hash)?;
         Ok(())
     }
 
@@ -615,38 +621,40 @@ impl Fabric {
         Ok(())
     }
 
-    // === Default CF proxy methods ===
+    // === Entry CF proxy methods ===
     pub fn put_entry_raw(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
-        self.db.put(CF_DEFAULT, hash, data)?;
+        let entry_cf = CF_ENTRY;
+        self.db.put(entry_cf, hash, data)?;
         Ok(())
     }
 
     pub fn get_entry_raw(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, Error> {
-        Ok(self.db.get(CF_DEFAULT, hash)?)
+        let entry_cf = CF_ENTRY;
+        Ok(self.db.get(entry_cf, hash)?)
     }
-}
 
-// Helper used by Fabric::cleanup to remove muts_rev keys for entries within a height range
-fn clean_muts_rev_range(db: &RocksDb, start: u32, end: u32) -> Result<(), crate::utils::rocksdb::Error> {
-    // Use a transaction for batching if available
-    let txn = db.begin_transaction()?;
-    let mut ops = 0usize;
-    for height in start..=end {
-        // Match Elixir format: "#{height}:" with no padding
-        let mut height_prefix = height.to_string().into_bytes();
-        height_prefix.push(b':');
-        let kvs = match db.iter_prefix(CF_ENTRY_BY_HEIGHT, &height_prefix) {
-            Ok(k) => k,
-            Err(_) => continue,
-        };
-        for (_k, entry_hash) in kvs {
-            // entry_hash is the value stored in entry_by_height index
-            let _ = txn.delete("muts_rev", &entry_hash);
-            ops += 1;
+    // Helper used by Fabric::cleanup to remove muts_rev keys for entries within a height range
+    fn clean_muts_rev_range(&self, start: u32, end: u32) -> Result<(), crate::utils::rocksdb::Error> {
+        // Use a transaction for batching if available
+        let txn = self.db.begin_transaction()?;
+        let mut ops = 0usize;
+        for height in start..=end {
+            // Match Elixir format: "#{height}:" with no padding
+            let mut height_prefix = height.to_string().into_bytes();
+            height_prefix.push(b':');
+            let kvs = match self.db.iter_prefix(CF_ENTRY_BY_HEIGHT, &height_prefix) {
+                Ok(k) => k,
+                Err(_) => continue,
+            };
+            for (_k, entry_hash) in kvs {
+                // entry_hash is the value stored in entry_by_height index
+                let _ = txn.delete("muts_rev", &entry_hash);
+                ops += 1;
+            }
         }
+        if ops > 0 {
+            let _ = txn.commit();
+        }
+        Ok(())
     }
-    if ops > 0 {
-        let _ = txn.commit();
-    }
-    Ok(())
 }

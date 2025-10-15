@@ -59,14 +59,14 @@ pub struct RocksDb {
 fn cf_names() -> &'static [&'static str] {
     &[
         "default",
-        "entry_by_height|height:entryhash",
-        "entry_by_slot|slot:entryhash",
-        "tx|txhash:entryhash",
+        "entry",
+        "entry_by_height|height->entryhash",
+        "entry_by_slot|slot->entryhash",
+        "my_seen_time_entry|entryhash->ts_sec",
+        "my_attestation_for_entry|entryhash->attestation",
+        "tx|txhash->entryhash",
         "tx_account_nonce|account:nonce->txhash",
         "tx_receiver_nonce|receiver:nonce->txhash",
-        "my_seen_time_entry|entryhash",
-        "my_attestation_for_entry|entryhash",
-        // "my_mutations_hash_for_entry|entryhash",
         "consensus",
         "consensus_by_entryhash|Map<mutationshash,consensus>",
         "contractstate",
@@ -115,7 +115,6 @@ impl RocksDb {
     pub async fn open(base: String) -> Result<Self, Error> {
         let path = format!("{}/db", base);
         create_dir_all(&path).await?;
-
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
@@ -292,6 +291,7 @@ pub trait RocksDbTrait {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Cf {
     Default,
+    Entry,
     EntryByHeight,
     EntryBySlot,
     Tx,
@@ -311,13 +311,14 @@ impl Cf {
     pub fn as_str(&self) -> &'static str {
         match self {
             Cf::Default => "default",
-            Cf::EntryByHeight => "entry_by_height|height:entryhash",
-            Cf::EntryBySlot => "entry_by_slot|slot:entryhash",
-            Cf::Tx => "tx|txhash:entryhash",
+            Cf::Entry => "entry",
+            Cf::EntryByHeight => "entry_by_height|height->entryhash",
+            Cf::EntryBySlot => "entry_by_slot|slot->entryhash",
+            Cf::Tx => "tx|txhash->entryhash",
             Cf::TxAccountNonce => "tx_account_nonce|account:nonce->txhash",
             Cf::TxReceiverNonce => "tx_receiver_nonce|receiver:nonce->txhash",
-            Cf::MySeenTimeEntry => "my_seen_time_entry|entryhash",
-            Cf::MyAttestationForEntry => "my_attestation_for_entry|entryhash",
+            Cf::MySeenTimeEntry => "my_seen_time_entry|entryhash->ts_sec",
+            Cf::MyAttestationForEntry => "my_attestation_for_entry|entryhash->attestation",
             Cf::Consensus => "consensus",
             Cf::ConsensusByEntryhash => "consensus_by_entryhash|Map<mutationshash,consensus>",
             Cf::ContractState => "contractstate",

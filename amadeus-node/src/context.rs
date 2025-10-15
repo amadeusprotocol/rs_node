@@ -1063,8 +1063,9 @@ mod tests {
         let pk = bls::get_public_key(&sk).expect("pk");
         let pop = bls::sign(&sk, &pk, consensus::DST_POP).expect("pop");
 
+        let unique_id = format!("{}_{}", std::process::id(), utils::misc::get_unix_nanos_now());
         let config = config::Config {
-            work_folder: "/tmp/test_tasks".to_string(),
+            work_folder: format!("/tmp/test_tasks_{}", unique_id),
             version: Ver::new(1, 2, 3),
             offline: false,
             http_ipv4: Ipv4Addr::new(127, 0, 0, 1),
@@ -1125,8 +1126,9 @@ mod tests {
         let pk = bls::get_public_key(&sk).expect("pk");
         let pop = bls::sign(&sk, &pk, consensus::DST_POP).expect("pop");
 
+        let unique_id = format!("{}_{}", std::process::id(), utils::misc::get_unix_nanos_now());
         let config = config::Config {
-            work_folder: "/tmp/test_convenience".to_string(),
+            work_folder: format!("/tmp/test_convenience_{}", unique_id),
             version: Ver::new(1, 2, 3),
             offline: false,
             http_ipv4: Ipv4Addr::new(127, 0, 0, 1),
