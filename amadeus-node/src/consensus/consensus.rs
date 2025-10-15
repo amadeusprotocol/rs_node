@@ -632,9 +632,7 @@ pub fn apply_entry(fabric: &fabric::Fabric, config: &crate::config::Config, next
     muts_rev.extend(muts_exit_rev);
 
     // Hash results + mutations (matching Elixir: ConsensusKV.hash_mutations(l ++ m))
-    // Note: Test data was generated from old Elixir version that only hashed mutations (not results)
-    // TODO: Update test data and use hash_mutations_with_results
-    let mutations_hash = crate::consensus::kv::hash_mutations(&muts);
+    let mutations_hash = crate::consensus::kv::hash_mutations_with_results(&tx_results, &muts);
 
     // sign attestation
     let pk = config.get_pk();
@@ -798,7 +796,7 @@ pub fn chain_rewind(db: &RocksDb, target_hash: &[u8; 32]) -> Result<bool, Error>
 
     // update rooted tip if needed
     if let Ok(Some(rooted_hash)) = get_rooted_tip_hash(&fabric) {
-        if db.get("default", &rooted_hash)?.is_none() {
+        if fabric.get_entry_raw(&rooted_hash)?.is_none() {
             db.put("sysconf", b"rooted_tip", &entry.hash)?;
         }
     }
@@ -813,23 +811,23 @@ fn chain_rewind_internal(db: &RocksDb, current_entry: &Entry, target_hash: &[u8;
         crate::consensus::kv::revert(db, &m_rev);
     }
 
-    // remove current entry from indices
-    db.delete("default", &current_entry.hash)?;
-    db.delete("my_seen_time_entry|entryhash", &current_entry.hash)?;
+    // remove current entry from indices using Fabric methods
+    fabric.delete_entry(&current_entry.hash)?;
+    fabric.delete_seen_time(&current_entry.hash)?;
 
     // Match Elixir format: "#{height}:#{hash}" - no padding, raw hash bytes
     let mut height_key = current_entry.header.height.to_string().into_bytes();
     height_key.push(b':');
     height_key.extend_from_slice(&current_entry.hash);
-    db.delete("entry_by_height|height:entryhash", &height_key)?;
+    fabric.delete_entry_by_height(&height_key)?;
 
     let mut slot_key = current_entry.header.slot.to_string().into_bytes();
     slot_key.push(b':');
     slot_key.extend_from_slice(&current_entry.hash);
-    db.delete("entry_by_slot|slot:entryhash", &slot_key)?;
+    fabric.delete_entry_by_slot(&slot_key)?;
 
-    db.delete("consensus_by_entryhash|Map<mutationshash,consensus>", &current_entry.hash)?;
-    db.delete("my_attestation_for_entry|entryhash", &current_entry.hash)?;
+    fabric.delete_consensus(&current_entry.hash)?;
+    fabric.delete_attestation(&current_entry.hash)?;
 
     // remove transaction indices
     for tx_packed in &current_entry.txs {
@@ -948,8 +946,8 @@ pub fn set_rooted_tip(db: &RocksDb, hash: &[u8; 32]) -> Result<(), Error> {
 }
 
 pub fn my_attestation_by_entryhash(db: &RocksDb, entry_hash: &[u8; 32]) -> Option<Attestation> {
-    let bin = db.get("my_attestation_for_entry|entryhash", entry_hash).ok()??;
-    Attestation::from_etf_bin(&bin).ok()
+    let fabric = fabric::Fabric::with_db(db.clone());
+    fabric.my_attestation_by_entryhash(entry_hash).ok()?
 }
 
 pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {

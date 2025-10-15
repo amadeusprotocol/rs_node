@@ -82,31 +82,6 @@ impl Context {
         init_storage(&config.get_root()).await?;
 
         let fabric = Fabric::new(&config.get_root()).await?;
-
-        {
-            // temporary hack to set rooted height after loading from ex snapshot
-            // only initialize if rooted hash exists (skip for empty/test databases)
-            if let Some(rooted_hash) = fabric.get_rooted_hash()? {
-                if let Some(rooted_entry) = fabric.get_entry_by_hash(&rooted_hash) {
-                    fabric.set_rooted(&rooted_entry)?;
-
-                    // Also set temporal tip (needed by proc_entries and proc_consensus)
-                    // If temporal_tip doesn't exist, initialize it with rooted_tip
-                    if let Some(temporal_hash) = fabric.get_temporal_hash()? {
-                        if let Some(temporal_entry) = fabric.get_entry_by_hash(&temporal_hash) {
-                            fabric.set_temporal(&temporal_entry)?;
-                        } else {
-                            // Temporal hash exists but entry not found, initialize with rooted
-                            fabric.set_temporal(&rooted_entry)?;
-                        }
-                    } else {
-                        // Temporal tip doesn't exist, initialize with rooted
-                        fabric.set_temporal(&rooted_entry)?;
-                    }
-                }
-            }
-        }
-
         let metrics = Metrics::new();
         let node_peers = peers::NodePeers::default();
         let node_anrs = NodeAnrs::new();
