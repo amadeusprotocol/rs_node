@@ -1,7 +1,6 @@
 use crate::consensus::doms::tx::{TxAction, TxU};
 use crate::consensus::kv;
 use crate::consensus::kv::Mutation;
-use crate::utils::misc::pk_hex;
 use crate::utils::rocksdb::RocksDb;
 use blake3;
 use std::cell::RefCell;
@@ -83,8 +82,8 @@ pub fn get_sol_verified_cache() -> HashMap<[u8; 32], bool> {
     SOL_VERIFIED_CACHE.with(|c| c.borrow().clone())
 }
 
-fn key_balance(pk: &[u8], symbol: &str) -> String {
-    format!("bic:coin:balance:{}:{}", pk_hex(pk), symbol)
+fn key_balance(pk: &[u8], symbol: &str) -> Vec<u8> {
+    crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", pk, format!(":{}", symbol).as_bytes())
 }
 
 /// Note: This function does not handle VRF/epoch-dependent sol verification flags; the
@@ -93,7 +92,7 @@ pub fn call_txs_pre_parallel(db: &RocksDb, entry_signer: &[u8; 48], txus: &[TxU]
     // for each txu: set nonce and move exec cost from signer to entry_signer in AMA
     for txu in txus {
         // nonce
-        let key_nonce = format!("bic:base:nonce:{}", pk_hex(&txu.tx.signer));
+        let key_nonce = crate::utils::misc::build_key(b"bic:base:nonce:", &txu.tx.signer);
         kv::kv_put(db, &key_nonce, txu.tx.nonce.to_string().as_bytes());
 
         // exec cost in cents
@@ -128,7 +127,7 @@ pub fn call_exit(db: &RocksDb, env: &crate::bic::epoch::CallEnv) -> (Vec<Mutatio
     // Update epoch segment VR hash every 1000 heights
     if env.entry_height % 1000 == 0 {
         let vr_hash = blake3::hash(&env.entry_vr);
-        kv::kv_put(db, "bic:epoch:segment_vr_hash", vr_hash.as_bytes());
+        kv::kv_put(db, b"bic:epoch:segment_vr_hash", vr_hash.as_bytes());
     }
 
     // Handle special heights
@@ -139,10 +138,10 @@ pub fn call_exit(db: &RocksDb, env: &crate::bic::epoch::CallEnv) -> (Vec<Mutatio
             let trainers = vec![env.entry_signer];
             let serialized =
                 bincode::encode_to_vec(&trainers, bincode::config::standard()).expect("failed to serialize trainers");
-            kv::kv_put(db, "bic:epoch:trainers:0", &serialized);
+            kv::kv_put(db, b"bic:epoch:trainers:0", &serialized);
 
             // Store POP for genesis signer (placeholder implementation)
-            let pop_key = format!("bic:epoch:pop:{}", bs58::encode(&env.entry_signer).into_string());
+            let pop_key = crate::utils::misc::build_key(b"bic:epoch:pop:", &env.entry_signer);
             kv::kv_put(db, &pop_key, b"genesis_pop_placeholder");
         }
         h if h % 100_000 == 99_999 => {

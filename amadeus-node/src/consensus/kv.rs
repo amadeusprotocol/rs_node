@@ -13,7 +13,7 @@ pub enum Op {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mutation {
     pub op: Op,
-    pub key: String,
+    pub key: Vec<u8>, // Raw binary key (NOT String) to support non-UTF8 pubkeys
     pub value: Option<Vec<u8>>, // for Put original/new values or for revert
 }
 
@@ -108,13 +108,13 @@ pub fn reset_for_tests(db: &RocksDb) {
     }
 }
 
-pub fn kv_put(db: &RocksDb, key: &str, value: &[u8]) {
+pub fn kv_put(db: &RocksDb, key: &[u8], value: &[u8]) {
     get_store_mut(|ctx| {
         // Get existing value from RocksDB for reverse mutation
-        let existed = db.get("contractstate", key.as_bytes()).unwrap_or(None);
+        let existed = db.get("contractstate", key).unwrap_or(None);
 
         // Store in RocksDB
-        let _ = db.put("contractstate", key.as_bytes(), value);
+        let _ = db.put("contractstate", key, value);
 
         // Choose mutation context based on flag
         let (fwd, rev) = if ctx.use_gas_context {
@@ -124,25 +124,25 @@ pub fn kv_put(db: &RocksDb, key: &str, value: &[u8]) {
         };
 
         // forward mutation tracks new value
-        fwd.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(value.to_vec()) });
+        fwd.push_back(Mutation { op: Op::Put, key: key.to_vec(), value: Some(value.to_vec()) });
         // reverse mutation: if existed put old value, else delete
         match existed {
-            Some(old) => rev.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(old) }),
-            None => rev.push_back(Mutation { op: Op::Delete, key: key.to_string(), value: None }),
+            Some(old) => rev.push_back(Mutation { op: Op::Put, key: key.to_vec(), value: Some(old) }),
+            None => rev.push_back(Mutation { op: Op::Delete, key: key.to_vec(), value: None }),
         }
     });
 }
 
-pub fn kv_increment(db: &RocksDb, key: &str, delta: i64) -> i64 {
+pub fn kv_increment(db: &RocksDb, key: &[u8], delta: i64) -> i64 {
     get_store_mut(|ctx| {
         // Get current value from RocksDB
-        let cur = db.get("contractstate", key.as_bytes()).unwrap_or(None).and_then(|v| ascii_i64(&v)).unwrap_or(0);
+        let cur = db.get("contractstate", key).unwrap_or(None).and_then(|v| ascii_i64(&v)).unwrap_or(0);
         let newv = cur.saturating_add(delta);
         let new_bytes = i64_ascii(newv);
-        let old_bytes = db.get("contractstate", key.as_bytes()).unwrap_or(None);
+        let old_bytes = db.get("contractstate", key).unwrap_or(None);
 
         // Store updated value in RocksDB
-        let _ = db.put("contractstate", key.as_bytes(), &new_bytes);
+        let _ = db.put("contractstate", key, &new_bytes);
 
         // Choose mutation context based on flag
         let (fwd, rev) = if ctx.use_gas_context {
@@ -151,19 +151,19 @@ pub fn kv_increment(db: &RocksDb, key: &str, delta: i64) -> i64 {
             (&mut ctx.mutations, &mut ctx.mutations_reverse)
         };
 
-        fwd.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(new_bytes) });
+        fwd.push_back(Mutation { op: Op::Put, key: key.to_vec(), value: Some(new_bytes) });
         match old_bytes {
-            Some(old) => rev.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(old) }),
-            None => rev.push_back(Mutation { op: Op::Delete, key: key.to_string(), value: None }),
+            Some(old) => rev.push_back(Mutation { op: Op::Put, key: key.to_vec(), value: Some(old) }),
+            None => rev.push_back(Mutation { op: Op::Delete, key: key.to_vec(), value: None }),
         }
         newv
     })
 }
 
-pub fn kv_delete(db: &RocksDb, key: &str) {
+pub fn kv_delete(db: &RocksDb, key: &[u8]) {
     get_store_mut(|ctx| {
-        if let Some(old) = db.get("contractstate", key.as_bytes()).unwrap_or(None) {
-            let _ = db.delete("contractstate", key.as_bytes());
+        if let Some(old) = db.get("contractstate", key).unwrap_or(None) {
+            let _ = db.delete("contractstate", key);
 
             let (fwd, rev) = if ctx.use_gas_context {
                 (&mut ctx.mutations_gas, &mut ctx.mutations_gas_reverse)
@@ -171,22 +171,22 @@ pub fn kv_delete(db: &RocksDb, key: &str) {
                 (&mut ctx.mutations, &mut ctx.mutations_reverse)
             };
 
-            fwd.push_back(Mutation { op: Op::Delete, key: key.to_string(), value: None });
-            rev.push_back(Mutation { op: Op::Put, key: key.to_string(), value: Some(old) });
+            fwd.push_back(Mutation { op: Op::Delete, key: key.to_vec(), value: None });
+            rev.push_back(Mutation { op: Op::Put, key: key.to_vec(), value: Some(old) });
         }
     });
 }
 
-pub fn kv_get(db: &RocksDb, key: &str) -> Option<Vec<u8>> {
-    db.get("contractstate", key.as_bytes()).unwrap_or(None)
+pub fn kv_get(db: &RocksDb, key: &[u8]) -> Option<Vec<u8>> {
+    db.get("contractstate", key).unwrap_or(None)
 }
 
-pub fn kv_get_to_i64(db: &RocksDb, key: &str) -> Option<i64> {
+pub fn kv_get_to_i64(db: &RocksDb, key: &[u8]) -> Option<i64> {
     kv_get(db, key).and_then(|v| ascii_i64(&v))
 }
 
-pub fn kv_exists(db: &RocksDb, key: &str) -> bool {
-    db.get("contractstate", key.as_bytes()).unwrap_or(None).is_some()
+pub fn kv_exists(db: &RocksDb, key: &[u8]) -> bool {
+    db.get("contractstate", key).unwrap_or(None).is_some()
 }
 
 pub fn kv_get_prefix(db: &RocksDb, prefix: &str) -> Vec<(String, Vec<u8>)> {
@@ -202,21 +202,17 @@ pub fn kv_get_prefix(db: &RocksDb, prefix: &str) -> Vec<(String, Vec<u8>)> {
     }
 }
 
-pub fn kv_clear(db: &RocksDb, prefix: &str) -> usize {
+pub fn kv_clear(db: &RocksDb, prefix: &[u8]) -> usize {
     get_store_mut(|ctx| {
         // Get all keys with this prefix from RocksDB
-        let items = match db.iter_prefix("contractstate", prefix.as_bytes()) {
+        let items = match db.iter_prefix("contractstate", prefix) {
             Ok(items) => items,
             Err(_) => return 0,
         };
 
         let mut count = 0usize;
         for (k, v) in items {
-            let key_str = match String::from_utf8(k.clone()) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            if key_str.starts_with(prefix) {
+            if k.starts_with(prefix) {
                 // Delete from RocksDB
                 let _ = db.delete("contractstate", &k);
 
@@ -226,8 +222,8 @@ pub fn kv_clear(db: &RocksDb, prefix: &str) -> usize {
                     (&mut ctx.mutations, &mut ctx.mutations_reverse)
                 };
 
-                fwd.push_back(Mutation { op: Op::Delete, key: key_str.clone(), value: None });
-                rev.push_back(Mutation { op: Op::Put, key: key_str, value: Some(v) });
+                fwd.push_back(Mutation { op: Op::Delete, key: k.clone(), value: None });
+                rev.push_back(Mutation { op: Op::Put, key: k.clone(), value: Some(v) });
                 count += 1;
             }
         }
@@ -237,12 +233,12 @@ pub fn kv_clear(db: &RocksDb, prefix: &str) -> usize {
 
 /// Set a bit at bit_idx within a bitstring page. If the bit changes 0->1, returns true;
 /// otherwise returns false. Page size defaults to BIC sol bloom size (65_536 bits) when None.
-pub fn kv_set_bit(db: &RocksDb, key: &str, bit_idx: u32, bloom_size_opt: Option<u32>) -> bool {
+pub fn kv_set_bit(db: &RocksDb, key: &[u8], bit_idx: u32, bloom_size_opt: Option<u32>) -> bool {
     let bloom_size = bloom_size_opt.unwrap_or(65_536);
     let byte_len = (bloom_size as usize).div_ceil(8);
     get_store_mut(|ctx| {
         // Get existing page from RocksDB or create new one
-        let mut page = db.get("contractstate", key.as_bytes()).unwrap_or(None).unwrap_or_else(|| vec![0u8; byte_len]);
+        let mut page = db.get("contractstate", key).unwrap_or(None).unwrap_or_else(|| vec![0u8; byte_len]);
 
         let byte_i = (bit_idx / 8) as usize;
         let bit_in_byte = (bit_idx % 8) as u8; // LSB first to match Elixir bitstring semantics
@@ -253,7 +249,7 @@ pub fn kv_set_bit(db: &RocksDb, key: &str, bit_idx: u32, bloom_size_opt: Option<
         }
 
         // Record mutations (forward: set_bit; reverse: clear_bit or delete if not existed)
-        let existed = db.get("contractstate", key.as_bytes()).unwrap_or(None).is_some();
+        let existed = db.get("contractstate", key).unwrap_or(None).is_some();
 
         let (fwd, rev) = if ctx.use_gas_context {
             (&mut ctx.mutations_gas, &mut ctx.mutations_gas_reverse)
@@ -261,16 +257,16 @@ pub fn kv_set_bit(db: &RocksDb, key: &str, bit_idx: u32, bloom_size_opt: Option<
             (&mut ctx.mutations, &mut ctx.mutations_reverse)
         };
 
-        fwd.push_back(Mutation { op: Op::SetBit { bit_idx, bloom_size }, key: key.to_string(), value: None });
+        fwd.push_back(Mutation { op: Op::SetBit { bit_idx, bloom_size }, key: key.to_vec(), value: None });
         if existed {
-            rev.push_back(Mutation { op: Op::ClearBit { bit_idx }, key: key.to_string(), value: None });
+            rev.push_back(Mutation { op: Op::ClearBit { bit_idx }, key: key.to_vec(), value: None });
         } else {
-            rev.push_back(Mutation { op: Op::Delete, key: key.to_string(), value: None });
+            rev.push_back(Mutation { op: Op::Delete, key: key.to_vec(), value: None });
         }
 
         // Set the bit and store in RocksDB
         page[byte_i] |= mask;
-        let _ = db.put("contractstate", key.as_bytes(), &page);
+        let _ = db.put("contractstate", key, &page);
         true
     })
 }
@@ -295,7 +291,7 @@ pub fn hash_mutations(muts: &[Mutation]) -> [u8; 32] {
         map.insert(Term::Atom(Atom::from("op")), Term::Atom(op_atom));
 
         // Add key
-        map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: m.key.as_bytes().to_vec() }));
+        map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: m.key.clone() }));
 
         // Add value field based on op type
         match (&m.op, &m.value) {
@@ -339,20 +335,10 @@ pub fn hash_mutations_with_results(
     let mut etf_list = Vec::new();
 
     // First, add transaction results to the list (matching Elixir's l)
+    // Elixir ONLY includes %{error: :ok} or %{error: :some_error} - NO logs field
     for result in results {
         let mut map = HashMap::new();
         map.insert(Term::Atom(Atom::from("error")), Term::Atom(Atom::from(result.error.as_str())));
-
-        // Add logs if not empty (matching Elixir result map structure)
-        if !result.logs.is_empty() {
-            let logs_terms: Vec<Term> = result
-                .logs
-                .iter()
-                .map(|log| Term::Binary(Binary { bytes: log.as_bytes().to_vec() }))
-                .collect();
-            map.insert(Term::Atom(Atom::from("logs")), Term::List(List { elements: logs_terms }));
-        }
-
         etf_list.push(Term::Map(Map { map }));
     }
 
@@ -370,7 +356,7 @@ pub fn hash_mutations_with_results(
         map.insert(Term::Atom(Atom::from("op")), Term::Atom(op_atom));
 
         // Add key
-        map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: m.key.as_bytes().to_vec() }));
+        map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: m.key.clone() }));
 
         // Add value field based on op type
         match (&m.op, &m.value) {
@@ -410,9 +396,8 @@ pub fn mutations_to_etf(muts: &[Mutation]) -> Vec<u8> {
             Op::SetBit { .. } => buf.push(2u8),
             Op::ClearBit { .. } => buf.push(3u8),
         }
-        let k = m.key.as_bytes();
-        buf.extend_from_slice(&(k.len() as u32).to_le_bytes());
-        buf.extend_from_slice(k);
+        buf.extend_from_slice(&(m.key.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&m.key);
         match (&m.op, &m.value) {
             (Op::Put, Some(v)) => {
                 buf.extend_from_slice(&(v.len() as u32).to_le_bytes());
@@ -442,8 +427,7 @@ pub fn mutations_from_etf(bin: &[u8]) -> Result<Vec<Mutation>, std::io::Error> {
         let key_len = u32::from_le_bytes([bin[cursor], bin[cursor + 1], bin[cursor + 2], bin[cursor + 3]]) as usize;
         cursor += 4;
 
-        let key = String::from_utf8(bin[cursor..cursor + key_len].to_vec())
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid UTF-8 in key"))?;
+        let key = bin[cursor..cursor + key_len].to_vec();
         cursor += key_len;
 
         let (op, value) = match op_code {
@@ -496,28 +480,28 @@ pub fn revert(db: &RocksDb, m_rev: &[Mutation]) {
             match &m.op {
                 Op::Put => {
                     if let Some(v) = &m.value {
-                        let _ = db.put("contractstate", m.key.as_bytes(), v);
+                        let _ = db.put("contractstate", &m.key, v);
                     }
                 }
                 Op::Delete => {
-                    let _ = db.delete("contractstate", m.key.as_bytes());
+                    let _ = db.delete("contractstate", &m.key);
                 }
                 Op::ClearBit { bit_idx } => {
-                    if let Some(mut page) = db.get("contractstate", m.key.as_bytes()).unwrap_or(None) {
+                    if let Some(mut page) = db.get("contractstate", &m.key).unwrap_or(None) {
                         let byte_i = (*bit_idx / 8) as usize;
                         let bit_in_byte = (*bit_idx % 8) as u8;
                         let mask = 1u8 << bit_in_byte;
                         page[byte_i] &= !mask;
-                        let _ = db.put("contractstate", m.key.as_bytes(), &page);
+                        let _ = db.put("contractstate", &m.key, &page);
                     }
                 }
                 Op::SetBit { bit_idx, .. } => {
-                    if let Some(mut page) = db.get("contractstate", m.key.as_bytes()).unwrap_or(None) {
+                    if let Some(mut page) = db.get("contractstate", &m.key).unwrap_or(None) {
                         let byte_i = (*bit_idx / 8) as usize;
                         let bit_in_byte = (*bit_idx % 8) as u8;
                         let mask = 1u8 << bit_in_byte;
                         page[byte_i] |= mask;
-                        let _ = db.put("contractstate", m.key.as_bytes(), &page);
+                        let _ = db.put("contractstate", &m.key, &page);
                     }
                 }
             }
@@ -543,13 +527,13 @@ mod tests {
         let base = tmp_base_for_test(&increment_and_get);
         let db = RocksDb::open(base.clone()).await.expect("open test db");
         reset_for_tests(&db);
-        assert_eq!(kv_get_to_i64(&db, "a:1"), None);
-        let v = kv_increment(&db, "a:1", 5);
+        assert_eq!(kv_get_to_i64(&db, b"a:1"), None);
+        let v = kv_increment(&db, b"a:1", 5);
         assert_eq!(v, 5);
-        assert_eq!(kv_get_to_i64(&db, "a:1"), Some(5));
-        let v2 = kv_increment(&db, "a:1", -2);
+        assert_eq!(kv_get_to_i64(&db, b"a:1"), Some(5));
+        let v2 = kv_increment(&db, b"a:1", -2);
         assert_eq!(v2, 3);
-        assert_eq!(kv_get(&db, "a:1").unwrap(), b"3".to_vec());
+        assert_eq!(kv_get(&db, b"a:1").unwrap(), b"3".to_vec());
     }
 
     #[tokio::test]
@@ -557,15 +541,15 @@ mod tests {
         let base = tmp_base_for_test(&prefix_and_clear);
         let db = RocksDb::open(base.clone()).await.expect("open test db");
         reset_for_tests(&db);
-        kv_put(&db, "p:x", b"1");
-        kv_put(&db, "p:y", b"2");
-        kv_put(&db, "q:z", b"3");
+        kv_put(&db, b"p:x", b"1");
+        kv_put(&db, b"p:y", b"2");
+        kv_put(&db, b"q:z", b"3");
         let got = kv_get_prefix(&db, "p:");
         assert_eq!(got.len(), 2);
-        let cnt = kv_clear(&db, "p:");
+        let cnt = kv_clear(&db, b"p:");
         assert_eq!(cnt, 2);
-        assert!(!kv_exists(&db, "p:x"));
-        assert!(kv_exists(&db, "q:z"));
+        assert!(!kv_exists(&db, b"p:x"));
+        assert!(kv_exists(&db, b"q:z"));
     }
 
     #[tokio::test]
@@ -573,9 +557,9 @@ mod tests {
         let base = tmp_base_for_test(&set_bit);
         let db = RocksDb::open(base.clone()).await.expect("open test db");
         reset_for_tests(&db);
-        let changed = kv_set_bit(&db, "bloom:1", 9, Some(16)); // 2 bytes
+        let changed = kv_set_bit(&db, b"bloom:1", 9, Some(16)); // 2 bytes
         assert!(changed);
-        let changed2 = kv_set_bit(&db, "bloom:1", 9, Some(16));
+        let changed2 = kv_set_bit(&db, b"bloom:1", 9, Some(16));
         assert!(!changed2);
     }
 }

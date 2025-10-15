@@ -82,7 +82,7 @@ mod host_functions {
         let (context, store) = ctx.data_and_store_mut();
         context.add_exec_cost(10);
 
-        match context.read_string_with_store(&store, key_ptr as u32, key_len as u32) {
+        match context.read_bytes_with_store(&store, key_ptr as u32, key_len as u32) {
             Ok(key) => {
                 match kv::kv_get(&context.db, &key) {
                     Some(value) => {
@@ -104,7 +104,7 @@ mod host_functions {
         let (context, store) = ctx.data_and_store_mut();
         context.add_exec_cost(5);
 
-        match context.read_string_with_store(&store, key_ptr as u32, key_len as u32) {
+        match context.read_bytes_with_store(&store, key_ptr as u32, key_len as u32) {
             Ok(key) => {
                 if kv::kv_exists(&context.db, &key) {
                     1
@@ -128,7 +128,7 @@ mod host_functions {
         context.add_exec_cost(20);
 
         match (
-            context.read_string_with_store(&store, key_ptr as u32, key_len as u32),
+            context.read_bytes_with_store(&store, key_ptr as u32, key_len as u32),
             context.read_bytes_with_store(&store, val_ptr as u32, val_len as u32),
         ) {
             (Ok(key), Ok(value)) => {
@@ -144,7 +144,7 @@ mod host_functions {
         let (context, store) = ctx.data_and_store_mut();
         context.add_exec_cost(15);
 
-        match context.read_string_with_store(&store, key_ptr as u32, key_len as u32) {
+        match context.read_bytes_with_store(&store, key_ptr as u32, key_len as u32) {
             Ok(key) => kv::kv_increment(&context.db, &key, delta),
             Err(_) => 0,
         }
@@ -155,7 +155,7 @@ mod host_functions {
         let (context, store) = ctx.data_and_store_mut();
         context.add_exec_cost(10);
 
-        match context.read_string_with_store(&store, key_ptr as u32, key_len as u32) {
+        match context.read_bytes_with_store(&store, key_ptr as u32, key_len as u32) {
             Ok(key) => {
                 kv::kv_delete(&context.db, &key);
                 0
@@ -169,7 +169,7 @@ mod host_functions {
         let (context, store) = ctx.data_and_store_mut();
         context.add_exec_cost(50);
 
-        match context.read_string_with_store(&store, prefix_ptr as u32, prefix_len as u32) {
+        match context.read_bytes_with_store(&store, prefix_ptr as u32, prefix_len as u32) {
             Ok(prefix) => kv::kv_clear(&context.db, &prefix) as i32,
             Err(_) => -1,
         }
@@ -363,13 +363,16 @@ mod host_functions {
                 if amount > 0 && contract.len() == 48 {
                     let mut contract_pk = [0u8; 48];
                     contract_pk.copy_from_slice(&contract);
-                    let caller_key = format!(
-                        "bic:coin:balance:{}:{}",
-                        bs58::encode(&context.env.account_caller).into_string(),
-                        symbol
+                    let caller_key = crate::utils::misc::build_key_with_suffix(
+                        b"bic:coin:balance:",
+                        &context.env.account_caller,
+                        format!(":{}", symbol).as_bytes(),
                     );
-                    let contract_key =
-                        format!("bic:coin:balance:{}:{}", bs58::encode(&contract_pk).into_string(), symbol);
+                    let contract_key = crate::utils::misc::build_key_with_suffix(
+                        b"bic:coin:balance:",
+                        &contract_pk,
+                        format!(":{}", symbol).as_bytes(),
+                    );
                     kv::kv_increment(&context.db, &caller_key, -amount);
                     kv::kv_increment(&context.db, &contract_key, amount);
                 }

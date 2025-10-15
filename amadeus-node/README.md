@@ -16,4 +16,5 @@ following command:
 
 ```bash
 cargo test -p amadeus-node test_mutations_hash_with_rollback -- --ignored --nocapture
+cargo test test_entry_34076357_mutations -- --nocapture --ignored
 ```

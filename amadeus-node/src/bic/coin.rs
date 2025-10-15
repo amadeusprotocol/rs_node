@@ -23,31 +23,26 @@ pub fn burn_address() -> [u8; 48] {
     BURN_ADDRESS
 }
 
-fn pk_hex(pk: &[u8; 48]) -> String {
-    let mut s = String::with_capacity(96);
-    for b in pk {
-        s.push_str(&format!("{:02x}", b));
-    }
-    s
+fn key_balance(pk: &[u8; 48], symbol: &str) -> Vec<u8> {
+    crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", pk, format!(":{}", symbol).as_bytes())
 }
-
-fn key_balance(pk: &[u8; 48], symbol: &str) -> String {
-    format!("bic:coin:balance:{}:{}", pk_hex(pk), symbol)
+fn key_total_supply(symbol: &str) -> Vec<u8> {
+    format!("bic:coin:totalSupply:{}", symbol).into_bytes()
 }
-fn key_total_supply(symbol: &str) -> String {
-    format!("bic:coin:totalSupply:{}", symbol)
+fn key_pausable(symbol: &str) -> Vec<u8> {
+    format!("bic:coin:pausable:{}", symbol).into_bytes()
 }
-fn key_pausable(symbol: &str) -> String {
-    format!("bic:coin:pausable:{}", symbol)
+fn key_paused(symbol: &str) -> Vec<u8> {
+    format!("bic:coin:paused:{}", symbol).into_bytes()
 }
-fn key_paused(symbol: &str) -> String {
-    format!("bic:coin:paused:{}", symbol)
+fn key_mintable(symbol: &str) -> Vec<u8> {
+    format!("bic:coin:mintable:{}", symbol).into_bytes()
 }
-fn key_mintable(symbol: &str) -> String {
-    format!("bic:coin:mintable:{}", symbol)
-}
-fn key_permission_admin(symbol: &str, pk: &[u8; 48]) -> String {
-    format!("bic:coin:permission:{}:admin:{}", symbol, pk_hex(pk))
+fn key_permission_admin(symbol: &str, pk: &[u8; 48]) -> Vec<u8> {
+    let prefix = format!("bic:coin:permission:{}:admin:", symbol);
+    let mut key = prefix.into_bytes();
+    key.extend_from_slice(pk);
+    key
 }
 
 pub fn balance(db: &RocksDb, pubkey: &[u8; 48], symbol: &str) -> u64 {

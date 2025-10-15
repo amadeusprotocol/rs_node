@@ -138,19 +138,19 @@ mod runtime_tests {
         let _env = setup_test_env();
 
         // test kv operations that the wasm host functions would use
-        kv::kv_put(&db, "test_key", b"test_value");
-        assert!(kv::kv_exists(&db, "test_key"));
-        assert_eq!(kv::kv_get(&db, "test_key").unwrap(), b"test_value");
+        kv::kv_put(&db, b"test_key", b"test_value");
+        assert!(kv::kv_exists(&db, b"test_key"));
+        assert_eq!(kv::kv_get(&db, b"test_key").unwrap(), b"test_value");
 
-        let new_value = kv::kv_increment(&db, "counter", 42);
+        let new_value = kv::kv_increment(&db, b"counter", 42);
         assert_eq!(new_value, 42);
-        let incremented = kv::kv_increment(&db, "counter", 8);
+        let incremented = kv::kv_increment(&db, b"counter", 8);
         assert_eq!(incremented, 50);
 
-        kv::kv_delete(&db, "test_key");
-        assert!(!kv::kv_exists(&db, "test_key"));
+        kv::kv_delete(&db, b"test_key");
+        assert!(!kv::kv_exists(&db, b"test_key"));
 
-        let cleared_count = kv::kv_clear(&db, "count");
+        let cleared_count = kv::kv_clear(&db, b"count");
         assert!(cleared_count >= 1); // should clear the counter key
 
         println!("storage integration test ok");
@@ -279,7 +279,7 @@ mod contract_tests {
             Err(e) => println!("counter get failed: {:?}", e),
         }
 
-        let counter_value = kv::kv_get(&db, "counter");
+        let counter_value = kv::kv_get(&db, b"counter");
         println!("counter storage: {:?}", counter_value);
     }
 

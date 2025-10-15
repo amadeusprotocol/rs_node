@@ -1,5 +1,4 @@
 use crate::consensus::kv;
-use crate::utils::misc::pk_hex;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -26,8 +25,8 @@ pub fn validate(wasm: &[u8]) -> Result<(), ContractError> {
     }
 }
 
-fn key_bytecode(account: &[u8; 48]) -> String {
-    format!("bic:contract:account:{}:bytecode", pk_hex(account))
+fn key_bytecode(account: &[u8; 48]) -> Vec<u8> {
+    crate::utils::misc::build_key_with_suffix(b"bic:contract:account:", account, b":bytecode")
 }
 
 /// Read stored bytecode for a given account public key

@@ -4,4 +4,5 @@ pub mod coin_symbol_reserved; // TODO: implement logic; currently stubbed
 pub mod contract;
 pub mod epoch;
 pub mod sol;
+pub mod sol_bloom;
 pub mod sol_difficulty;

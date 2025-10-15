@@ -241,29 +241,28 @@ impl Epoch {
     fn submit_sol(
         &self,
         env: &CallEnv,
-        _db: &crate::utils::rocksdb::RocksDb,
+        db: &crate::utils::rocksdb::RocksDb,
         sol_bytes: &[u8],
     ) -> Result<(), EpochError> {
+        use crate::consensus::kv;
+
         let hash = blake3::hash(sol_bytes);
 
-        // NOTE: Solution tracking disabled to match Elixir reference implementation
-        // Elixir does not track solutions during entry application, only during epoch transitions
+        // Bloom filter: check and set bits from hash segments (matching Elixir implementation)
+        let segs = crate::bic::sol_bloom::segs(&hash);
+        let mut any_bit_newly_set = false;
+        for seg in &segs {
+            let key = format!("bic:epoch:solbloom:{}", seg.page);
+            let was_newly_set = kv::kv_set_bit(db, key.as_bytes(), seg.bit_offset, Some(65536));
+            if was_newly_set {
+                any_bit_newly_set = true;
+            }
+        }
 
-        // Bloom filter: set 3 bits from hash segments (matching Elixir implementation)
-        // DISABLED: Not in Elixir reference implementation
-        // let seg0 = u32::from_le_bytes([hash[0], hash[1], hash[2], hash[3]]) % 65536;
-        // let seg1 = u32::from_le_bytes([hash[4], hash[5], hash[6], hash[7]]) % 65536;
-        // let seg2 = u32::from_le_bytes([hash[8], hash[9], hash[10], hash[11]]) % 65536;
-
-        // Check all 3 bits - if any were already set, sol is duplicate
-        // DISABLED: Not in Elixir reference implementation
-        // for (page, bit) in [(0, seg0), (1, seg1), (2, seg2)] {
-        //     let key = format!("bic:epoch:solbloom:{}", page);
-        //     let was_set = !kv::kv_set_bit(db, &key, bit, Some(65536));
-        //     if was_set {
-        //         return Err(EpochError::InvalidSol); // duplicate sol
-        //     }
-        // }
+        // If no bits were newly set, all were already set -> duplicate sol
+        if !any_bit_newly_set {
+            return Err(EpochError::InvalidSol);
+        }
 
         // unpack and verify epoch
         let parsed = Solution::unpack(sol_bytes).map_err(|_| EpochError::InvalidSol)?;
@@ -287,10 +286,9 @@ impl Epoch {
             return Err(EpochError::InvalidPop);
         }
 
-        // Increment solution count for this address
-        // DISABLED: Not in Elixir reference implementation
-        // let count_key = format!("bic:epoch:solutions_count:{}", bs58::encode(&pk).into_string());
-        // kv::kv_increment(db, &count_key, 1);
+        // Increment solution count for this address (matching Elixir implementation)
+        let count_key = crate::utils::misc::build_key(b"bic:epoch:solutions_count:", &pk);
+        kv::kv_increment(db, &count_key, 1);
 
         Ok(())
     }
@@ -307,7 +305,7 @@ impl Epoch {
             return Err(EpochError::InvalidAddressPk);
         }
 
-        let key = format!("bic:epoch:emission_address:{}", bs58::encode(&env.account_caller).into_string());
+        let key = crate::utils::misc::build_key(b"bic:epoch:emission_address:", &env.account_caller);
         kv::kv_put(db, &key, address);
 
         Ok(())
@@ -432,9 +430,10 @@ impl Epoch {
                         }
                     })
                     .unwrap_or(*pk);
+                let balance_key = crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &emission_addr, b":AMA");
                 kv::kv_increment(
                     db,
-                    &format!("bic:coin:balance:{}:AMA", bs58::encode(&emission_addr).into_string()),
+                    &balance_key,
                     coins,
                 );
             }
@@ -463,9 +462,10 @@ impl Epoch {
                             }
                         })
                         .unwrap_or(*pk);
+                    let balance_key = crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &emission_addr, b":AMA");
                     kv::kv_increment(
                         db,
-                        &format!("bic:coin:balance:{}:AMA", bs58::encode(&emission_addr).into_string()),
+                        &balance_key,
                         coins,
                     );
                 }
@@ -494,9 +494,10 @@ impl Epoch {
                             }
                         })
                         .unwrap_or(*pk);
+                    let balance_key = crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &emission_addr, b":AMA");
                     kv::kv_increment(
                         db,
-                        &format!("bic:coin:balance:{}:AMA", bs58::encode(&emission_addr).into_string()),
+                        &balance_key,
                         coins,
                     );
                 }
@@ -505,18 +506,22 @@ impl Epoch {
 
         // Clear bloom filters and solution counters
         for page in 0..3 {
-            kv::kv_delete(db, &format!("bic:epoch:solbloom:{}", page));
+            let bloom_key = format!("bic:epoch:solbloom:{}", page).into_bytes();
+            kv::kv_delete(db, &bloom_key);
         }
         for (pk, _) in &leaders {
-            kv::kv_delete(db, &format!("bic:epoch:solutions_count:{}", bs58::encode(pk).into_string()));
+            let count_key = crate::utils::misc::build_key(b"bic:epoch:solutions_count:", pk);
+            kv::kv_delete(db, &count_key);
         }
 
         // Select new validators and store for next epoch
         let leader_pks: Vec<[u8; 48]> = leaders.into_iter().map(|(pk, _)| pk).collect();
         let new_validators = select_validators(&leader_pks);
         let trainers_bin: Vec<u8> = new_validators.iter().flat_map(|pk| pk.iter().copied()).collect();
-        kv::kv_put(db, &format!("bic:epoch:trainers:{}", epoch_next), &trainers_bin);
-        kv::kv_put(db, &format!("bic:epoch:trainers:height:{:012}", env.entry_height + 1), &trainers_bin);
+        let trainers_key = format!("bic:epoch:trainers:{}", epoch_next).into_bytes();
+        kv::kv_put(db, &trainers_key, &trainers_bin);
+        let trainers_height_key = format!("bic:epoch:trainers:height:{:012}", env.entry_height + 1).into_bytes();
+        kv::kv_put(db, &trainers_height_key, &trainers_bin);
 
         Ok(())
     }

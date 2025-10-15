@@ -188,6 +188,14 @@ rocksdb_ldb --db=.config/amadeusd/fabric/db --column_family=sysconf get rooted_t
 
 ## Debugging on Elixir Node
 
+```bash
+cd ex
+make depend && make
+./build.sh
+mix deps.get
+WORKFOLDER="$HOME/.cache/testamadeusd" OFFLINE=1 iex -S mix
+```
+
 ```elixir
 NodePeers.all() |> Enum.filter(fn peer -> peer.ip == "167.99.137.218" end) |> Enum.map(& &1.ip)
 API.Peer.all_for_web()

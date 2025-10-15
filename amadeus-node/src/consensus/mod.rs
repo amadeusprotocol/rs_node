@@ -75,8 +75,8 @@ pub fn chain_height(db: &RocksDb) -> u32 {
 /// Latest observed nonce for a signer (Elixir: Consensus.chain_nonce/1)
 /// Returns the highest nonce used by this signer
 pub fn chain_nonce(db: &RocksDb, signer: &[u8]) -> Option<i128> {
-    let key = format!("bic:base:nonce:{}", bs58::encode(signer).into_string());
-    match db.get("contractstate", key.as_bytes()) {
+    let key = crate::utils::misc::build_key(b"bic:base:nonce:", signer);
+    match db.get("contractstate", &key) {
         Ok(Some(bytes)) => {
             // Try to deserialize as i128 (nonce value)
             match bincode::decode_from_slice::<i128, _>(&bytes, bincode::config::standard()) {
@@ -96,8 +96,8 @@ pub fn chain_balance(db: &RocksDb, signer: &[u8]) -> u64 {
 
 /// Balance accessor with specific symbol
 pub fn chain_balance_symbol(db: &RocksDb, signer: &[u8], symbol: &str) -> u64 {
-    let key = format!("bic:coin:balance:{}:{}", bs58::encode(signer).into_string(), symbol);
-    match db.get("contractstate", key.as_bytes()) {
+    let key = crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", signer, format!(":{}", symbol).as_bytes());
+    match db.get("contractstate", &key) {
         Ok(Some(bytes)) => {
             // Try to deserialize as u64 (balance value)
             match bincode::decode_from_slice::<u64, _>(&bytes, bincode::config::standard()) {

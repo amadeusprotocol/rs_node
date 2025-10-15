@@ -106,8 +106,8 @@ impl Consensus {
         }
 
         // Trainers
-        let trainers =
-            consensus::trainers_for_height(fabric.db(), entry.header.height).ok_or(Error::Missing("trainers_for_height"))?;
+        let trainers = consensus::trainers_for_height(fabric.db(), entry.header.height)
+            .ok_or(Error::Missing("trainers_for_height"))?;
         if trainers.is_empty() {
             return Err(Error::Missing("trainers_for_height:empty"));
         }
@@ -218,7 +218,8 @@ pub fn chain_segment_vr_hash(fabric: &fabric::Fabric) -> Option<Vec<u8>> {
 }
 
 pub fn chain_diff_bits(fabric: &fabric::Fabric) -> u32 {
-    fabric.get_contractstate(b"bic:epoch:diff_bits")
+    fabric
+        .get_contractstate(b"bic:epoch:diff_bits")
         .ok()
         .flatten()
         .and_then(|b| if b.len() == 8 { Some(u64::from_be_bytes(b.try_into().ok()?) as u32) } else { None })
@@ -226,7 +227,8 @@ pub fn chain_diff_bits(fabric: &fabric::Fabric) -> u32 {
 }
 
 pub fn chain_total_sols(fabric: &fabric::Fabric) -> u64 {
-    fabric.get_contractstate(b"bic:epoch:total_sols")
+    fabric
+        .get_contractstate(b"bic:epoch:total_sols")
         .ok()
         .flatten()
         .and_then(|b| if b.len() == 8 { Some(u64::from_be_bytes(b.try_into().ok()?)) } else { None })
@@ -234,21 +236,23 @@ pub fn chain_total_sols(fabric: &fabric::Fabric) -> u64 {
 }
 
 pub fn chain_pop(fabric: &fabric::Fabric, pk: &[u8; 48]) -> Option<Vec<u8>> {
-    let key = format!("bic:epoch:pop:{}", bs58::encode(pk).into_string());
-    fabric.get_contractstate(key.as_bytes()).ok()?
+    let key = crate::utils::misc::build_key(b"bic:epoch:pop:", pk);
+    fabric.get_contractstate(&key).ok()?
 }
 
 pub fn chain_nonce(fabric: &fabric::Fabric, pk: &[u8; 48]) -> Option<i64> {
-    let key = format!("bic:base:nonce:{}", bs58::encode(pk).into_string());
-    fabric.get_contractstate(key.as_bytes())
+    let key = crate::utils::misc::build_key(b"bic:base:nonce:", pk);
+    fabric
+        .get_contractstate(&key)
         .ok()
         .flatten()
         .and_then(|b| if b.len() == 8 { Some(i64::from_be_bytes(b.try_into().ok()?)) } else { None })
 }
 
 pub fn chain_balance(fabric: &fabric::Fabric, pk: &[u8; 48], symbol: &str) -> u64 {
-    let key = format!("bic:coin:balance:{}:{}", bs58::encode(pk).into_string(), symbol);
-    fabric.get_contractstate(key.as_bytes())
+    let key = crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", pk, format!(":{}", symbol).as_bytes());
+    fabric
+        .get_contractstate(&key)
         .ok()
         .flatten()
         .and_then(|b| if b.len() == 8 { Some(u64::from_be_bytes(b.try_into().ok()?)) } else { None })
@@ -348,7 +352,14 @@ fn execute_transaction(
     db: &RocksDb,
     next_entry: &Entry,
     txu: &TxU,
-) -> (String, Vec<String>, Vec<crate::consensus::kv::Mutation>, Vec<crate::consensus::kv::Mutation>, Vec<crate::consensus::kv::Mutation>, Vec<crate::consensus::kv::Mutation>) {
+) -> (
+    String,
+    Vec<String>,
+    Vec<crate::consensus::kv::Mutation>,
+    Vec<crate::consensus::kv::Mutation>,
+    Vec<crate::consensus::kv::Mutation>,
+    Vec<crate::consensus::kv::Mutation>,
+) {
     use crate::consensus::kv;
 
     let action = match txu.tx.actions.first() {
@@ -430,9 +441,14 @@ fn execute_wasm_call(
         let amount_str = String::from_utf8_lossy(&env.attached_amount);
         let amount = amount_str.parse::<i64>().unwrap_or(0);
         if amount > 0 {
-            let symbol_str = String::from_utf8_lossy(&env.attached_symbol);
-            let signer_key = format!("bic:coin:balance:{}:{}", bs58::encode(&env.tx_signer).into_string(), symbol_str);
-            let contract_key = format!("bic:coin:balance:{}:{}", bs58::encode(&contract_pk).into_string(), symbol_str);
+            let symbol_suffix = format!(":{}", String::from_utf8_lossy(&env.attached_symbol));
+            let signer_key = crate::utils::misc::build_key_with_suffix(
+                b"bic:coin:balance:",
+                &env.tx_signer,
+                symbol_suffix.as_bytes(),
+            );
+            let contract_key =
+                crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &contract_pk, symbol_suffix.as_bytes());
             kv::kv_increment(db, &signer_key, -amount);
             kv::kv_increment(db, &contract_key, amount);
         }
@@ -450,20 +466,23 @@ fn execute_wasm_call(
 
                     // Charge gas (gas mutations)
                     let exec_used = (result.exec_used * 100) as i64;
-                    let signer_key = format!("bic:coin:balance:{}:AMA", bs58::encode(&env.tx_signer).into_string());
+                    let signer_key =
+                        crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &env.tx_signer, b":AMA");
                     kv::use_gas_context(true);
                     kv::kv_increment(db, &signer_key, -exec_used);
 
                     if env.entry_epoch >= 295 {
                         let half_exec_cost = exec_used / 2;
                         let entry_signer_key =
-                            format!("bic:coin:balance:{}:AMA", bs58::encode(&env.entry_signer).into_string());
-                        let burn_key = "bic:coin:balance:11111111111111111111111111111111111111111111111111111111:AMA";
+                            crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &env.entry_signer, b":AMA");
+                        let zero_pubkey = [0u8; 48];
+                        let burn_key =
+                            crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &zero_pubkey, b":AMA");
                         kv::kv_increment(db, &entry_signer_key, half_exec_cost);
                         kv::kv_increment(db, &burn_key, half_exec_cost);
                     } else {
                         let entry_signer_key =
-                            format!("bic:coin:balance:{}:AMA", bs58::encode(&env.entry_signer).into_string());
+                            crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &env.entry_signer, b":AMA");
                         kv::kv_increment(db, &entry_signer_key, exec_used);
                     }
                     kv::use_gas_context(false);
@@ -508,31 +527,37 @@ fn call_txs_pre(db: &RocksDb, next_entry: &Entry, txus: &[TxU]) {
     kv::reset();
 
     let epoch = next_entry.header.height / 100_000;
-    let entry_signer_key = format!("bic:coin:balance:{}:AMA", bs58::encode(&next_entry.header.signer).into_string());
-    let burn_key = "bic:coin:balance:11111111111111111111111111111111111111111111111111111111:AMA";
+
+    // Build keys with raw binary pubkey bytes (NOT base58!)
+    let entry_signer_key =
+        crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &next_entry.header.signer, b":AMA");
+    let zero_pubkey = [0u8; 48]; // Burn address: all zeros
+    let burn_key = crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &zero_pubkey, b":AMA");
 
     for txu in txus {
-        // Update nonce
-        kv::kv_put(
-            db,
-            &format!("bic:base:nonce:{}", bs58::encode(&txu.tx.signer).into_string()),
-            &(txu.tx.nonce as i64).to_string().into_bytes(),
-        );
+        // Update nonce (using raw binary key with pubkey bytes)
+        let nonce_key = crate::utils::misc::build_key(b"bic:base:nonce:", &txu.tx.signer);
+        kv::kv_put(db, &nonce_key, &(txu.tx.nonce as i64).to_string().into_bytes());
 
-        // Calculate and deduct exec cost (inline calc_exec_cost)
+        // Calculate and deduct exec cost using proper unit conversion
         let bytes = txu.tx_encoded.len() + 32 + 96;
-        let exec_cost = if epoch >= 295 { (1 + bytes / 1024) as i64 * 100 } else { (3 + bytes / 256 * 3) as i64 * 100 };
+        let exec_cost = if epoch >= 295 {
+            // New formula (epoch 295+): convert from AMA units to flat coins
+            crate::bic::coin::to_cents((1 + bytes / 1024) as u64) as i64
+        } else {
+            // Old formula (epoch < 295)
+            crate::bic::coin::to_cents((3 + bytes / 256 * 3) as u64) as i64
+        };
 
-        kv::kv_increment(
-            db,
-            &format!("bic:coin:balance:{}:AMA", bs58::encode(&txu.tx.signer).into_string()),
-            -exec_cost,
-        );
+
+        let signer_balance_key =
+            crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &txu.tx.signer, b":AMA");
+        kv::kv_increment(db, &signer_balance_key, -exec_cost);
 
         // Credit entry signer and burn address
         if epoch >= 295 {
             kv::kv_increment(db, &entry_signer_key, exec_cost / 2);
-            kv::kv_increment(db, burn_key, exec_cost / 2);
+            kv::kv_increment(db, &burn_key, exec_cost / 2);
         } else {
             kv::kv_increment(db, &entry_signer_key, exec_cost);
         }
@@ -546,7 +571,7 @@ fn call_exit(db: &RocksDb, next_entry: &Entry) {
 
     // Update segment VR hash every 1000 blocks
     if next_entry.header.height % 1000 == 0 {
-        kv::kv_put(db, "bic:epoch:segment_vr_hash", &crate::utils::blake3::hash(&next_entry.header.vr));
+        kv::kv_put(db, b"bic:epoch:segment_vr_hash", &crate::utils::blake3::hash(&next_entry.header.vr));
     }
 
     // Epoch transition every 100k blocks
@@ -573,7 +598,12 @@ fn call_exit(db: &RocksDb, next_entry: &Entry) {
     }
 }
 
-pub fn apply_entry(fabric: &fabric::Fabric, config: &crate::config::Config, next_entry: &Entry) -> Result<ApplyResult, Error> {
+pub fn apply_entry(
+    fabric: &fabric::Fabric,
+    config: &crate::config::Config,
+    next_entry: &Entry,
+) -> Result<ApplyResult, Error> {
+
     // check height validity
     let current_height = get_chain_height(fabric).unwrap_or(0);
     if next_entry.header.height != current_height + 1 {
@@ -631,6 +661,133 @@ pub fn apply_entry(fabric: &fabric::Fabric, config: &crate::config::Config, next
     muts.extend(muts_exit);
     muts_rev.extend(muts_exit_rev);
 
+    // DEBUG: Print mutations for height 34076357 to compare with Elixir
+    if next_entry.header.height == 34076357 && false {
+        println!("\n=== DEBUG: Rust Mutations for Entry at Height {} ===", next_entry.header.height);
+        println!("Entry hash: {}", bs58::encode(&next_entry.hash).into_string());
+        println!("Total mutations: {}", muts.len());
+
+        for (idx, m) in muts.iter().enumerate() {
+            println!("\n=== Mutation {} ===", idx + 1);
+            match &m.op {
+                crate::consensus::kv::Op::Put => println!("Op: put"),
+                crate::consensus::kv::Op::Delete => println!("Op: delete"),
+                crate::consensus::kv::Op::SetBit { .. } => println!("Op: set_bit"),
+                crate::consensus::kv::Op::ClearBit { .. } => println!("Op: clear_bit"),
+            }
+            println!("Key (string): {:?}", String::from_utf8_lossy(&m.key));
+            println!("Key (bytes): {:?}", m.key);
+            if let Some(val) = &m.value {
+                println!("Value: {:?}", String::from_utf8_lossy(val));
+                println!("Value (bytes): {:?}", val);
+            } else {
+                match &m.op {
+                    crate::consensus::kv::Op::SetBit { bit_idx, bloom_size } => {
+                        println!("Value (bit_idx): {}", bit_idx);
+                        println!("Bloom size: {}", bloom_size);
+                    }
+                    crate::consensus::kv::Op::ClearBit { bit_idx } => {
+                        println!("Value (bit_idx): {}", bit_idx);
+                    }
+                    _ => {}
+                }
+            }
+
+            // Print ETF encoding of this mutation
+            use eetf::{Atom, Binary, FixInteger, Map, Term};
+            use std::collections::HashMap;
+            let mut map = HashMap::new();
+            let op_atom = match &m.op {
+                crate::consensus::kv::Op::Put => Atom::from("put"),
+                crate::consensus::kv::Op::Delete => Atom::from("delete"),
+                crate::consensus::kv::Op::SetBit { .. } => Atom::from("set_bit"),
+                crate::consensus::kv::Op::ClearBit { .. } => Atom::from("clear_bit"),
+            };
+            map.insert(Term::Atom(Atom::from("op")), Term::Atom(op_atom));
+            map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: m.key.clone() }));
+            match (&m.op, &m.value) {
+                (crate::consensus::kv::Op::Put, Some(v)) => {
+                    map.insert(Term::Atom(Atom::from("value")), Term::Binary(Binary { bytes: v.clone() }));
+                }
+                (crate::consensus::kv::Op::SetBit { bit_idx, bloom_size }, _) => {
+                    map.insert(
+                        Term::Atom(Atom::from("value")),
+                        Term::FixInteger(FixInteger { value: *bit_idx as i32 }),
+                    );
+                    map.insert(
+                        Term::Atom(Atom::from("bloomsize")),
+                        Term::FixInteger(FixInteger { value: *bloom_size as i32 }),
+                    );
+                }
+                (crate::consensus::kv::Op::ClearBit { bit_idx }, _) => {
+                    map.insert(
+                        Term::Atom(Atom::from("value")),
+                        Term::FixInteger(FixInteger { value: *bit_idx as i32 }),
+                    );
+                }
+                _ => {}
+            }
+            let term = Term::Map(Map { map });
+            let mut etf = Vec::new();
+            match term.encode(&mut etf) {
+                Ok(_) => {
+                    println!("ETF (hex): {}", hex::encode(&etf).to_uppercase());
+                }
+                Err(e) => println!("ETF encode error: {}", e),
+            }
+        }
+
+        // Print full mutations list ETF
+        println!("\n=== Full ETF of mutations list ===");
+        use eetf::{List, Term};
+        let mut etf_muts = Vec::new();
+        for m in &muts {
+            use eetf::{Atom, Binary, FixInteger, Map};
+            use std::collections::HashMap;
+            let mut map = HashMap::new();
+            let op_atom = match &m.op {
+                crate::consensus::kv::Op::Put => Atom::from("put"),
+                crate::consensus::kv::Op::Delete => Atom::from("delete"),
+                crate::consensus::kv::Op::SetBit { .. } => Atom::from("set_bit"),
+                crate::consensus::kv::Op::ClearBit { .. } => Atom::from("clear_bit"),
+            };
+            map.insert(Term::Atom(Atom::from("op")), Term::Atom(op_atom));
+            map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: m.key.clone() }));
+            match (&m.op, &m.value) {
+                (crate::consensus::kv::Op::Put, Some(v)) => {
+                    map.insert(Term::Atom(Atom::from("value")), Term::Binary(Binary { bytes: v.clone() }));
+                }
+                (crate::consensus::kv::Op::SetBit { bit_idx, bloom_size }, _) => {
+                    map.insert(
+                        Term::Atom(Atom::from("value")),
+                        Term::FixInteger(FixInteger { value: *bit_idx as i32 }),
+                    );
+                    map.insert(
+                        Term::Atom(Atom::from("bloomsize")),
+                        Term::FixInteger(FixInteger { value: *bloom_size as i32 }),
+                    );
+                }
+                (crate::consensus::kv::Op::ClearBit { bit_idx }, _) => {
+                    map.insert(
+                        Term::Atom(Atom::from("value")),
+                        Term::FixInteger(FixInteger { value: *bit_idx as i32 }),
+                    );
+                }
+                _ => {}
+            }
+            etf_muts.push(Term::Map(Map { map }));
+        }
+        let list_term = Term::List(List { elements: etf_muts });
+        let mut full_etf = Vec::new();
+        match list_term.encode(&mut full_etf) {
+            Ok(_) => {
+                println!("Length: {} bytes", full_etf.len());
+                println!("Hex: {}", hex::encode(&full_etf).to_uppercase());
+            }
+            Err(e) => println!("Full ETF encode error: {}", e),
+        }
+    }
+
     // Hash results + mutations (matching Elixir: ConsensusKV.hash_mutations(l ++ m))
     let mutations_hash = crate::consensus::kv::hash_mutations_with_results(&tx_results, &muts);
 
@@ -644,8 +801,7 @@ pub fn apply_entry(fabric: &fabric::Fabric, config: &crate::config::Config, next
     fabric.put_attestation(&next_entry.hash, &attestation_packed)?;
 
     // check if we're a trainer for this height
-    let trainers =
-        fabric.trainers_for_height(next_entry.header.height).ok_or(Error::Missing("trainers_for_height"))?;
+    let trainers = fabric.trainers_for_height(next_entry.header.height).ok_or(Error::Missing("trainers_for_height"))?;
     let is_trainer = trainers.iter().any(|t| t == &pk);
 
     // record seen time
@@ -847,8 +1003,8 @@ fn chain_rewind_internal(db: &RocksDb, current_entry: &Entry, target_hash: &[u8;
     }
 
     // continue rewinding
-    let prev_entry =
-        get_entry_by_hash_local(&fabric, &current_entry.header.prev_hash).ok_or(Error::Missing("prev_entry_in_rewind"))?;
+    let prev_entry = get_entry_by_hash_local(&fabric, &current_entry.header.prev_hash)
+        .ok_or(Error::Missing("prev_entry_in_rewind"))?;
     chain_rewind_internal(db, &prev_entry, target_hash)
 }
 
@@ -906,8 +1062,8 @@ pub fn best_entry_for_height(fabric: &fabric::Fabric, height: u32) -> Result<Vec
         }
 
         // get trainers for this height
-        let trainers =
-            consensus::trainers_for_height(fabric.db(), entry.header.height).ok_or(Error::Missing("trainers_for_height"))?;
+        let trainers = consensus::trainers_for_height(fabric.db(), entry.header.height)
+            .ok_or(Error::Missing("trainers_for_height"))?;
 
         // get best consensus for this entry
         let (mutations_hash, score, _consensus) = fabric.best_consensus_by_entryhash(&trainers, &entry.hash)?;

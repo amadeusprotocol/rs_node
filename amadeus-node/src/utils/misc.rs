@@ -26,12 +26,29 @@ pub fn get_unix_nanos_now() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).as_ref().map(Duration::as_nanos).unwrap_or(0)
 }
 
+/// DEPRECATED: This function incorrectly uses base58 encoding
+/// Elixir uses raw binary pubkeys in keys, not base58
+/// Use build_key() or build_key_with_suffix() instead
+#[deprecated(note = "Use raw binary keys instead of base58")]
 pub fn pk_hex(pk: &[u8]) -> String {
-    let mut s = String::with_capacity(pk.len() * 2);
-    for b in pk {
-        s.push_str(&format!("{:02x}", b));
-    }
-    s
+    bs58::encode(pk).into_string()
+}
+
+/// Build a key with prefix and raw binary pubkey
+/// Example: build_key(b"bic:base:nonce:", &pubkey) -> b"bic:base:nonce:<48_raw_bytes>"
+pub fn build_key(prefix: &[u8], pk: &[u8]) -> Vec<u8> {
+    let mut key = prefix.to_vec();
+    key.extend_from_slice(pk);
+    key
+}
+
+/// Build a key with prefix, pubkey, and suffix
+/// Example: build_key_with_suffix(b"bic:coin:balance:", &pubkey, b":AMA")
+pub fn build_key_with_suffix(prefix: &[u8], pk: &[u8], suffix: &[u8]) -> Vec<u8> {
+    let mut key = prefix.to_vec();
+    key.extend_from_slice(pk);
+    key.extend_from_slice(suffix);
+    key
 }
 
 /// Produce a hex dump similar to `hexdump -C` for a binary slice.
