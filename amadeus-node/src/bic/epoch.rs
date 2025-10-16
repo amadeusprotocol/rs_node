@@ -504,15 +504,9 @@ impl Epoch {
             }
         }
 
-        // Clear bloom filters and solution counters
-        for page in 0..3 {
-            let bloom_key = format!("bic:epoch:solbloom:{}", page).into_bytes();
-            kv::kv_delete(db, &bloom_key);
-        }
-        for (pk, _) in &leaders {
-            let count_key = crate::utils::misc::build_key(b"bic:epoch:solutions_count:", pk);
-            kv::kv_delete(db, &count_key);
-        }
+        // Clear bloom filters and solution counters (matching Elixir's kv_clear prefix delete)
+        kv::kv_clear(db, b"bic:epoch:solbloom:");
+        kv::kv_clear(db, b"bic:epoch:solutions_count:");
 
         // Select new validators and store for next epoch
         let leader_pks: Vec<[u8; 48]> = leaders.into_iter().map(|(pk, _)| pk).collect();

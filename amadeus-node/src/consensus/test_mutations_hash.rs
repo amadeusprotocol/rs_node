@@ -295,13 +295,9 @@ async fn test_entry_34076357_mutations() -> Result<(), Box<dyn std::error::Error
         fabric.put_contractstate(&trainers_key, &trainers_encoded)?;
     }
 
-    // NOTE: Most database prepopulation is no longer needed as the test database
-    // at assets/rocksdb/34076356 already contains the correct initial state.
-    // However, bloom filter page 0 needs all bits set to match Elixir's state.
-    // The solution generates 2 bloom filter mutations: (page=236, bit=37899) and (page=0, bit=0)
-    // In Elixir, page 0 bit 0 was already set, so only page 236 bit 37899 generates a mutation.
-    let bloom_page_0 = vec![0xFFu8; 8192]; // All bits set (65536 bits / 8 = 8192 bytes)
-    fabric.put_contractstate(b"bic:epoch:solbloom:0", &bloom_page_0)?;
+    // NOTE: The test database at assets/rocksdb/34076356 should already contain the correct
+    // initial state matching Elixir at height 34076356, including bloom page 0 with bit 0 set.
+    // If the test fails with 7 mutations instead of 6, it means bloom page 0 bit 0 is missing.
 
     println!("\n=== Applying Entry ===");
     let result = apply_entry(&fabric, &config, &entry)?;
@@ -473,6 +469,10 @@ fn create_test_config() -> Config {
 }
 
 /// Test that verifies chain rewind and re-apply produces identical mutations
+///
+/// NOTE: This test requires a complete database with all column families (tx, entry, etc.)
+/// The current test database at assets/rocksdb/34076356 may be missing some column families
+/// needed for the rewind operation.
 #[tokio::test]
 #[ignore]
 async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::error::Error>> {
@@ -549,13 +549,9 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
         fabric.put_contractstate(&trainers_key, &trainers_encoded)?;
     }
 
-    // NOTE: Most database prepopulation is no longer needed as the test database
-    // at assets/rocksdb/34076356 already contains the correct initial state.
-    // However, bloom filter page 0 needs all bits set to match Elixir's state.
-    // The solution generates 2 bloom filter mutations: (page=236, bit=37899) and (page=0, bit=0)
-    // In Elixir, page 0 bit 0 was already set, so only page 236 bit 37899 generates a mutation.
-    let bloom_page_0 = vec![0xFFu8; 8192]; // All bits set (65536 bits / 8 = 8192 bytes)
-    fabric.put_contractstate(b"bic:epoch:solbloom:0", &bloom_page_0)?;
+    // NOTE: The test database at assets/rocksdb/34076356 should already contain the correct
+    // initial state matching Elixir at height 34076356, including bloom page 0 with bit 0 set.
+    // If the test fails, it means the database state doesn't match Elixir's state at this height.
 
     // Define key variables needed for verification later in the test.
     let pubkey1: [u8; 48] = [
@@ -686,6 +682,35 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
     // Cleanup
     println!("\n✓ Test complete - Rewind and re-apply produce identical results!");
     std::fs::remove_dir_all(&temp_db_path).ok();
+
+    Ok(())
+}
+
+/// Test to check bloom page 0 state in the local test database
+#[tokio::test]
+#[ignore]
+async fn check_local_bloom_page_0() -> Result<(), Box<dyn std::error::Error>> {
+    let db = RocksDb::open("../assets/rocksdb/34076356".to_string()).await?;
+    let fabric = Fabric::with_db(db);
+
+    let page0 = fabric.get_contractstate(b"bic:epoch:solbloom:0")?;
+
+    match page0 {
+        Some(data) => {
+            println!("Bloom page 0 exists: {} bytes", data.len());
+            println!("First 16 bytes (hex): {:02x?}", &data[..data.len().min(16)]);
+
+            // Check bit 0
+            if data.len() > 0 {
+                let byte0 = data[0];
+                let bit0_set = (byte0 & 0x01) != 0;
+                println!("Bit 0 is: {}", if bit0_set { "SET" } else { "NOT SET" });
+            }
+        }
+        None => {
+            println!("Bloom page 0 does NOT exist");
+        }
+    }
 
     Ok(())
 }
