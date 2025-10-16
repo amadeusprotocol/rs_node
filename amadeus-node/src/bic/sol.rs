@@ -384,6 +384,5 @@ mod tests {
         let bin = bs58::decode(b58).into_vec().unwrap();
         let sol = Solution::from_etf_validated(&bin).unwrap();
         assert!(matches!(sol, Solution::V2(SolV2 { epoch: 274, .. })));
-        println!("{:?}", sol);
     }
 }

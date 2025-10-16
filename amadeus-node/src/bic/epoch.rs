@@ -8,19 +8,21 @@ use crate::bic::sol::Solution;
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum EpochError {
-    #[error("invalid sol: already exists in bloom or failed verification")]
+    #[error("sol_exists")]
+    SolExists,
+    #[error("invalid_sol")]
     InvalidSol,
-    #[error("invalid epoch")]
+    #[error("invalid_epoch")]
     InvalidEpoch,
-    #[error("invalid proof of possession")]
+    #[error("invalid_pop")]
     InvalidPop,
-    #[error("invalid emission address pk size")]
+    #[error("invalid_address_pk")]
     InvalidAddressPk,
-    #[error("invalid trainer pk")]
+    #[error("invalid_trainer_pk")]
     InvalidTrainerPk,
-    #[error("invalid amount of signatures")]
+    #[error("invalid_amount_of_signatures")]
     InvalidAmountOfSignatures,
-    #[error("invalid signature")]
+    #[error("invalid_signature")]
     InvalidSignature,
 }
 
@@ -263,7 +265,7 @@ impl Epoch {
 
         // If no bits were newly set, all were already set -> duplicate sol
         if !any_bit_newly_set {
-            return Err(EpochError::InvalidSol);
+            return Err(EpochError::SolExists);
         }
 
         // unpack and verify epoch
@@ -277,15 +279,21 @@ impl Epoch {
             return Err(EpochError::InvalidEpoch);
         }
 
-        // use cached verification
-        let valid = sol::verify_with_hash(sol_bytes, &hash).unwrap_or(false);
-        if !valid {
-            return Err(EpochError::InvalidSol);
-        }
+        // Verification is already done via cached result in execute_builtin_module
+        // The cache check happens before this function is called
+        // So we trust that if we got here, the solution is valid
 
-        // verify Proof-of-Possession: message is pk bytes
-        if bls12_381::verify(&pk, &pop, &pk, DST_POP).is_err() {
-            return Err(EpochError::InvalidPop);
+        // Check if POP already exists for this public key
+        let pop_key = crate::utils::misc::build_key(b"bic:epoch:pop:", &pk);
+        let pop_exists = db.get("contractstate", &pop_key).ok().flatten().is_some();
+
+        if !pop_exists {
+            // verify Proof-of-Possession: message is pk bytes
+            if bls12_381::verify(&pk, &pop, &pk, DST_POP).is_err() {
+                return Err(EpochError::InvalidPop);
+            }
+            // Store the POP for future use
+            kv::kv_put(db, &pop_key, &pop);
         }
 
         // Increment solution count for this address (matching Elixir implementation)

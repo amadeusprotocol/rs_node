@@ -311,7 +311,7 @@ fn execute_wasm_contract(db: &RocksDb, env: &crate::bic::epoch::CallEnv, txu: &T
     ActionResult { error: "ok".to_string(), logs: None, exec_used: wasm_result.exec_used, result: None, reason: None }
 }
 
-fn execute_builtin_module(_db: &RocksDb, env: &crate::bic::epoch::CallEnv, action: &TxAction) -> ActionResult {
+fn execute_builtin_module(db: &RocksDb, env: &crate::bic::epoch::CallEnv, action: &TxAction) -> ActionResult {
     // Generate seed for randomness
     let _seed = seed_random(&env.entry_vr, &env.tx_hash, b"0", b"");
 
@@ -319,7 +319,7 @@ fn execute_builtin_module(_db: &RocksDb, env: &crate::bic::epoch::CallEnv, actio
     let contract_str = std::str::from_utf8(&action.contract).unwrap_or("");
     if !["Epoch", "Coin", "Contract"].contains(&contract_str) {
         return ActionResult {
-            error: "invalid_bic".to_string(),
+            error: "invalid_bic_action".to_string(),
             logs: None,
             exec_used: None,
             result: None,
@@ -331,7 +331,7 @@ fn execute_builtin_module(_db: &RocksDb, env: &crate::bic::epoch::CallEnv, actio
         .contains(&action.function.as_str())
     {
         return ActionResult {
-            error: "invalid_function".to_string(),
+            error: "invalid_bic_action".to_string(),
             logs: None,
             exec_used: None,
             result: None,
@@ -339,12 +339,68 @@ fn execute_builtin_module(_db: &RocksDb, env: &crate::bic::epoch::CallEnv, actio
         };
     }
 
-    // Route to appropriate module (placeholder - would need actual implementations)
+    // Route to appropriate module
     match (contract_str, action.function.as_str()) {
         ("Epoch", "submit_sol") => {
-            // Would call BIC.Epoch.call(:submit_sol, env, action.args)
-            // For now, return success
-            ActionResult { error: "ok".to_string(), logs: None, exec_used: Some(0), result: None, reason: None }
+            // Extract sol from args (first argument must exist)
+            if action.args.is_empty() {
+                return ActionResult {
+                    error: "invalid_sol".to_string(),
+                    logs: None,
+                    exec_used: Some(0),
+                    result: None,
+                    reason: None,
+                };
+            }
+
+            let sol = &action.args[0];
+
+            // Get cached verification result first (matching Elixir's Process.get(SolVerifiedCache)[hash])
+            let hash = blake3::hash(sol);
+            let hash32: [u8; 32] = *hash.as_bytes();
+            let cache = get_sol_verified_cache();
+
+            // Check if solution is already verified in cache
+            let is_cached_valid = cache.get(&hash32).copied().unwrap_or(false);
+            if !is_cached_valid {
+                // If not in cache or invalid, return invalid_sol like Elixir does
+                return ActionResult {
+                    error: "invalid_sol".to_string(),
+                    logs: None,
+                    exec_used: Some(0),
+                    result: None,
+                    reason: None,
+                };
+            }
+
+            // Now call the actual Epoch module submit_sol implementation
+            let epoch_module = crate::bic::epoch::Epoch::default();
+            let epoch_call = crate::bic::epoch::EpochCall::SubmitSol { sol: sol.clone() };
+
+            // Call the Epoch module and convert error to string matching Elixir atoms
+            match epoch_module.call(epoch_call, env, db) {
+                Ok(()) => ActionResult { error: "ok".to_string(), logs: None, exec_used: Some(0), result: None, reason: None },
+                Err(e) => {
+                    // Convert error to Elixir-compatible atom format (exact matches)
+                    let error_str = match e {
+                        crate::bic::epoch::EpochError::SolExists => "sol_exists",
+                        crate::bic::epoch::EpochError::InvalidSol => "invalid_sol",
+                        crate::bic::epoch::EpochError::InvalidEpoch => "invalid_epoch",
+                        crate::bic::epoch::EpochError::InvalidPop => "invalid_pop",
+                        crate::bic::epoch::EpochError::InvalidAddressPk => "invalid_address_pk",
+                        crate::bic::epoch::EpochError::InvalidTrainerPk => "invalid_trainer_pk",
+                        crate::bic::epoch::EpochError::InvalidAmountOfSignatures => "invalid_amount_of_signatures",
+                        crate::bic::epoch::EpochError::InvalidSignature => "invalid_signature",
+                    };
+                    ActionResult {
+                        error: error_str.to_string(),
+                        logs: None,
+                        exec_used: Some(0),
+                        result: None,
+                        reason: None,
+                    }
+                }
+            }
         }
         ("Coin", "transfer") => {
             // Would call BIC.Coin.call(:transfer, env, action.args)
