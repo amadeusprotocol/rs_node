@@ -10,14 +10,14 @@ use crate::consensus::kv::Op;
 use crate::utils::rocksdb::RocksDb;
 use std::path::Path;
 
-// Database path for testing (state at height 34076356 - base state)
-const DB_PATH: &str = "../assets/rocksdb/34076356";
+// Database path for testing (state at height 34076382 - before applying entry 34076383)
+const DB_PATH: &str = "../assets/rocksdb/34076382";
 
 // Entry hash for 34076383
 const ENTRY_HASH: &str = "4BrvwSSbWNRSyoSdjQZDNhCywttiPUtPeMSYrCXGmzhK";
 
-// Expected mutations hash from Elixir (if known)
-// const EXPECTED_MUTATIONS_HASH: &str = "TODO";
+// Expected mutations hash from Elixir
+const EXPECTED_MUTATIONS_HASH: &str = "53NtszVMj5nBA7PnaDsLtiSZAX6T6LvmH74BngSVtp6C";
 
 #[tokio::test]
 async fn test_applying_entry_34076383() -> Result<(), Box<dyn std::error::Error>> {
@@ -26,6 +26,7 @@ async fn test_applying_entry_34076383() -> Result<(), Box<dyn std::error::Error>
     // Check if source database exists
     if !Path::new(DB_PATH).exists() {
         println!("⚠ Database not found at: {}", DB_PATH);
+        println!("  Current directory: {:?}", std::env::current_dir()?);
         println!("  Skipping test...");
         return Ok(());
     }
@@ -49,24 +50,8 @@ async fn test_applying_entry_34076383() -> Result<(), Box<dyn std::error::Error>
     let fabric = Fabric::with_db(db.clone());
     let config = create_test_config();
 
-    // Set up trainers for this height
-    let trainers_key = format!("bic:epoch:trainers:height:{:012}", 34076383).into_bytes();
-    if fabric.get_contractstate(&trainers_key)?.is_none() {
-        // Use the actual signer's public key as the trainer for this test
-        let signer_pk = vec![
-            150, 247, 88, 142, 30, 37, 222, 123, 115, 55, 174, 8, 199, 187, 249, 110, 198, 70, 0, 181, 21, 165, 182,
-            44, 33, 79, 134, 46, 23, 1, 50, 188, 17, 150, 173, 46, 208, 53, 35, 38, 246, 206, 161, 62, 51, 92, 34, 98,
-        ];
-
-        let trainers_term =
-            eetf::Term::from(eetf::List { elements: vec![eetf::Term::from(eetf::Binary { bytes: signer_pk })] });
-        let mut trainers_encoded = Vec::new();
-        trainers_term.encode(&mut trainers_encoded)?;
-        fabric.put_contractstate(&trainers_key, &trainers_encoded)?;
-    }
-
-    // Set up chain state for height 34076382
-    db.put("sysconf", b"temporal_height", &(34076382u32).to_be_bytes())?;
+    // Database at 34076382 should already have the correct state
+    // No need to set up trainers or temporal_height as they should be in the snapshot
 
     // Build the complete hardcoded entry 34076383
     use crate::consensus::doms::entry::EntryHeader;
@@ -236,6 +221,92 @@ async fn test_applying_entry_34076383() -> Result<(), Box<dyn std::error::Error>
     println!("\n=== Mutation Summary ===");
     for (key, count) in mutation_summary.iter() {
         println!("  {}: {}", key, count);
+    }
+
+    // === VERIFY LOGS ===
+    println!("\n=== Logs Verification ===");
+    println!("Number of logs: {}", result.logs.len());
+
+    // Expected logs from Elixir: 22 logs, all "ok" except #18 which is "sol_exists"
+    let expected_logs = vec![
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "sol_exists",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+    ];
+
+    if result.logs.len() != expected_logs.len() {
+        println!("✗ Log count mismatch!");
+        println!("  Expected: {} logs", expected_logs.len());
+        println!("  Got:      {} logs", result.logs.len());
+    } else {
+        println!("✓ Log count matches expected (22 logs)");
+
+        // Check each log
+        let mut all_logs_match = true;
+        for (i, (log, expected)) in result.logs.iter().zip(expected_logs.iter()).enumerate() {
+            if &log.error != expected {
+                println!("✗ Log #{} mismatch: expected '{}', got '{}'", i + 1, expected, log.error);
+                all_logs_match = false;
+            }
+        }
+
+        if all_logs_match {
+            println!("✓ All logs match expected values!");
+            println!("  - 21 transactions returned 'ok'");
+            println!("  - Transaction #18 returned 'sol_exists' (as expected)");
+        } else {
+            println!("\nActual logs:");
+            for (i, log) in result.logs.iter().enumerate() {
+                println!("  #{}: {}", i + 1, log.error);
+            }
+        }
+    }
+
+    // === VERIFY MUTATIONS HASH ===
+    println!("\n=== Mutations Hash Verification ===");
+
+    // The ApplyResult already contains the mutations_hash calculated in apply_entry
+    let mutations_hash_b58 = bs58::encode(result.mutations_hash).into_string();
+
+    println!("Expected hash: {}", EXPECTED_MUTATIONS_HASH);
+    println!("Actual hash:   {}", mutations_hash_b58);
+
+    if mutations_hash_b58 == EXPECTED_MUTATIONS_HASH {
+        println!("✓ Mutations hash matches expected value!");
+    } else {
+        println!("✗ Mutations hash mismatch!");
+        println!("  This indicates the mutations are not being generated correctly.");
+
+        // Let's also check just the mutations without tx_results
+        println!("\n  Checking just mutations (without tx_results):");
+        let mutations_hash_no_results = crate::consensus::kv::hash_mutations(&result.muts);
+        let mutations_hash_no_results_b58 = bs58::encode(mutations_hash_no_results).into_string();
+        println!("  Hash without results: {}", mutations_hash_no_results_b58);
+
+        // Let's also manually check with tx_results prepended
+        println!("\n  Checking with tx_results manually prepended:");
+        let mutations_hash_with_results = crate::consensus::kv::hash_mutations_with_results(&result.logs, &result.muts);
+        let mutations_hash_with_results_b58 = bs58::encode(mutations_hash_with_results).into_string();
+        println!("  Hash with results: {}", mutations_hash_with_results_b58);
     }
 
     // === VERIFY REVERSE MUTATIONS ===

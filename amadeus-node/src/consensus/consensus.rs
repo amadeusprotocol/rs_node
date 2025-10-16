@@ -405,10 +405,14 @@ fn execute_epoch_call(
     function: &str,
     args: &[Vec<u8>],
 ) -> (String, Vec<String>) {
-    parse_epoch_call(function, args)
-        .and_then(|call| crate::bic::epoch::Epoch.call(call, env, db).map_err(|e| e.to_string()))
-        .map(|_| ("ok".to_string(), vec![]))
-        .unwrap_or_else(|e| (e, vec![]))
+    match parse_epoch_call(function, args) {
+        Ok(call) => match crate::bic::epoch::Epoch.call(call, env, db) {
+            Ok(_) => ("ok".to_string(), vec![]),
+            Err(crate::bic::epoch::EpochError::InvalidSol) => ("sol_exists".to_string(), vec![]),
+            Err(e) => (e.to_string(), vec![])
+        },
+        Err(e) => (e, vec![])
+    }
 }
 
 fn execute_coin_call(db: &RocksDb, caller: [u8; 48], function: &str, args: &[Vec<u8>]) -> (String, Vec<String>) {
