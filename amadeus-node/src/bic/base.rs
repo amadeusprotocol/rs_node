@@ -379,7 +379,9 @@ fn execute_builtin_module(db: &RocksDb, env: &crate::bic::epoch::CallEnv, action
 
             // Call the Epoch module and convert error to string matching Elixir atoms
             match epoch_module.call(epoch_call, env, db) {
-                Ok(()) => ActionResult { error: "ok".to_string(), logs: None, exec_used: Some(0), result: None, reason: None },
+                Ok(()) => {
+                    ActionResult { error: "ok".to_string(), logs: None, exec_used: Some(0), result: None, reason: None }
+                }
                 Err(e) => {
                     // Convert error to Elixir-compatible atom format (exact matches)
                     let error_str = match e {

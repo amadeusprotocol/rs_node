@@ -103,7 +103,8 @@ pub fn chain_balance(db: &RocksDb, signer: &[u8]) -> u64 {
 
 /// Balance accessor with specific symbol
 pub fn chain_balance_symbol(db: &RocksDb, signer: &[u8], symbol: &str) -> u64 {
-    let key = crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", signer, format!(":{}", symbol).as_bytes());
+    let key =
+        crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", signer, format!(":{}", symbol).as_bytes());
     match db.get("contractstate", &key) {
         Ok(Some(bytes)) => {
             // Try to deserialize as u64 (balance value)

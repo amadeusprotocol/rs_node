@@ -13,7 +13,7 @@ pub enum Op {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mutation {
     pub op: Op,
-    pub key: Vec<u8>, // Raw binary key (NOT String) to support non-UTF8 pubkeys
+    pub key: Vec<u8>,           // Raw binary key (NOT String) to support non-UTF8 pubkeys
     pub value: Option<Vec<u8>>, // for Put original/new values or for revert
 }
 
@@ -301,7 +301,10 @@ pub fn hash_mutations(muts: &[Mutation]) -> [u8; 32] {
             }
             (Op::SetBit { bit_idx, bloom_size }, _) => {
                 map.insert(Term::Atom(Atom::from("value")), Term::FixInteger(FixInteger { value: *bit_idx as i32 }));
-                map.insert(Term::Atom(Atom::from("bloomsize")), Term::FixInteger(FixInteger { value: *bloom_size as i32 }));
+                map.insert(
+                    Term::Atom(Atom::from("bloomsize")),
+                    Term::FixInteger(FixInteger { value: *bloom_size as i32 }),
+                );
             }
             (Op::ClearBit { bit_idx }, _) => {
                 map.insert(Term::Atom(Atom::from("value")), Term::FixInteger(FixInteger { value: *bit_idx as i32 }));
@@ -325,10 +328,7 @@ pub fn hash_mutations(muts: &[Mutation]) -> [u8; 32] {
 
 /// Hash mutations with transaction results prepended (matching Elixir: hash_mutations(l ++ m))
 /// where l is the list of transaction results and m is the list of mutations
-pub fn hash_mutations_with_results(
-    results: &[crate::consensus::consensus::TxResult],
-    muts: &[Mutation],
-) -> [u8; 32] {
+pub fn hash_mutations_with_results(results: &[crate::consensus::consensus::TxResult], muts: &[Mutation]) -> [u8; 32] {
     use crate::utils::safe_etf::encode_safe_deterministic;
     use eetf::{Atom, Binary, FixInteger, List, Map, Term};
     use std::collections::HashMap;
@@ -366,7 +366,10 @@ pub fn hash_mutations_with_results(
             }
             (Op::SetBit { bit_idx, bloom_size }, _) => {
                 map.insert(Term::Atom(Atom::from("value")), Term::FixInteger(FixInteger { value: *bit_idx as i32 }));
-                map.insert(Term::Atom(Atom::from("bloomsize")), Term::FixInteger(FixInteger { value: *bloom_size as i32 }));
+                map.insert(
+                    Term::Atom(Atom::from("bloomsize")),
+                    Term::FixInteger(FixInteger { value: *bloom_size as i32 }),
+                );
             }
             (Op::ClearBit { bit_idx }, _) => {
                 map.insert(Term::Atom(Atom::from("value")), Term::FixInteger(FixInteger { value: *bit_idx as i32 }));
