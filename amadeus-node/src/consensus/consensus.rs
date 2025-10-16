@@ -524,7 +524,7 @@ fn parse_epoch_call(function: &str, args: &[Vec<u8>]) -> Result<crate::bic::epoc
 /// Pre-process transactions: update nonces, deduct gas
 fn call_txs_pre(db: &RocksDb, next_entry: &Entry, txus: &[TxU]) {
     use crate::consensus::kv;
-    kv::reset();
+    // DON'T reset here - we want to accumulate mutations from the entire entry processing
 
     let epoch = next_entry.header.height / 100_000;
 
@@ -566,7 +566,7 @@ fn call_txs_pre(db: &RocksDb, next_entry: &Entry, txus: &[TxU]) {
 /// Exit logic: segment VR updates and epoch transitions
 fn call_exit(db: &RocksDb, next_entry: &Entry) {
     use crate::consensus::kv;
-    kv::reset();
+    // DON'T reset here - we want to accumulate mutations from the entire entry processing
 
     // Update segment VR hash every 1000 blocks
     if next_entry.header.height % 1000 == 0 {
@@ -602,6 +602,9 @@ pub fn apply_entry(
     config: &crate::config::Config,
     next_entry: &Entry,
 ) -> Result<ApplyResult, Error> {
+    // Reset mutations at the start of entry processing
+    crate::consensus::kv::reset();
+
     // check height validity
     let current_height = get_chain_height(fabric).unwrap_or(0);
     if next_entry.header.height != current_height + 1 {
@@ -626,6 +629,7 @@ pub fn apply_entry(
     // pre-process transactions (nonce updates, gas deduction)
     let db = fabric.db();
     call_txs_pre(db, next_entry, &txus);
+    // Collect mutations from pre-processing AFTER call_txs_pre
     let mut muts = crate::consensus::kv::mutations();
     let mut muts_rev = crate::consensus::kv::mutations_reverse();
 
@@ -649,6 +653,9 @@ pub fn apply_entry(
 
         tx_results.push(TxResult { error, logs });
     }
+
+    // Reset mutations before call_exit to avoid collecting the last transaction's mutations twice
+    crate::consensus::kv::reset();
 
     // call exit logic (segment VR updates, epoch transitions)
     call_exit(db, next_entry);

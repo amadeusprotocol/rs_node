@@ -7,7 +7,14 @@ pub mod genesis;
 pub mod kv;
 
 #[cfg(test)]
-pub mod test_mutations_hash;
+mod test_34076357 {
+    include!("tests/34076357.rs");
+}
+
+#[cfg(test)]
+mod test_34076383 {
+    include!("tests/34076383.rs");
+}
 
 pub use agg_sig::{
     AggSig, DST, DST_ANR, DST_ANR_CHALLENGE, DST_ATT, DST_ENTRY, DST_MOTION, DST_NODE, DST_POP, DST_TX, DST_VRF,

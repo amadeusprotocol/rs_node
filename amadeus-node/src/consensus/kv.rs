@@ -245,10 +245,11 @@ pub fn kv_set_bit(db: &RocksDb, key: &[u8], bit_idx: u32, bloom_size_opt: Option
         let mask = 1u8 << bit_in_byte;
         let old_set = (page[byte_i] & mask) != 0;
         if old_set {
+            // Bit is already set, return false WITHOUT recording mutations (matching Elixir behavior)
             return false;
         }
 
-        // Record mutations (forward: set_bit; reverse: clear_bit or delete if not existed)
+        // Record mutations ONLY when bit actually changes (forward: set_bit; reverse: clear_bit or delete if not existed)
         let existed = db.get("contractstate", key).unwrap_or(None).is_some();
 
         let (fwd, rev) = if ctx.use_gas_context {

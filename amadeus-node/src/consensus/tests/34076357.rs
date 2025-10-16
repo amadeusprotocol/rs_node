@@ -15,7 +15,7 @@
 /// different state (e.g., different solution counts, bloom filter states, and balances), causing
 /// the mutations to differ from the Elixir reference output.
 ///
-/// Run: `cargo test test_entry_34076357_mutations -- --nocapture`
+/// Run: `cargo test test_applying_entry_34076357 -- --nocapture`
 use crate::config::Config;
 use crate::consensus::consensus::apply_entry;
 use crate::consensus::doms::entry::Entry;
@@ -47,16 +47,15 @@ fn get_expected_mutations() -> Vec<Mutation> {
     // Note: The keys contain raw binary pubkey bytes (48 bytes), not base58
     // The first pubkey from Elixir: [169, 116, 253, 131, 99, 226, 213, 36, ...]
     let pubkey1: Vec<u8> = vec![
-        169, 116, 253, 131, 99, 226, 213, 36, 230, 131, 228, 47, 119, 228, 241, 167, 115, 48, 182,
-        254, 25, 82, 102, 105, 157, 188, 251, 89, 12, 23, 165, 163, 53, 14, 68, 199, 199, 31, 162,
-        150, 137, 160, 19, 9, 212, 227, 136, 137,
+        169, 116, 253, 131, 99, 226, 213, 36, 230, 131, 228, 47, 119, 228, 241, 167, 115, 48, 182, 254, 25, 82, 102,
+        105, 157, 188, 251, 89, 12, 23, 165, 163, 53, 14, 68, 199, 199, 31, 162, 150, 137, 160, 19, 9, 212, 227, 136,
+        137,
     ];
 
     // Second pubkey from Mutation 3: [149, 123, 95, 108, 38, 249, 41, 49, ...]
     let pubkey2: Vec<u8> = vec![
-        149, 123, 95, 108, 38, 249, 41, 49, 137, 178, 203, 51, 87, 217, 50, 136, 157, 192, 35,
-        227, 54, 165, 52, 12, 72, 196, 214, 121, 105, 87, 38, 112, 157, 156, 100, 11, 195, 11, 29,
-        113, 70, 228, 232, 18, 31, 162, 54, 229,
+        149, 123, 95, 108, 38, 249, 41, 49, 137, 178, 203, 51, 87, 217, 50, 136, 157, 192, 35, 227, 54, 165, 52, 12,
+        72, 196, 214, 121, 105, 87, 38, 112, 157, 156, 100, 11, 195, 11, 29, 113, 70, 228, 232, 18, 31, 162, 54, 229,
     ];
 
     // Zero pubkey from Mutation 4 (burn address): all zeros (48 bytes)
@@ -84,39 +83,12 @@ fn get_expected_mutations() -> Vec<Mutation> {
     key6.extend_from_slice(&pubkey1);
 
     vec![
-        Mutation {
-            op: Op::Put,
-            key: key1,
-            value: Some(b"1760291515110255478".to_vec()),
-        },
-        Mutation {
-            op: Op::Put,
-            key: key2,
-            value: Some(b"87359172968597".to_vec()),
-        },
-        Mutation {
-            op: Op::Put,
-            key: key3,
-            value: Some(b"593747048871833".to_vec()),
-        },
-        Mutation {
-            op: Op::Put,
-            key: key4,
-            value: Some(b"190024695000000".to_vec()),
-        },
-        Mutation {
-            op: Op::SetBit {
-                bit_idx: 37899,
-                bloom_size: 65536,
-            },
-            key: key5.as_bytes().to_vec(),
-            value: None,
-        },
-        Mutation {
-            op: Op::Put,
-            key: key6,
-            value: Some(b"29414".to_vec()),
-        },
+        Mutation { op: Op::Put, key: key1, value: Some(b"1760291515110255478".to_vec()) },
+        Mutation { op: Op::Put, key: key2, value: Some(b"87359172968597".to_vec()) },
+        Mutation { op: Op::Put, key: key3, value: Some(b"593747048871833".to_vec()) },
+        Mutation { op: Op::Put, key: key4, value: Some(b"190024695000000".to_vec()) },
+        Mutation { op: Op::SetBit { bit_idx: 37899, bloom_size: 65536 }, key: key5.as_bytes().to_vec(), value: None },
+        Mutation { op: Op::Put, key: key6, value: Some(b"29414".to_vec()) },
     ]
 }
 
@@ -132,15 +104,14 @@ fn get_expected_reverse_mutations() -> Vec<Mutation> {
     // Reverse mutation 6: put bic:epoch:solutions_count:<pubkey_bytes> = "29413" (old count)
 
     let pubkey1: Vec<u8> = vec![
-        169, 116, 253, 131, 99, 226, 213, 36, 230, 131, 228, 47, 119, 228, 241, 167, 115, 48, 182,
-        254, 25, 82, 102, 105, 157, 188, 251, 89, 12, 23, 165, 163, 53, 14, 68, 199, 199, 31, 162,
-        150, 137, 160, 19, 9, 212, 227, 136, 137,
+        169, 116, 253, 131, 99, 226, 213, 36, 230, 131, 228, 47, 119, 228, 241, 167, 115, 48, 182, 254, 25, 82, 102,
+        105, 157, 188, 251, 89, 12, 23, 165, 163, 53, 14, 68, 199, 199, 31, 162, 150, 137, 160, 19, 9, 212, 227, 136,
+        137,
     ];
 
     let pubkey2: Vec<u8> = vec![
-        149, 123, 95, 108, 38, 249, 41, 49, 137, 178, 203, 51, 87, 217, 50, 136, 157, 192, 35,
-        227, 54, 165, 52, 12, 72, 196, 214, 121, 105, 87, 38, 112, 157, 156, 100, 11, 195, 11, 29,
-        113, 70, 228, 232, 18, 31, 162, 54, 229,
+        149, 123, 95, 108, 38, 249, 41, 49, 137, 178, 203, 51, 87, 217, 50, 136, 157, 192, 35, 227, 54, 165, 52, 12,
+        72, 196, 214, 121, 105, 87, 38, 112, 157, 156, 100, 11, 195, 11, 29, 113, 70, 228, 232, 18, 31, 162, 54, 229,
     ];
 
     let zero_pubkey: Vec<u8> = vec![0u8; 48];
@@ -167,44 +138,17 @@ fn get_expected_reverse_mutations() -> Vec<Mutation> {
     key6.extend_from_slice(&pubkey1);
 
     vec![
-        Mutation {
-            op: Op::Put,
-            key: key1,
-            value: Some(b"1760291514077609349".to_vec()),
-        },
-        Mutation {
-            op: Op::Put,
-            key: key2,
-            value: Some(b"87359192968597".to_vec()),
-        },
-        Mutation {
-            op: Op::Put,
-            key: key3,
-            value: Some(b"593747038871833".to_vec()),
-        },
-        Mutation {
-            op: Op::Put,
-            key: key4,
-            value: Some(b"190024685000000".to_vec()),
-        },
-        Mutation {
-            op: Op::ClearBit {
-                bit_idx: 37899,
-            },
-            key: key5.as_bytes().to_vec(),
-            value: None,
-        },
-        Mutation {
-            op: Op::Put,
-            key: key6,
-            value: Some(b"29413".to_vec()),
-        },
+        Mutation { op: Op::Put, key: key1, value: Some(b"1760291514077609349".to_vec()) },
+        Mutation { op: Op::Put, key: key2, value: Some(b"87359192968597".to_vec()) },
+        Mutation { op: Op::Put, key: key3, value: Some(b"593747038871833".to_vec()) },
+        Mutation { op: Op::Put, key: key4, value: Some(b"190024685000000".to_vec()) },
+        Mutation { op: Op::ClearBit { bit_idx: 37899 }, key: key5.as_bytes().to_vec(), value: None },
+        Mutation { op: Op::Put, key: key6, value: Some(b"29413".to_vec()) },
     ]
 }
 
 #[tokio::test]
-#[ignore]
-async fn test_entry_34076357_mutations() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_applying_entry_34076357() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Testing Entry 34076357 Application ===\n");
 
     // Check if source database exists
@@ -267,11 +211,7 @@ async fn test_entry_34076357_mutations() -> Result<(), Box<dyn std::error::Error
 
     // Verify entry hash
     let expected_entry_hash = bs58::decode(ENTRY_HASH).into_vec()?;
-    assert_eq!(
-        entry.hash.as_slice(),
-        expected_entry_hash.as_slice(),
-        "Entry hash mismatch"
-    );
+    assert_eq!(entry.hash.as_slice(), expected_entry_hash.as_slice(), "Entry hash mismatch");
     println!("✓ Entry hash verified");
 
     // Open temporary database
@@ -286,9 +226,7 @@ async fn test_entry_34076357_mutations() -> Result<(), Box<dyn std::error::Error
     let trainers_key = format!("bic:epoch:trainers:height:{:012}", 34076357).into_bytes();
     if fabric.get_contractstate(&trainers_key)?.is_none() {
         let trainers_term = eetf::Term::from(eetf::List {
-            elements: vec![eetf::Term::from(eetf::Binary {
-                bytes: config.trainer_pk.to_vec(),
-            })],
+            elements: vec![eetf::Term::from(eetf::Binary { bytes: config.trainer_pk.to_vec() })],
         });
         let mut trainers_encoded = Vec::new();
         trainers_term.encode(&mut trainers_encoded)?;
@@ -348,15 +286,24 @@ async fn test_entry_34076357_mutations() -> Result<(), Box<dyn std::error::Error
             // Compare each reverse mutation
             let mut all_match = true;
             for (i, (rust_mut, expected_mut)) in rust_muts_rev.iter().zip(expected_muts_rev.iter()).enumerate() {
-                if rust_mut.key != expected_mut.key || rust_mut.op != expected_mut.op || rust_mut.value != expected_mut.value {
+                if rust_mut.key != expected_mut.key
+                    || rust_mut.op != expected_mut.op
+                    || rust_mut.value != expected_mut.value
+                {
                     all_match = false;
                     println!("✗ Reverse mutation {} mismatch:", i + 1);
-                    println!("  Rust:     op={:?}, key={:?}, value={:?}",
-                        rust_mut.op, String::from_utf8_lossy(&rust_mut.key),
-                        rust_mut.value.as_ref().map(|v| String::from_utf8_lossy(v)));
-                    println!("  Expected: op={:?}, key={:?}, value={:?}",
-                        expected_mut.op, String::from_utf8_lossy(&expected_mut.key),
-                        expected_mut.value.as_ref().map(|v| String::from_utf8_lossy(v)));
+                    println!(
+                        "  Rust:     op={:?}, key={:?}, value={:?}",
+                        rust_mut.op,
+                        String::from_utf8_lossy(&rust_mut.key),
+                        rust_mut.value.as_ref().map(|v| String::from_utf8_lossy(v))
+                    );
+                    println!(
+                        "  Expected: op={:?}, key={:?}, value={:?}",
+                        expected_mut.op,
+                        String::from_utf8_lossy(&expected_mut.key),
+                        expected_mut.value.as_ref().map(|v| String::from_utf8_lossy(v))
+                    );
                 }
             }
             if all_match {
@@ -369,11 +316,7 @@ async fn test_entry_34076357_mutations() -> Result<(), Box<dyn std::error::Error
 
     // Compare mutations count
     if result.muts.len() != expected_muts.len() {
-        println!(
-            "✗ Mutation count mismatch: got {}, expected {}",
-            result.muts.len(),
-            expected_muts.len()
-        );
+        println!("✗ Mutation count mismatch: got {}, expected {}", result.muts.len(), expected_muts.len());
         println!("\nRust mutations:");
         for (i, m) in result.muts.iter().enumerate() {
             println!("  {}: {:?} key={:?}", i + 1, m.op, String::from_utf8_lossy(&m.key));
@@ -432,13 +375,9 @@ fn create_test_config() -> Config {
     // Generate a valid BLS12-381 keypair for testing
     let trainer_sk = crate::config::gen_sk();
     let trainer_pk = crate::config::get_pk(&trainer_sk);
-    let trainer_pop = crate::utils::bls12_381::sign(
-        &trainer_sk,
-        &trainer_pk,
-        crate::consensus::agg_sig::DST_POP,
-    )
-    .map(|sig| sig.to_vec())
-    .unwrap_or_else(|_| vec![0u8; 96]);
+    let trainer_pop = crate::utils::bls12_381::sign(&trainer_sk, &trainer_pk, crate::consensus::agg_sig::DST_POP)
+        .map(|sig| sig.to_vec())
+        .unwrap_or_else(|_| vec![0u8; 96]);
 
     Config {
         work_folder: "/tmp/test_config".to_string(),
@@ -540,9 +479,7 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
     let trainers_key = format!("bic:epoch:trainers:height:{:012}", 34076357).into_bytes();
     if fabric.get_contractstate(&trainers_key)?.is_none() {
         let trainers_term = eetf::Term::from(eetf::List {
-            elements: vec![eetf::Term::from(eetf::Binary {
-                bytes: config.trainer_pk.to_vec(),
-            })],
+            elements: vec![eetf::Term::from(eetf::Binary { bytes: config.trainer_pk.to_vec() })],
         });
         let mut trainers_encoded = Vec::new();
         trainers_term.encode(&mut trainers_encoded)?;
@@ -555,9 +492,9 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
 
     // Define key variables needed for verification later in the test.
     let pubkey1: [u8; 48] = [
-        169, 116, 253, 131, 99, 226, 213, 36, 230, 131, 228, 47, 119, 228, 241, 167, 115, 48, 182,
-        254, 25, 82, 102, 105, 157, 188, 251, 89, 12, 23, 165, 163, 53, 14, 68, 199, 199, 31, 162,
-        150, 137, 160, 19, 9, 212, 227, 136, 137,
+        169, 116, 253, 131, 99, 226, 213, 36, 230, 131, 228, 47, 119, 228, 241, 167, 115, 48, 182, 254, 25, 82, 102,
+        105, 157, 188, 251, 89, 12, 23, 165, 163, 53, 14, 68, 199, 199, 31, 162, 150, 137, 160, 19, 9, 212, 227, 136,
+        137,
     ];
     let nonce_key = crate::utils::misc::build_key(b"bic:base:nonce:", &pubkey1);
     let balance_key1 = crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &pubkey1, b":AMA");
@@ -576,8 +513,8 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
     println!("  Reverse mutations: {}", reverse_muts1.len());
 
     // Verify state after first application
-    let balance_after_first = fabric.get_contractstate(&balance_key1)?
-        .ok_or("Balance not found after first application")?;
+    let balance_after_first =
+        fabric.get_contractstate(&balance_key1)?.ok_or("Balance not found after first application")?;
     let balance_after_first_str = String::from_utf8_lossy(&balance_after_first);
     println!("  Balance after: {}", balance_after_first_str);
     assert_eq!(balance_after_first_str, "87359172968597", "Balance mismatch after first application");
@@ -589,14 +526,12 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
     println!("✓ Rewind successful");
 
     // Verify state restored after rewind
-    let balance_after_rewind = fabric.get_contractstate(&balance_key1)?
-        .ok_or("Balance not found after rewind")?;
+    let balance_after_rewind = fabric.get_contractstate(&balance_key1)?.ok_or("Balance not found after rewind")?;
     let balance_after_rewind_str = String::from_utf8_lossy(&balance_after_rewind);
     println!("  Balance after rewind: {}", balance_after_rewind_str);
     assert_eq!(balance_after_rewind_str, "87359192968597", "Balance not restored after rewind");
 
-    let nonce_after_rewind = fabric.get_contractstate(&nonce_key)?
-        .ok_or("Nonce not found after rewind")?;
+    let nonce_after_rewind = fabric.get_contractstate(&nonce_key)?.ok_or("Nonce not found after rewind")?;
     let nonce_after_rewind_str = String::from_utf8_lossy(&nonce_after_rewind);
     println!("  Nonce after rewind: {}", nonce_after_rewind_str);
     assert_eq!(nonce_after_rewind_str, "1760291514077609349", "Nonce not restored after rewind");
@@ -643,12 +578,18 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
         if m1.key != m2.key || m1.op != m2.op || m1.value != m2.value {
             forward_mismatches += 1;
             println!("✗ Forward mutation {} differs:", i + 1);
-            println!("  First:  op={:?}, key={:?}, value={:?}",
-                m1.op, String::from_utf8_lossy(&m1.key),
-                m1.value.as_ref().map(|v| String::from_utf8_lossy(v)));
-            println!("  Second: op={:?}, key={:?}, value={:?}",
-                m2.op, String::from_utf8_lossy(&m2.key),
-                m2.value.as_ref().map(|v| String::from_utf8_lossy(v)));
+            println!(
+                "  First:  op={:?}, key={:?}, value={:?}",
+                m1.op,
+                String::from_utf8_lossy(&m1.key),
+                m1.value.as_ref().map(|v| String::from_utf8_lossy(v))
+            );
+            println!(
+                "  Second: op={:?}, key={:?}, value={:?}",
+                m2.op,
+                String::from_utf8_lossy(&m2.key),
+                m2.value.as_ref().map(|v| String::from_utf8_lossy(v))
+            );
         }
     }
     assert_eq!(forward_mismatches, 0, "Forward mutations differ");
@@ -660,23 +601,25 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
         if m1.key != m2.key || m1.op != m2.op || m1.value != m2.value {
             reverse_mismatches += 1;
             println!("✗ Reverse mutation {} differs:", i + 1);
-            println!("  First:  op={:?}, key={:?}, value={:?}",
-                m1.op, String::from_utf8_lossy(&m1.key),
-                m1.value.as_ref().map(|v| String::from_utf8_lossy(v)));
-            println!("  Second: op={:?}, key={:?}, value={:?}",
-                m2.op, String::from_utf8_lossy(&m2.key),
-                m2.value.as_ref().map(|v| String::from_utf8_lossy(v)));
+            println!(
+                "  First:  op={:?}, key={:?}, value={:?}",
+                m1.op,
+                String::from_utf8_lossy(&m1.key),
+                m1.value.as_ref().map(|v| String::from_utf8_lossy(v))
+            );
+            println!(
+                "  Second: op={:?}, key={:?}, value={:?}",
+                m2.op,
+                String::from_utf8_lossy(&m2.key),
+                m2.value.as_ref().map(|v| String::from_utf8_lossy(v))
+            );
         }
     }
     assert_eq!(reverse_mismatches, 0, "Reverse mutations differ");
     println!("✓ All reverse mutations identical");
 
     // Compare mutations hashes
-    assert_eq!(
-        result1.mutations_hash,
-        result2.mutations_hash,
-        "Mutations hashes differ"
-    );
+    assert_eq!(result1.mutations_hash, result2.mutations_hash, "Mutations hashes differ");
     println!("✓ Mutations hashes match");
 
     // Cleanup
@@ -737,34 +680,22 @@ fn debug_mutations_encoding(muts: &[crate::consensus::kv::Mutation]) {
         map.insert(Term::Atom(Atom::from("op")), Term::Atom(op_atom));
 
         // Add key
-        map.insert(
-            Term::Atom(Atom::from("key")),
-            Term::Binary(Binary { bytes: m.key.clone() }),
-        );
+        map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: m.key.clone() }));
 
         // Add value field based on op type
         match (&m.op, &m.value) {
             (crate::consensus::kv::Op::Put, Some(v)) => {
-                map.insert(
-                    Term::Atom(Atom::from("value")),
-                    Term::Binary(Binary { bytes: v.clone() }),
-                );
+                map.insert(Term::Atom(Atom::from("value")), Term::Binary(Binary { bytes: v.clone() }));
             }
             (crate::consensus::kv::Op::SetBit { bit_idx, bloom_size }, _) => {
-                map.insert(
-                    Term::Atom(Atom::from("value")),
-                    Term::FixInteger(FixInteger { value: *bit_idx as i32 }),
-                );
+                map.insert(Term::Atom(Atom::from("value")), Term::FixInteger(FixInteger { value: *bit_idx as i32 }));
                 map.insert(
                     Term::Atom(Atom::from("bloomsize")),
                     Term::FixInteger(FixInteger { value: *bloom_size as i32 }),
                 );
             }
             (crate::consensus::kv::Op::ClearBit { bit_idx }, _) => {
-                map.insert(
-                    Term::Atom(Atom::from("value")),
-                    Term::FixInteger(FixInteger { value: *bit_idx as i32 }),
-                );
+                map.insert(Term::Atom(Atom::from("value")), Term::FixInteger(FixInteger { value: *bit_idx as i32 }));
             }
             _ => {}
         }
