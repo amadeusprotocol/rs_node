@@ -251,7 +251,9 @@ impl Epoch {
         // Bloom filter: check and set bits from hash segments (matching Elixir implementation)
         let segs = crate::bic::sol_bloom::segs(&hash);
         let mut any_bit_newly_set = false;
-        for seg in &segs {
+        // Only process first segment to match Elixir
+        // FIXME: check if this is 100% correct
+        for seg in segs.iter().take(1) {
             let key = format!("bic:epoch:solbloom:{}", seg.page);
             let was_newly_set = kv::kv_set_bit(db, key.as_bytes(), seg.bit_offset, Some(65536));
             if was_newly_set {
@@ -430,12 +432,9 @@ impl Epoch {
                         }
                     })
                     .unwrap_or(*pk);
-                let balance_key = crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &emission_addr, b":AMA");
-                kv::kv_increment(
-                    db,
-                    &balance_key,
-                    coins,
-                );
+                let balance_key =
+                    crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &emission_addr, b":AMA");
+                kv::kv_increment(db, &balance_key, coins);
             }
 
             // Distribute early adopter emission
@@ -462,12 +461,9 @@ impl Epoch {
                             }
                         })
                         .unwrap_or(*pk);
-                    let balance_key = crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &emission_addr, b":AMA");
-                    kv::kv_increment(
-                        db,
-                        &balance_key,
-                        coins,
-                    );
+                    let balance_key =
+                        crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &emission_addr, b":AMA");
+                    kv::kv_increment(db, &balance_key, coins);
                 }
             }
         } else {
@@ -494,12 +490,9 @@ impl Epoch {
                             }
                         })
                         .unwrap_or(*pk);
-                    let balance_key = crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &emission_addr, b":AMA");
-                    kv::kv_increment(
-                        db,
-                        &balance_key,
-                        coins,
-                    );
+                    let balance_key =
+                        crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &emission_addr, b":AMA");
+                    kv::kv_increment(db, &balance_key, coins);
                 }
             }
         }

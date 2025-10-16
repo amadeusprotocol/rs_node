@@ -10,7 +10,7 @@ use crate::utils::rocksdb::RocksDb;
 use crate::utils::safe_etf::encode_safe_deterministic;
 use eetf::{Atom, Binary, Term};
 use std::collections::HashMap;
-use tracing::warn;
+use tracing::{info, warn};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -549,7 +549,6 @@ fn call_txs_pre(db: &RocksDb, next_entry: &Entry, txus: &[TxU]) {
             crate::bic::coin::to_cents((3 + bytes / 256 * 3) as u64) as i64
         };
 
-
         let signer_balance_key =
             crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &txu.tx.signer, b":AMA");
         kv::kv_increment(db, &signer_balance_key, -exec_cost);
@@ -603,7 +602,6 @@ pub fn apply_entry(
     config: &crate::config::Config,
     next_entry: &Entry,
 ) -> Result<ApplyResult, Error> {
-
     // check height validity
     let current_height = get_chain_height(fabric).unwrap_or(0);
     if next_entry.header.height != current_height + 1 {
@@ -1194,7 +1192,7 @@ pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {
                     break;
                 } else {
                     // mutations match, safe to root the entry
-                    tracing::info!(
+                    info!(
                         "proc_consensus: rooting entry {} at height {} with score {:.2}",
                         bs58::encode(&best_entry.hash).into_string(),
                         best_entry.header.height,
@@ -1210,7 +1208,7 @@ pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {
     // check if rooted tip changed
     let final_rooted_hash = get_rooted_tip_hash(fabric)?.unwrap_or([0u8; 32]);
     if final_rooted_hash != initial_rooted_hash {
-        tracing::info!(
+        info!(
             "proc_consensus: rooted tip changed from {} to {}",
             bs58::encode(&initial_rooted_hash).into_string(),
             bs58::encode(&final_rooted_hash).into_string()
