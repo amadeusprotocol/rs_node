@@ -747,7 +747,7 @@ pub fn unmask_trainers(trainers: &[[u8; 48]], mask: &BitVec<u8, Msb0>) -> Vec<[u
 
 /// Return trainers for the given height, reading from contractstate CF
 /// Special case: heights in 3195570..=3195575 map to fixed key "000000319557"
-pub fn trainers_for_height(db: &RocksDb, height: u32) -> Option<Vec<[u8; 48]>> {
+pub fn trainers_for_height(db: &RocksDb, height: u64) -> Option<Vec<[u8; 48]>> {
     let cf = "contractstate";
     let value: Option<Vec<u8>> = if (3_195_570..=3_195_575).contains(&height) {
         match db.get(cf, b"bic:epoch:trainers:height:000000319557") {

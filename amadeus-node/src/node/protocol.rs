@@ -13,7 +13,7 @@ use crate::node::peers::HandshakeStatus;
 use crate::node::{anr, peers};
 use crate::utils::bls12_381;
 use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now, parse_list, serialize_list};
-use crate::utils::safe_etf::{encode_safe, u32_to_term};
+use crate::utils::safe_etf::{encode_safe, u64_to_term};
 use eetf::convert::TryAsRef;
 use eetf::{Atom, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, List, Map, Term};
 use std::collections::HashMap;
@@ -286,7 +286,7 @@ pub struct Catchup {
 
 #[derive(Debug, Clone)]
 pub struct CatchupHeight {
-    pub height: u32,
+    pub height: u64,
     pub c: Option<bool>,              // consensus flag (matches Elixir)
     pub e: Option<bool>,              // entries flag (matches Elixir)
     pub a: Option<bool>,              // attestations flag (matches Elixir)
@@ -311,7 +311,7 @@ impl Protocol for Catchup {
 
         for item in height_flags_term {
             if let Some(flag_map) = item.get_term_map() {
-                let height = flag_map.get_integer::<u32>("height").ok_or(Error::BadEtf("height"))?;
+                let height = flag_map.get_integer::<u64>("height").ok_or(Error::BadEtf("height"))?;
 
                 let c = flag_map.get_atom("c").map(|a| a.name == "true");
                 let e = flag_map.get_atom("e").map(|a| a.name == "true");
@@ -337,7 +337,7 @@ impl Protocol for Catchup {
             .iter()
             .map(|flag| {
                 let mut flag_map = HashMap::new();
-                flag_map.insert(Term::Atom(Atom::from("height")), u32_to_term(flag.height));
+                flag_map.insert(Term::Atom(Atom::from("height")), u64_to_term(flag.height));
 
                 if let Some(true) = flag.c {
                     flag_map.insert(Term::Atom(Atom::from("c")), Term::Atom(Atom::from("true")));
@@ -378,7 +378,7 @@ pub struct CatchupReply {
 
 #[derive(Debug, Clone)]
 pub struct CatchupHeightReply {
-    pub height: u32,
+    pub height: u64,
     pub entries: Option<Vec<Entry>>,
     pub attestations: Option<Vec<Attestation>>,
     pub consensuses: Option<Vec<Consensus>>,
@@ -402,7 +402,7 @@ impl Protocol for CatchupReply {
 
         for item in tries_term {
             if let Some(trie_map) = item.get_term_map() {
-                let height = trie_map.get_integer::<u32>("height").ok_or(Error::BadEtf("height"))?;
+                let height = trie_map.get_integer::<u64>("height").ok_or(Error::BadEtf("height"))?;
 
                 let entries = trie_map.get_list("entries").and_then(|list| {
                     let parsed = parse_list(list, |bytes| Entry::unpack(bytes));
@@ -435,7 +435,7 @@ impl Protocol for CatchupReply {
             .iter()
             .map(|trie| {
                 let mut trie_map = HashMap::new();
-                trie_map.insert(Term::Atom(Atom::from("height")), u32_to_term(trie.height));
+                trie_map.insert(Term::Atom(Atom::from("height")), u64_to_term(trie.height));
 
                 if let Some(ref entries) = trie.entries {
                     if let Some(term) = serialize_list(entries, |e| e.pack()) {
@@ -469,7 +469,7 @@ impl Protocol for CatchupReply {
         use tracing::{debug, info};
 
         let mut instructions = Vec::new();
-        let rooted_tip_height = ctx.fabric.get_rooted_height()?.unwrap_or_default();
+        let rooted_tip_height = ctx.fabric.get_rooted_height()?.unwrap_or(0);
 
         for trie in &self.heights {
             // Handle entries - insert if height >= rooted_tip_height

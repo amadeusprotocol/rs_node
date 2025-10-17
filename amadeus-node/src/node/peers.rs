@@ -123,7 +123,7 @@ impl Peer {
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct TipInfo {
-    pub height: u32,
+    pub height: u64,
     pub prev_hash: [u8; 32],
 }
 
@@ -135,7 +135,7 @@ impl From<EntrySummary> for TipInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeaderInfo {
-    pub height: u32,
+    pub height: u64,
     pub prev_hash: [u8; 32],
 }
 
@@ -363,7 +363,7 @@ impl NodePeers {
     }
 
     /// Get summary of online peers
-    pub async fn get_online_ip_l_th_rh(&self) -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u32>, Option<u32>)>, Error> {
+    pub async fn get_online_ip_l_th_rh(&self) -> Result<Vec<(Ipv4Addr, Option<u64>, Option<u64>, Option<u64>)>, Error> {
         let online_peers = self.get_online().await?;
         let mut summary = Vec::new();
 
@@ -422,7 +422,7 @@ impl NodePeers {
     }
 
     /// Get peers for a specific height (trainers)
-    pub async fn for_height(&self, fabric: &crate::consensus::fabric::Fabric, height: u32) -> Result<Vec<Peer>, Error> {
+    pub async fn for_height(&self, fabric: &crate::consensus::fabric::Fabric, height: u64) -> Result<Vec<Peer>, Error> {
         let trainers = fabric.trainers_for_height(height).unwrap_or_default();
         let trainers_set: std::collections::HashSet<&[u8; 48]> = trainers.iter().collect();
         let mut peers = Vec::new();
@@ -707,7 +707,7 @@ impl NodePeers {
     }
 
     /// Returns temporal, rooted and bft heights across peers
-    pub async fn get_heights(&self, trainer_pks: &[[u8; 48]]) -> Result<(u32, u32, u32), Error> {
+    pub async fn get_heights(&self, trainer_pks: &[[u8; 48]]) -> Result<(u64, u64, u64), Error> {
         let mut online_trainers = Vec::new();
         let mut online_nontrainers = Vec::new();
 
@@ -777,7 +777,7 @@ impl NodePeers {
 
     pub async fn get_trainer_ips_above_rooted(
         &self,
-        height: u32,
+        height: u64,
         trainer_pks: &[[u8; 48]],
     ) -> Result<Vec<Ipv4Addr>, Error> {
         let online_trainers_above_temporal: Vec<Ipv4Addr> = self
@@ -794,7 +794,7 @@ impl NodePeers {
 
     pub async fn get_trainer_ips_above_temporal(
         &self,
-        height: u32,
+        height: u64,
         trainer_pks: &[[u8; 48]],
     ) -> Result<Vec<Ipv4Addr>, Error> {
         let online_trainers_above_temporal: Vec<Ipv4Addr> = self
@@ -866,9 +866,9 @@ pub struct PeerInfo {
     pub last_msg: String,
     pub handshake_status: HandshakeStatus,
     pub version: Option<Ver>,
-    pub height: u32,
-    pub temporal_height: u32,
-    pub rooted_height: u32,
+    pub height: u64,
+    pub temporal_height: u64,
+    pub rooted_height: u64,
     pub latency: u64,
 }
 
@@ -890,8 +890,8 @@ pub enum Who {
 
 #[derive(Debug, Clone)]
 pub struct HeightFilter {
-    pub min_temporal: Option<u32>,
-    pub min_rooted: Option<u32>,
+    pub min_temporal: Option<u64>,
+    pub min_rooted: Option<u64>,
     pub take: Option<usize>,
     pub sort: Option<String>,
     pub latency: Option<u64>,

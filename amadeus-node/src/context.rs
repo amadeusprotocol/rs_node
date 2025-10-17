@@ -301,7 +301,7 @@ impl Context {
             // This is corner case that must be handled immediately!
             info!("Stopped syncing: getting {} consensuses starting {}", behind_rooted, rooted_height + 1);
             let online_trainer_ips = self.node_peers.get_trainer_ips_above_rooted(peers_rooted, &trainer_pks).await?;
-            let heights: Vec<u32> = (rooted_height + 1..=peers_rooted).take(1000).collect();
+            let heights: Vec<u64> = (rooted_height + 1..=peers_rooted).take(1000).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
                 .map(|height| CatchupHeight { height, c: Some(true), e: None, a: None, hashes: None })
@@ -316,7 +316,7 @@ impl Context {
         if behind_bft > 0 {
             info!("Behind BFT: Syncing {} entries", behind_bft);
             let online_trainer_ips = self.node_peers.get_trainer_ips_above_rooted(peers_bft, &trainer_pks).await?;
-            let heights: Vec<u32> = (rooted_height + 1..=peers_bft).take(100).collect();
+            let heights: Vec<u64> = (rooted_height + 1..=peers_bft).take(100).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
                 .map(|height| CatchupHeight { height, c: Some(true), e: Some(true), a: None, hashes: None })
@@ -331,11 +331,11 @@ impl Context {
         if behind_rooted > 0 {
             info!("Behind rooted: Syncing {} entries", behind_rooted);
             let online_trainer_ips = self.node_peers.get_trainer_ips_above_rooted(peers_rooted, &trainer_pks).await?;
-            let heights: Vec<u32> = (rooted_height + 1..=peers_rooted).take(1000).collect();
+            let heights: Vec<u64> = (rooted_height + 1..=peers_rooted).take(1000).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
                 .map(|height| {
-                    let entries = self.fabric.entries_by_height(height as u64).unwrap_or_default();
+                    let entries = self.fabric.entries_by_height(height).unwrap_or_default();
                     let hashes = entries; // entries_by_height returns Vec<Vec<u8>> which are already hashes
                     CatchupHeight { height, c: Some(true), e: Some(true), a: None, hashes: Some(hashes) }
                 })
@@ -351,11 +351,11 @@ impl Context {
             info!("Behind temporal: Syncing {} entries", behind_temporal);
             let online_trainer_ips =
                 self.node_peers.get_trainer_ips_above_temporal(peers_temporal, &trainer_pks).await?;
-            let heights: Vec<u32> = (temporal_height..=peers_temporal).take(1000).collect();
+            let heights: Vec<u64> = (temporal_height..=peers_temporal).take(1000).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
                 .map(|height| {
-                    let entries = self.fabric.entries_by_height(height as u64).unwrap_or_default();
+                    let entries = self.fabric.entries_by_height(height).unwrap_or_default();
                     let hashes = entries; // entries_by_height returns Vec<Vec<u8>> which are already hashes
                     CatchupHeight { height, c: None, e: Some(true), a: Some(true), hashes: Some(hashes) }
                 })
@@ -371,7 +371,7 @@ impl Context {
             info!("In sync: Fetching attestations for last entry");
             let online_trainer_ips =
                 self.node_peers.get_trainer_ips_above_temporal(peers_temporal, &trainer_pks).await?;
-            let entries = self.fabric.entries_by_height(temporal_height as u64).unwrap_or_default();
+            let entries = self.fabric.entries_by_height(temporal_height).unwrap_or_default();
             let hashes = entries;
             let chunk = vec![CatchupHeight {
                 height: temporal_height,
@@ -443,7 +443,7 @@ impl Context {
     pub async fn get_peers_summary(&self) -> Result<PeersSummary, Error> {
         let my_ip = self.config.get_public_ipv4();
         let temporal_height = self.get_temporal_height();
-        let trainer_pks = self.fabric.trainers_for_height(temporal_height as u32 + 1).unwrap_or_default();
+        let trainer_pks = self.fabric.trainers_for_height(temporal_height + 1).unwrap_or_default();
         self.node_peers.get_peers_summary(my_ip, &trainer_pks).await.map_err(Into::into)
     }
 

@@ -8,7 +8,7 @@ use crate::node::protocol;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381;
 use crate::utils::misc::{TermExt, TermMap, bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
-use crate::utils::safe_etf::{encode_safe, encode_safe_deterministic, i32_to_term, u32_to_term};
+use crate::utils::safe_etf::{encode_safe, encode_safe_deterministic, i64_to_term, u64_to_term};
 use crate::utils::{archiver, blake3};
 use bitvec::prelude::*;
 use eetf::{Atom, Binary, Map, Term};
@@ -108,9 +108,9 @@ impl EntrySummary {
 
 #[derive(Clone)]
 pub struct EntryHeader {
-    pub height: u32, // no need in u128 for next centuries
-    pub slot: u32,
-    pub prev_slot: i32, // is negative 1 in genesis entry
+    pub height: u64,
+    pub slot: u64,
+    pub prev_slot: i64, // is negative 1 in genesis entry
     pub prev_hash: [u8; 32],
     pub dr: [u8; 32], // deterministic random value
     pub vr: [u8; 96], // verifiable random value
@@ -153,9 +153,9 @@ impl EntryHeader {
     // Always deterministic
     pub fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
         let mut map = HashMap::new();
-        map.insert(Term::Atom(Atom::from("height")), u32_to_term(self.height));
-        map.insert(Term::Atom(Atom::from("slot")), u32_to_term(self.slot));
-        map.insert(Term::Atom(Atom::from("prev_slot")), i32_to_term(self.prev_slot));
+        map.insert(Term::Atom(Atom::from("height")), u64_to_term(self.height));
+        map.insert(Term::Atom(Atom::from("slot")), u64_to_term(self.slot));
+        map.insert(Term::Atom(Atom::from("prev_slot")), i64_to_term(self.prev_slot));
         map.insert(Term::Atom(Atom::from("prev_hash")), Term::from(Binary { bytes: self.prev_hash.to_vec() }));
         map.insert(Term::Atom(Atom::from("dr")), Term::from(Binary { bytes: self.dr.to_vec() }));
         map.insert(Term::Atom(Atom::from("vr")), Term::from(Binary { bytes: self.vr.to_vec() }));
@@ -368,7 +368,7 @@ impl Entry {
 
     /// Build next header skeleton similar to Entry.build_next/2.
     /// This requires chain state (pk/sk), so we only provide a helper to derive next header fields given inputs.
-    pub fn build_next_header(&self, slot: u32, signer_pk: &[u8; 48], signer_sk: &[u8]) -> Result<EntryHeader, Error> {
+    pub fn build_next_header(&self, slot: u64, signer_pk: &[u8; 48], signer_sk: &[u8]) -> Result<EntryHeader, Error> {
         // dr' = blake3(dr)
         let dr = blake3::hash(&self.header.dr);
         // vr' = sign(sk, prev_vr, DST_VRF)
@@ -377,7 +377,7 @@ impl Entry {
         Ok(EntryHeader {
             slot,
             height: self.header.height + 1,
-            prev_slot: self.header.slot as i32,
+            prev_slot: self.header.slot as i64,
             prev_hash: self.hash,
             dr,
             vr,
@@ -386,7 +386,7 @@ impl Entry {
         })
     }
 
-    pub fn get_epoch(&self) -> u32 {
+    pub fn get_epoch(&self) -> u64 {
         self.header.height / 100_000
     }
 

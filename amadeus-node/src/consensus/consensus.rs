@@ -8,7 +8,7 @@ use crate::node::protocol::Protocol;
 use crate::utils::bls12_381 as bls;
 use crate::utils::misc::{TermExt, bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
 use crate::utils::rocksdb::RocksDb;
-use crate::utils::safe_etf::{encode_safe_deterministic, u32_to_term};
+use crate::utils::safe_etf::{encode_safe_deterministic, u32_to_term, u64_to_term};
 use bitvec::prelude::*;
 use eetf::{Atom, Binary, Term};
 use std::collections::HashMap;
@@ -655,8 +655,8 @@ pub fn apply_entry(
                     Term::from(Binary { bytes: next_entry.hash.to_vec() }),
                 );
                 tx_meta.insert(Term::Atom(Atom::from("result")), result.to_term());
-                tx_meta.insert(Term::Atom(Atom::from("index_start")), u32_to_term(pos as u32));
-                tx_meta.insert(Term::Atom(Atom::from("index_size")), u32_to_term(tx_packed.len() as u32));
+                tx_meta.insert(Term::Atom(Atom::from("index_start")), u64_to_term(pos as u64));
+                tx_meta.insert(Term::Atom(Atom::from("index_size")), u64_to_term(tx_packed.len() as u64));
 
                 let term = Term::Map(eetf::Map { map: tx_meta });
                 let tx_meta_bin = encode_safe_deterministic(&term);
@@ -668,7 +668,7 @@ pub fn apply_entry(
     Ok(if is_trainer { Some(attestation_packed) } else { None })
 }
 
-pub fn produce_entry(fabric: &fabric::Fabric, config: &crate::config::Config, slot: u32) -> Result<Entry, Error> {
+pub fn produce_entry(fabric: &fabric::Fabric, config: &crate::config::Config, slot: u64) -> Result<Entry, Error> {
     let cur_entry = fabric.get_temporal_entry()?.ok_or(Error::Missing("temporal_tip"))?;
 
     // build next header
@@ -721,7 +721,7 @@ pub fn chain_rewind(fabric: &fabric::Fabric, target_hash: &[u8; 32]) -> Result<b
     let db = fabric.db();
     db.put("sysconf", b"temporal_tip", &entry.hash)?;
     // store temporal_height as ETF term (matches Elixir term: true)
-    let height_term = encode_safe_deterministic(&u32_to_term(entry.header.height));
+    let height_term = encode_safe_deterministic(&u64_to_term(entry.header.height));
     db.put("sysconf", b"temporal_height", &height_term)?;
 
     // update rooted tip if needed
@@ -826,7 +826,7 @@ pub struct BestEntry {
     pub score: Option<f64>,
 }
 
-pub fn best_entry_for_height(fabric: &fabric::Fabric, height: u32) -> Result<Vec<BestEntry>, Error> {
+pub fn best_entry_for_height(fabric: &fabric::Fabric, height: u64) -> Result<Vec<BestEntry>, Error> {
     let rooted_tip = fabric.get_rooted_hash()?.unwrap_or([0u8; 32]);
 
     // get entries by height
@@ -1000,7 +1000,7 @@ pub fn validate_next_entry(current_entry: &Entry, next_entry: &Entry) -> Result<
     let neh = &next_entry.header;
 
     // validate slot consistency
-    if ceh.slot as i32 != neh.prev_slot {
+    if ceh.slot as i64 != neh.prev_slot {
         return Err(Error::WrongType("invalid_slot"));
     }
 
@@ -1034,7 +1034,7 @@ pub fn validate_next_entry(current_entry: &Entry, next_entry: &Entry) -> Result<
 /// Stub function for checking if the node is synced with quorum
 /// Returns true if the node is within X entries of the quorum (BFT threshold)
 /// TODO: implement proper sync checking via FabricSyncAttestGen.isQuorumSyncedOffByX
-fn is_quorum_synced_off_by_x(fabric: &fabric::Fabric, x: u32) -> bool {
+fn is_quorum_synced_off_by_x(fabric: &fabric::Fabric, x: u64) -> bool {
     // stub implementation - check if rooted tip is close to temporal tip
     let temporal_height = fabric.get_temporal_height().ok().flatten().unwrap_or(0);
     let rooted_height = fabric.get_rooted_height().ok().flatten().unwrap_or(0);

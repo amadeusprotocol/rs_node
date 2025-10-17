@@ -2,7 +2,7 @@ use crate::consensus::doms::attestation::Attestation;
 use crate::consensus::doms::entry::Entry;
 use crate::utils::misc::{TermExt, bin_to_bitvec, bitvec_to_bin};
 use crate::utils::rocksdb::{self, RocksDb};
-use crate::utils::safe_etf::{encode_safe_deterministic, u32_to_term};
+use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
 use bitvec::prelude::*;
 use eetf::{Atom, BigInteger, Binary, Term};
 use std::collections::HashMap;
@@ -228,8 +228,8 @@ impl Fabric {
 
         // Process in 10 shards of 10_000 heights to avoid long DB stalls
         let mut handles = Vec::with_capacity(10);
-        for idx in 0..10u32 {
-            let s = start_height + idx * 10_000;
+        for idx in 0..10u64 {
+            let s = (start_height as u64) + idx * 10_000;
             let e = s + 9_999;
             // spawn blocking work inline (db is sync API; wrap in spawn_blocking if needed later)
             let fab = self.clone();
@@ -250,8 +250,8 @@ impl Fabric {
     pub fn insert_entry(
         &self,
         hash: &[u8; 32],
-        height: u32,
-        slot: u32,
+        height: u64,
+        slot: u64,
         entry_bin: &[u8],
         seen_millis: u64,
     ) -> Result<(), Error> {
@@ -297,7 +297,7 @@ impl Fabric {
         Ok(out)
     }
 
-    pub fn entries_by_slot(&self, slot: u32) -> Result<Vec<Vec<u8>>, Error> {
+    pub fn entries_by_slot(&self, slot: u64) -> Result<Vec<Vec<u8>>, Error> {
         // Match Elixir format: "#{slot}:" with no padding
         let mut slot_prefix = slot.to_string().into_bytes();
         slot_prefix.push(b':');
@@ -440,7 +440,7 @@ impl Fabric {
         let txn = self.db.begin_transaction()?;
         txn.put(CF_SYSCONF, b"temporal_tip", &entry.hash)?;
         // Store as ETF term to match Elixir's `term: true`
-        let height_term = encode_safe_deterministic(&u32_to_term(entry.header.height));
+        let height_term = encode_safe_deterministic(&u64_to_term(entry.header.height));
         txn.put(CF_SYSCONF, b"temporal_height", &height_term)?;
         txn.commit()?;
         Ok(())
@@ -457,23 +457,23 @@ impl Fabric {
         }
     }
 
-    pub fn get_temporal_height(&self) -> Result<Option<u32>, Error> {
+    pub fn get_temporal_height(&self) -> Result<Option<u64>, Error> {
         match self.db.get(CF_SYSCONF, b"temporal_height")? {
             Some(hb) => {
                 // Try u64 big-endian bytes (8 bytes)
                 if hb.len() == 8 {
                     let arr: [u8; 8] = hb.try_into().map_err(|_| Error::KvCell("temporal_height"))?;
-                    return Ok(Some(u64::from_be_bytes(arr) as u32));
+                    return Ok(Some(u64::from_be_bytes(arr)));
                 }
-                // Try u32 big-endian bytes (4 bytes)
+                // Try u32 big-endian bytes (4 bytes) for backward compatibility
                 if hb.len() == 4 {
                     let arr: [u8; 4] = hb.try_into().map_err(|_| Error::KvCell("temporal_height"))?;
-                    return Ok(Some(u32::from_be_bytes(arr)));
+                    return Ok(Some(u32::from_be_bytes(arr) as u64));
                 }
                 // Try ETF term (for Elixir compatibility)
                 if let Ok(term) = Term::decode(&mut std::io::Cursor::new(&hb)) {
                     if let Some(height) = TermExt::get_integer(&term) {
-                        return Ok(Some(height as u32));
+                        return Ok(Some(height as u64));
                     }
                 }
                 Err(Error::KvCell("temporal_height"))
@@ -502,23 +502,23 @@ impl Fabric {
         }
     }
 
-    pub fn get_rooted_height(&self) -> Result<Option<u32>, Error> {
+    pub fn get_rooted_height(&self) -> Result<Option<u64>, Error> {
         match self.db.get(CF_SYSCONF, b"rooted_height")? {
             Some(hb) => {
                 // Try u64 big-endian bytes (8 bytes)
                 if hb.len() == 8 {
                     let arr: [u8; 8] = hb.try_into().map_err(|_| Error::KvCell("rooted_height"))?;
-                    return Ok(Some(u64::from_be_bytes(arr) as u32));
+                    return Ok(Some(u64::from_be_bytes(arr)));
                 }
-                // Try u32 big-endian bytes (4 bytes)
+                // Try u32 big-endian bytes (4 bytes) for backward compatibility
                 if hb.len() == 4 {
                     let arr: [u8; 4] = hb.try_into().map_err(|_| Error::KvCell("rooted_height"))?;
-                    return Ok(Some(u32::from_be_bytes(arr)));
+                    return Ok(Some(u32::from_be_bytes(arr) as u64));
                 }
                 // Try ETF term (for Elixir compatibility)
                 if let Ok(term) = Term::decode(&mut std::io::Cursor::new(&hb)) {
                     if let Some(height) = TermExt::get_integer(&term) {
-                        return Ok(Some(height as u32));
+                        return Ok(Some(height as u64));
                     }
                 }
                 Err(Error::KvCell("rooted_height"))
@@ -528,15 +528,15 @@ impl Fabric {
     }
 
     // Convenience wrappers for NodePeers and other components to avoid direct RocksDb usage
-    pub fn get_temporal_height_or_0(&self) -> u32 {
+    pub fn get_temporal_height_or_0(&self) -> u64 {
         self.get_temporal_height().ok().flatten().unwrap_or(0)
     }
 
-    pub fn get_chain_epoch_or_0(&self) -> u32 {
+    pub fn get_chain_epoch_or_0(&self) -> u64 {
         self.get_temporal_height_or_0() / 100_000
     }
 
-    pub fn trainers_for_height(&self, height: u32) -> Option<Vec<[u8; 48]>> {
+    pub fn trainers_for_height(&self, height: u64) -> Option<Vec<[u8; 48]>> {
         crate::bic::epoch::trainers_for_height(self.db(), height)
     }
 
@@ -636,7 +636,7 @@ impl Fabric {
     }
 
     // Helper used by Fabric::cleanup to remove muts_rev keys for entries within a height range
-    fn clean_muts_rev_range(&self, start: u32, end: u32) -> Result<(), crate::utils::rocksdb::Error> {
+    fn clean_muts_rev_range(&self, start: u64, end: u64) -> Result<(), crate::utils::rocksdb::Error> {
         // Use a transaction for batching if available
         let txn = self.db.begin_transaction()?;
         let mut ops = 0usize;
@@ -668,12 +668,12 @@ impl Fabric {
     }
 
     /// Select trainer for a slot from the roster for the corresponding height
-    pub fn get_trainer_for_slot(&self, height: u32, slot: u32) -> Option<[u8; 48]> {
+    pub fn get_trainer_for_slot(&self, height: u64, slot: u64) -> Option<[u8; 48]> {
         let trainers = self.trainers_for_height(height)?;
         if trainers.is_empty() {
             return None;
         }
-        let idx = (slot as u64).rem_euclid(trainers.len() as u64) as usize;
+        let idx = slot.rem_euclid(trainers.len() as u64) as usize;
         trainers.get(idx).copied()
     }
 
@@ -724,7 +724,7 @@ impl Fabric {
         self.is_in_chain_internal(&tip_entry.hash, target_hash, target_height)
     }
 
-    fn is_in_chain_internal(&self, current_hash: &[u8; 32], target_hash: &[u8; 32], target_height: u32) -> bool {
+    fn is_in_chain_internal(&self, current_hash: &[u8; 32], target_hash: &[u8; 32], target_height: u64) -> bool {
         // check if we found the target
         if current_hash == target_hash {
             return true;
@@ -746,7 +746,7 @@ impl Fabric {
     }
 
     /// Check if entry is in its designated slot
-    pub fn validate_entry_slot_trainer(&self, entry: &Entry, prev_slot: u32) -> bool {
+    pub fn validate_entry_slot_trainer(&self, entry: &Entry, prev_slot: u64) -> bool {
         let next_slot = entry.header.slot;
         let slot_trainer = self.get_trainer_for_slot(entry.header.height, next_slot);
 
