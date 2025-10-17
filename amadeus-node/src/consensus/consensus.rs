@@ -473,6 +473,15 @@ pub fn apply_entry(
         tx_results.push(TxResult { error, logs });
     }
 
+    // print actual logs when running tests
+    #[cfg(test)]
+    {
+        println!("\n=== Actual logs from apply_entry (tx_results) ===");
+        for (i, result) in tx_results.iter().enumerate() {
+            println!("Transaction {} result: error={:?}, logs={:?}", i, result.error, result.logs);
+        }
+    }
+
     // Reset mutations before call_exit to avoid collecting the last transaction's mutations twice
     ctx.reset();
 

@@ -92,6 +92,23 @@ mod tests {
         let entries = fabric.entries_by_height(next_height as u64)?;
         let entry = crate::consensus::doms::entry::Entry::unpack(&entries[0])?;
 
+        // read and print expected logs from next_logs file
+        let expected_logs_path = format!("{}/next_logs", db_path);
+        if Path::new(&expected_logs_path).exists() {
+            let expected_logs_bin = std::fs::read(&expected_logs_path)?;
+            println!("\n=== Expected logs from next_logs file ===");
+            match decode_logs(&expected_logs_bin) {
+                Ok(logs) => {
+                    for (i, (error, log_list)) in logs.iter().enumerate() {
+                        println!("Transaction {}: error={:?}, logs={:?}", i, error, log_list);
+                    }
+                }
+                Err(e) => println!("Failed to decode expected logs: {}", e),
+            }
+        } else {
+            println!("\n=== No next_logs file found ===");
+        }
+
         // apply entry
         let config = create_test_config();
         apply_entry(&fabric, &config, &entry)?;
@@ -109,9 +126,7 @@ mod tests {
         assert_eq!(muts_rev.len(), exp_muts_rev.len(), "muts_rev count");
 
         for (i, (r, e)) in muts.iter().zip(exp_muts.iter()).enumerate() {
-            assert_eq!(r.op, e.op, "mut {} op", i);
-            assert_eq!(r.key, e.key, "mut {} key", i);
-            assert_eq!(r.value, e.value, "mut {} val", i);
+            assert_eq!(r, e);
         }
 
         // verify mutations hash
@@ -120,6 +135,46 @@ mod tests {
 
         std::fs::remove_dir_all(&temp).ok();
         Ok(())
+    }
+
+    fn decode_logs(bin: &[u8]) -> Result<Vec<(String, Vec<String>)>, Box<dyn std::error::Error>> {
+        use crate::utils::misc::TermExt;
+        let term = Term::decode(bin)?;
+        let outer_list = match &term {
+            Term::List(l) => l,
+            _ => return Err("not list".into()),
+        };
+
+        outer_list
+            .elements
+            .iter()
+            .map(|e| {
+                let m = match e {
+                    Term::Map(m) => &m.map,
+                    _ => return Err("not map".into()),
+                };
+
+                // get error field
+                let error = match m.get(&Term::Atom(eetf::Atom::from("error"))) {
+                    Some(Term::Atom(a)) => a.name.as_str().to_string(),
+                    _ => return Err("no error field".into()),
+                };
+
+                // get logs field (list of binaries)
+                let logs = match m.get(&Term::Atom(eetf::Atom::from("logs"))) {
+                    Some(Term::List(log_list)) => log_list
+                        .elements
+                        .iter()
+                        .filter_map(|log_term| {
+                            log_term.get_binary().map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+                        })
+                        .collect(),
+                    _ => vec![],
+                };
+
+                Ok((error, logs))
+            })
+            .collect()
     }
 
     fn decode_muts(bin: &[u8]) -> Result<Vec<kv::Mutation>, Box<dyn std::error::Error>> {
