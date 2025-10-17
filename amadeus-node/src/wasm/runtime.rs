@@ -9,6 +9,7 @@ use wasmer::{Function, FunctionEnv, FunctionEnvMut, Instance, Memory, Module, St
 pub struct WasmContext {
     pub env: CallEnv,
     pub db: crate::utils::rocksdb::RocksDb,
+    pub kv_ctx: Arc<Mutex<kv::ApplyCtx>>,
     pub logs: Arc<Mutex<Vec<String>>>,
     pub exec_used: Arc<Mutex<u64>>,
     pub rpc_tx: Option<Sender<RpcMessage>>,
@@ -19,10 +20,11 @@ pub struct WasmContext {
 }
 
 impl WasmContext {
-    pub fn new(env: CallEnv, db: crate::utils::rocksdb::RocksDb) -> Self {
+    pub fn new(env: CallEnv, db: crate::utils::rocksdb::RocksDb, kv_ctx: kv::ApplyCtx) -> Self {
         Self {
             env,
             db,
+            kv_ctx: Arc::new(Mutex::new(kv_ctx)),
             logs: Arc::new(Mutex::new(Vec::new())),
             exec_used: Arc::new(Mutex::new(0)),
             rpc_tx: None,
@@ -84,7 +86,8 @@ mod host_functions {
 
         match context.read_bytes_with_store(&store, key_ptr as u32, key_len as u32) {
             Ok(key) => {
-                match kv::kv_get(&context.db, &key) {
+                let mut kv_ctx = context.kv_ctx.lock().unwrap();
+                match kv::kv_get(&mut *kv_ctx, &context.db, &key) {
                     Some(value) => {
                         // Store value in shared buffer and return pointer
                         let mut buffer = context.memory_buffer.lock().unwrap();
@@ -106,7 +109,8 @@ mod host_functions {
 
         match context.read_bytes_with_store(&store, key_ptr as u32, key_len as u32) {
             Ok(key) => {
-                if kv::kv_exists(&context.db, &key) {
+                let mut kv_ctx = context.kv_ctx.lock().unwrap();
+                if kv::kv_exists(&mut *kv_ctx, &context.db, &key) {
                     1
                 } else {
                     0
@@ -132,7 +136,8 @@ mod host_functions {
             context.read_bytes_with_store(&store, val_ptr as u32, val_len as u32),
         ) {
             (Ok(key), Ok(value)) => {
-                kv::kv_put(&context.db, &key, &value);
+                let mut kv_ctx = context.kv_ctx.lock().unwrap();
+                kv::kv_put(&mut *kv_ctx, &context.db, &key, &value);
                 0
             }
             _ => -1,
@@ -145,7 +150,10 @@ mod host_functions {
         context.add_exec_cost(15);
 
         match context.read_bytes_with_store(&store, key_ptr as u32, key_len as u32) {
-            Ok(key) => kv::kv_increment(&context.db, &key, delta),
+            Ok(key) => {
+                let mut kv_ctx = context.kv_ctx.lock().unwrap();
+                kv::kv_increment(&mut *kv_ctx, &context.db, &key, delta)
+            }
             Err(_) => 0,
         }
     }
@@ -157,7 +165,8 @@ mod host_functions {
 
         match context.read_bytes_with_store(&store, key_ptr as u32, key_len as u32) {
             Ok(key) => {
-                kv::kv_delete(&context.db, &key);
+                let mut kv_ctx = context.kv_ctx.lock().unwrap();
+                kv::kv_delete(&mut *kv_ctx, &context.db, &key);
                 0
             }
             Err(_) => -1,
@@ -170,7 +179,10 @@ mod host_functions {
         context.add_exec_cost(50);
 
         match context.read_bytes_with_store(&store, prefix_ptr as u32, prefix_len as u32) {
-            Ok(prefix) => kv::kv_clear(&context.db, &prefix) as i32,
+            Ok(prefix) => {
+                let mut kv_ctx = context.kv_ctx.lock().unwrap();
+                kv::kv_clear(&mut *kv_ctx, &context.db, &prefix) as i32
+            }
             Err(_) => -1,
         }
     }
@@ -373,8 +385,9 @@ mod host_functions {
                         &contract_pk,
                         format!(":{}", symbol).as_bytes(),
                     );
-                    kv::kv_increment(&context.db, &caller_key, -amount);
-                    kv::kv_increment(&context.db, &contract_key, amount);
+                    let mut kv_ctx = context.kv_ctx.lock().unwrap();
+                    kv::kv_increment(&mut *kv_ctx, &context.db, &caller_key, -amount);
+                    kv::kv_increment(&mut *kv_ctx, &context.db, &contract_key, amount);
                 }
             }
         }
@@ -388,7 +401,10 @@ mod host_functions {
         let mut contract_pk = [0u8; 48];
         contract_pk.copy_from_slice(&contract);
 
-        let bytecode = match crate::bic::contract::bytecode(&context.db, &contract_pk) {
+        let bytecode = match {
+            let mut kv_ctx = context.kv_ctx.lock().unwrap();
+            crate::bic::contract::bytecode(&mut *kv_ctx, &context.db, &contract_pk)
+        } {
             Some(b) => b,
             None => {
                 let mut logs = context.logs.lock().unwrap();
@@ -406,7 +422,11 @@ mod host_functions {
 
         // Execute recursively
         drop(store); // Release store reference before recursive call
-        let result = match execute(&new_env, &context.db, &bytecode, &function, &args) {
+        let result = match {
+            // Clone the kv_ctx for the recursive call
+            let kv_ctx = context.kv_ctx.lock().unwrap().clone();
+            execute(&new_env, &context.db, kv_ctx, &bytecode, &function, &args)
+        } {
             Ok(r) => r,
             Err(e) => {
                 let mut logs = context.logs.lock().unwrap();
@@ -476,6 +496,7 @@ mod host_functions {
 pub fn execute(
     env: &CallEnv,
     db: &crate::utils::rocksdb::RocksDb,
+    kv_ctx: kv::ApplyCtx,
     bytecode: &[u8],
     function: &str,
     args: &[Vec<u8>],
@@ -484,7 +505,7 @@ pub fn execute(
     let module = Module::new(&store, bytecode).map_err(|e| WasmError::Compilation(e.to_string()))?;
 
     // Create context
-    let context = WasmContext::new(env.clone(), db.clone());
+    let context = WasmContext::new(env.clone(), db.clone(), kv_ctx);
     let func_env = FunctionEnv::new(&mut store, context);
 
     // Build imports with all host functions

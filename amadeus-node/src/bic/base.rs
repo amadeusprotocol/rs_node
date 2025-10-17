@@ -1,5 +1,5 @@
 use crate::consensus::doms::tx::{TxAction, TxU};
-use crate::consensus::kv;
+// use crate::consensus::kv;  // Commented out as functions using it are deprecated
 use crate::consensus::kv::Mutation;
 use crate::utils::rocksdb::RocksDb;
 use blake3;
@@ -88,7 +88,12 @@ fn key_balance(pk: &[u8], symbol: &str) -> Vec<u8> {
 
 /// Note: This function does not handle VRF/epoch-dependent sol verification flags; the
 /// bic::sol::verify_with_hash handles epoch branches internally
-pub fn call_txs_pre_parallel(db: &RocksDb, entry_signer: &[u8; 48], txus: &[TxU]) -> (Vec<Mutation>, Vec<Mutation>) {
+#[allow(dead_code)]
+pub fn call_txs_pre_parallel(_db: &RocksDb, _entry_signer: &[u8; 48], _txus: &[TxU]) -> (Vec<Mutation>, Vec<Mutation>) {
+    // This function is currently not used - the consensus module uses its own implementation
+    // TODO: Remove this function or update it to use the new KvCtx approach
+    panic!("call_txs_pre_parallel is deprecated - use consensus module implementation");
+    /*
     // for each txu: set nonce and move exec cost from signer to entry_signer in AMA
     for txu in txus {
         // nonce
@@ -110,10 +115,16 @@ pub fn call_txs_pre_parallel(db: &RocksDb, entry_signer: &[u8; 48], txus: &[TxU]
     set_sol_verified_cache(cache);
 
     (kv::mutations(), kv::mutations_reverse())
+    */
 }
 
-/// Handle epoch exit operations - matches Elixir BIC.Base.call_exit/1  
-pub fn call_exit(db: &RocksDb, env: &crate::bic::epoch::CallEnv) -> (Vec<Mutation>, Vec<Mutation>) {
+/// Handle epoch exit operations - matches Elixir BIC.Base.call_exit/1
+#[allow(dead_code)]
+pub fn call_exit(_db: &RocksDb, _env: &crate::bic::epoch::CallEnv) -> (Vec<Mutation>, Vec<Mutation>) {
+    // This function is currently not used - the consensus module uses its own implementation
+    // TODO: Remove this function or update it to use the new KvCtx approach
+    panic!("call_exit is deprecated - use consensus module implementation");
+    /*
     kv::reset(); // Clear mutations - matches Process.delete(:mutations) etc
 
     // Seed randomness - matches Elixir seed_random(env.entry_vr, "", "", "")
@@ -153,21 +164,28 @@ pub fn call_exit(db: &RocksDb, env: &crate::bic::epoch::CallEnv) -> (Vec<Mutatio
     }
 
     (kv::mutations(), kv::mutations_reverse())
+    */
 }
 
 /// Execute transaction actions - matches Elixir BIC.Base.call_tx_actions/2
 /// Returns (mutations, mutations_reverse, mutations_gas, mutations_gas_reverse, result)
+#[allow(dead_code)]
 pub fn call_tx_actions(
-    db: &RocksDb,
-    env: &crate::bic::epoch::CallEnv,
-    txu: &TxU,
+    _db: &RocksDb,
+    _env: &crate::bic::epoch::CallEnv,
+    _txu: &TxU,
 ) -> (Vec<Mutation>, Vec<Mutation>, Vec<Mutation>, Vec<Mutation>, ActionResult) {
+    // This function is currently not used - the consensus module uses its own implementation
+    // TODO: Remove this function or update it to use the new KvCtx approach
+    panic!("call_tx_actions is deprecated - use consensus module implementation");
+    /*
     kv::reset(); // Clear all mutations - matches Process.delete calls
 
     let result = execute_action_safe(db, env, txu);
 
     // Return all mutation types and result
     (kv::mutations(), kv::mutations_reverse(), vec![], vec![], result)
+    */
 }
 
 #[derive(Debug, Clone)]
@@ -198,7 +216,10 @@ impl Default for ActionResult {
     }
 }
 
-fn execute_action_safe(db: &RocksDb, env: &crate::bic::epoch::CallEnv, txu: &TxU) -> ActionResult {
+#[allow(dead_code)]
+fn execute_action_safe(_db: &RocksDb, _env: &crate::bic::epoch::CallEnv, _txu: &TxU) -> ActionResult {
+    panic!("execute_action_safe is deprecated - use consensus module implementation");
+    /*
     // Get first action (Rust validation ensures exactly 1 action)
     let action = match txu.tx.actions.first() {
         Some(action) => action,
@@ -221,9 +242,13 @@ fn execute_action_safe(db: &RocksDb, env: &crate::bic::epoch::CallEnv, txu: &TxU
         // Built-in module call
         execute_builtin_module(db, env, action)
     }
+    */
 }
 
-fn execute_wasm_contract(db: &RocksDb, env: &crate::bic::epoch::CallEnv, txu: &TxU, action: &TxAction) -> ActionResult {
+#[allow(dead_code)]
+fn execute_wasm_contract(_db: &RocksDb, _env: &crate::bic::epoch::CallEnv, _txu: &TxU, _action: &TxAction) -> ActionResult {
+    panic!("execute_wasm_contract is deprecated - use consensus module implementation");
+    /*
     // Check if contract has bytecode
     let contract_key: [u8; 48] = match action.contract.as_slice().try_into() {
         Ok(key) => key,
@@ -237,7 +262,10 @@ fn execute_wasm_contract(db: &RocksDb, env: &crate::bic::epoch::CallEnv, txu: &T
             };
         }
     };
-    let bytecode = match crate::bic::contract::bytecode(db, &contract_key) {
+    let bytecode = match {
+        let mut ctx = crate::consensus::kv::KvCtx::new();
+        crate::bic::contract::bytecode(&mut ctx, db, &contract_key)
+    } {
         Some(bc) => bc,
         None => {
             return ActionResult {
@@ -290,7 +318,10 @@ fn execute_wasm_contract(db: &RocksDb, env: &crate::bic::epoch::CallEnv, txu: &T
     }
 
     // Call WASM runtime
-    let wasm_result = match crate::wasm::runtime::execute(env, db, &bytecode, &action.function, &action.args) {
+    let wasm_result = match {
+        let ctx = crate::consensus::kv::KvCtx::new();
+        crate::wasm::runtime::execute(env, db, ctx, &bytecode, &action.function, &action.args)
+    } {
         Ok(result) => WasmCallResult {
             exec_used: Some(result.exec_used),
             logs: Some(result.logs),
@@ -309,9 +340,13 @@ fn execute_wasm_contract(db: &RocksDb, env: &crate::bic::epoch::CallEnv, txu: &T
     }
 
     ActionResult { error: "ok".to_string(), logs: None, exec_used: wasm_result.exec_used, result: None, reason: None }
+    */
 }
 
-fn execute_builtin_module(db: &RocksDb, env: &crate::bic::epoch::CallEnv, action: &TxAction) -> ActionResult {
+#[allow(dead_code)]
+fn execute_builtin_module(_db: &RocksDb, _env: &crate::bic::epoch::CallEnv, _action: &TxAction) -> ActionResult {
+    panic!("execute_builtin_module is deprecated - use consensus module implementation");
+    /*
     // Generate seed for randomness
     let _seed = seed_random(&env.entry_vr, &env.tx_hash, b"0", b"");
 
@@ -419,4 +454,5 @@ fn execute_builtin_module(db: &RocksDb, env: &crate::bic::epoch::CallEnv, action
             ActionResult { error: "ok".to_string(), logs: None, exec_used: Some(0), result: None, reason: None }
         }
     }
+    */
 }

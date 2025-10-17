@@ -55,10 +55,11 @@ mod runtime_tests {
     fn test_wasm_runtime_compilation_and_validation() {
         let env = setup_test_env();
         let db = setup_test_db("compilation");
+        let kv_ctx = kv::ApplyCtx::new();
 
         // test with invalid wasm bytecode
         let invalid_wasm = vec![0x00, 0x61, 0x73, 0x6d]; // incomplete wasm header
-        let result = runtime::execute(&env, &db, &invalid_wasm, "main", &[]);
+        let result = runtime::execute(&env, &db, kv_ctx.clone(), &invalid_wasm, "main", &[]);
         assert!(result.is_err());
 
         // test with minimal valid wasm module (contains basic structure)
@@ -71,7 +72,8 @@ mod runtime_tests {
         ];
 
         // this should compile but fail to find "main" function
-        let result = runtime::execute(&env, &db, &minimal_wasm, "main", &[]);
+        let kv_ctx2 = kv::ApplyCtx::new();
+        let result = runtime::execute(&env, &db, kv_ctx2, &minimal_wasm, "main", &[]);
         assert!(matches!(result, Err(runtime::WasmError::FunctionNotFound(_))));
 
         println!("wasm runtime compilation tests ok");
@@ -108,7 +110,8 @@ mod runtime_tests {
 
         let env = setup_test_env();
         let db = setup_test_db("context");
-        let context = WasmContext::new(env.clone(), db);
+        let kv_ctx = kv::ApplyCtx::new();
+        let context = WasmContext::new(env.clone(), db, kv_ctx);
 
         // verify context initialization
         assert_eq!(context.env.entry_epoch, 42);
@@ -133,24 +136,25 @@ mod runtime_tests {
     #[test]
     fn test_storage_operations_integration() {
         let db = setup_test_db("storage_ops");
-        kv::reset_for_tests(&db); // clear any existing data
+        let mut ctx = kv::ApplyCtx::new();
+        kv::reset_for_tests(&mut ctx, &db); // clear any existing data
 
         let _env = setup_test_env();
 
         // test kv operations that the wasm host functions would use
-        kv::kv_put(&db, b"test_key", b"test_value");
-        assert!(kv::kv_exists(&db, b"test_key"));
-        assert_eq!(kv::kv_get(&db, b"test_key").unwrap(), b"test_value");
+        kv::kv_put(&mut ctx, &db, b"test_key", b"test_value");
+        assert!(kv::kv_exists(&mut ctx, &db, b"test_key"));
+        assert_eq!(kv::kv_get(&mut ctx, &db, b"test_key").unwrap(), b"test_value");
 
-        let new_value = kv::kv_increment(&db, b"counter", 42);
+        let new_value = kv::kv_increment(&mut ctx, &db, b"counter", 42);
         assert_eq!(new_value, 42);
-        let incremented = kv::kv_increment(&db, b"counter", 8);
+        let incremented = kv::kv_increment(&mut ctx, &db, b"counter", 8);
         assert_eq!(incremented, 50);
 
-        kv::kv_delete(&db, b"test_key");
-        assert!(!kv::kv_exists(&db, b"test_key"));
+        kv::kv_delete(&mut ctx, &db, b"test_key");
+        assert!(!kv::kv_exists(&mut ctx, &db, b"test_key"));
 
-        let cleared_count = kv::kv_clear(&db, b"count");
+        let cleared_count = kv::kv_clear(&mut ctx, &db, b"count");
         assert!(cleared_count >= 1); // should clear the counter key
 
         println!("storage integration test ok");
@@ -173,7 +177,8 @@ mod runtime_tests {
         ];
 
         // test wasm execution pipeline
-        let result = runtime::execute(&env, &db, &test_wasm, "test", &[]);
+        let kv_ctx = kv::ApplyCtx::new();
+        let result = runtime::execute(&env, &db, kv_ctx, &test_wasm, "test", &[]);
 
         match result {
             Ok(execution_result) => {
@@ -224,7 +229,8 @@ mod runtime_tests {
             0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x41, 0x01, 0x6a, 0x0b,
         ];
 
-        let result = runtime::execute(&env, &db, &memory_test_wasm, "test_memory", &[vec![42]]);
+        let kv_ctx = kv::ApplyCtx::new();
+        let result = runtime::execute(&env, &db, kv_ctx, &memory_test_wasm, "test_memory", &[vec![42]]);
         match result {
             Ok(_) => println!("wasm memory test ok"),
             Err(e) => println!("wasm memory test failed: {:?}", e),
@@ -240,12 +246,14 @@ mod contract_tests {
     fn test_simple_counter_contract() {
         let env = setup_test_env();
         let db = setup_test_db("counter");
-        kv::reset_for_tests(&db);
+        let mut ctx = kv::ApplyCtx::new();
+        kv::reset_for_tests(&mut ctx, &db);
 
         let wasm_bytecode = load_wasm_file("simple_counter.wasm");
         println!("loaded simple_counter.wasm ({} bytes)", wasm_bytecode.len());
 
-        let result = runtime::execute(&env, &db, &wasm_bytecode, "init", &[]);
+        let kv_ctx = kv::ApplyCtx::new();
+        let result = runtime::execute(&env, &db, kv_ctx, &wasm_bytecode, "init", &[]);
         match result {
             Ok(execution_result) => {
                 println!(
@@ -260,7 +268,8 @@ mod contract_tests {
             Err(e) => println!("counter init failed: {:?}", e),
         }
 
-        let result = runtime::execute(&env, &db, &wasm_bytecode, "increment", &[]);
+        let kv_ctx = kv::ApplyCtx::new();
+        let result = runtime::execute(&env, &db, kv_ctx, &wasm_bytecode, "increment", &[]);
         match result {
             Ok(execution_result) => {
                 println!("counter increment ok: {} points", execution_result.exec_used);
@@ -271,7 +280,8 @@ mod contract_tests {
             Err(e) => println!("counter increment failed: {:?}", e),
         }
 
-        let result = runtime::execute(&env, &db, &wasm_bytecode, "get_counter", &[]);
+        let kv_ctx = kv::ApplyCtx::new();
+        let result = runtime::execute(&env, &db, kv_ctx, &wasm_bytecode, "get_counter", &[]);
         match result {
             Ok(execution_result) => {
                 println!("counter get ok: {:?}", execution_result.return_value);
@@ -279,7 +289,8 @@ mod contract_tests {
             Err(e) => println!("counter get failed: {:?}", e),
         }
 
-        let counter_value = kv::kv_get(&db, b"counter");
+        let mut ctx2 = kv::ApplyCtx::new();
+        let counter_value = kv::kv_get(&mut ctx2, &db, b"counter");
         println!("counter storage: {:?}", counter_value);
     }
 
@@ -287,14 +298,16 @@ mod contract_tests {
     fn test_token_contract() {
         let env = setup_test_env();
         let db = setup_test_db("token");
-        kv::reset_for_tests(&db);
+        let mut ctx = kv::ApplyCtx::new();
+        kv::reset_for_tests(&mut ctx, &db);
 
         let wasm_bytecode = load_wasm_file("token_contract.wasm");
         println!("loaded token_contract.wasm ({} bytes)", wasm_bytecode.len());
 
         let initial_supply = 1000000u64;
         let supply_bytes = initial_supply.to_le_bytes().to_vec();
-        let result = runtime::execute(&env, &db, &wasm_bytecode, "init", &[supply_bytes]);
+        let kv_ctx = kv::ApplyCtx::new();
+        let result = runtime::execute(&env, &db, kv_ctx, &wasm_bytecode, "init", &[supply_bytes]);
         match result {
             Ok(execution_result) => {
                 println!("token init ok: {} points", execution_result.exec_used);
@@ -305,7 +318,8 @@ mod contract_tests {
             Err(e) => println!("token init failed: {:?}", e),
         }
 
-        let result = runtime::execute(&env, &db, &wasm_bytecode, "total_supply", &[]);
+        let kv_ctx = kv::ApplyCtx::new();
+        let result = runtime::execute(&env, &db, kv_ctx, &wasm_bytecode, "total_supply", &[]);
         match result {
             Ok(execution_result) => {
                 println!("token total_supply ok: {:?}", execution_result.return_value);
@@ -314,7 +328,8 @@ mod contract_tests {
         }
 
         let account = b"test_account_123";
-        let result = runtime::execute(&env, &db, &wasm_bytecode, "balance_of", &[account.to_vec()]);
+        let kv_ctx = kv::ApplyCtx::new();
+        let result = runtime::execute(&env, &db, kv_ctx, &wasm_bytecode, "balance_of", &[account.to_vec()]);
         match result {
             Ok(execution_result) => {
                 println!("token balance_of ok: {:?}", execution_result.return_value);
@@ -325,7 +340,8 @@ mod contract_tests {
         let to_account = b"recipient_account";
         let transfer_amount = 100u64;
         let amount_bytes = transfer_amount.to_le_bytes().to_vec();
-        let result = runtime::execute(&env, &db, &wasm_bytecode, "transfer", &[to_account.to_vec(), amount_bytes]);
+        let kv_ctx = kv::ApplyCtx::new();
+        let result = runtime::execute(&env, &db, kv_ctx, &wasm_bytecode, "transfer", &[to_account.to_vec(), amount_bytes]);
         match result {
             Ok(execution_result) => {
                 println!("token transfer ok: {:?}", execution_result.return_value);
