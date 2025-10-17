@@ -2,7 +2,7 @@ use crate::consensus::doms::attestation::Attestation;
 use crate::consensus::doms::entry::Entry;
 use crate::utils::misc::{TermExt, bin_to_bitvec, bitvec_to_bin};
 use crate::utils::rocksdb::{self, RocksDb};
-use crate::utils::safe_etf::encode_safe_deterministic;
+use crate::utils::safe_etf::{encode_safe_deterministic, u32_to_term};
 use bitvec::prelude::*;
 use eetf::{Atom, BigInteger, Binary, Term};
 use std::collections::HashMap;
@@ -440,8 +440,7 @@ impl Fabric {
         let txn = self.db.begin_transaction()?;
         txn.put(CF_SYSCONF, b"temporal_tip", &entry.hash)?;
         // Store as ETF term to match Elixir's `term: true`
-        let height_term =
-            encode_safe_deterministic(&Term::from(eetf::FixInteger { value: entry.header.height as i32 }));
+        let height_term = encode_safe_deterministic(&u32_to_term(entry.header.height));
         txn.put(CF_SYSCONF, b"temporal_height", &height_term)?;
         txn.commit()?;
         Ok(())

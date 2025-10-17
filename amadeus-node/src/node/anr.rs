@@ -2,8 +2,9 @@ use crate::config::{Config, SeedANR};
 use crate::utils::blake3;
 use crate::utils::bls12_381::{sign, verify};
 use crate::utils::misc::{TermExt, TermMap, get_unix_secs_now};
+use crate::utils::safe_etf::u32_to_term;
 use crate::utils::version::Ver;
-use eetf::{Atom, Binary, FixInteger, Term};
+use eetf::{Atom, Binary, Term};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::collections::HashMap;
@@ -308,8 +309,8 @@ impl Anr {
         map.insert(Term::Atom(Atom::from("ip4")), Term::Binary(Binary::from(self.ip4.to_string().as_bytes().to_vec())));
         map.insert(Term::Atom(Atom::from("pk")), Term::Binary(Binary::from(self.pk.to_vec())));
         map.insert(Term::Atom(Atom::from("pop")), Term::Binary(Binary::from(self.pop.clone())));
-        map.insert(Term::Atom(Atom::from("port")), Term::FixInteger(FixInteger::from(self.port as i32)));
-        map.insert(Term::Atom(Atom::from("ts")), Term::FixInteger(FixInteger::from(self.ts as i32)));
+        map.insert(Term::Atom(Atom::from("port")), u32_to_term(self.port as u32));
+        map.insert(Term::Atom(Atom::from("ts")), u32_to_term(self.ts));
         map.insert(
             Term::Atom(Atom::from("version")),
             Term::Binary(Binary::from(self.version.to_string().as_bytes().to_vec())),

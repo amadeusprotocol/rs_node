@@ -3,8 +3,8 @@ use crate::utils::blake3;
 use crate::utils::bls12_381;
 use crate::utils::misc::TermExt;
 use crate::utils::rocksdb::RocksDb;
-use eetf::Term;
 use bitvec::prelude::*;
+use eetf::Term;
 
 use crate::bic::coin;
 use crate::bic::sol;

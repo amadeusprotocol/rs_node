@@ -1,5 +1,54 @@
 use eetf::Term;
+use num_bigint::BigInt;
 use std::cmp::Ordering;
+
+/// Convert u64 to Term (FixInteger if fits in i32, otherwise BigInteger)
+#[inline]
+pub fn u64_to_term(value: u64) -> Term {
+    if value <= i32::MAX as u64 {
+        Term::FixInteger(eetf::FixInteger { value: value as i32 })
+    } else {
+        Term::BigInteger(eetf::BigInteger::from(value))
+    }
+}
+
+#[inline]
+pub fn i64_to_term(value: i64) -> Term {
+    if value <= i32::MAX as i64 {
+        Term::FixInteger(eetf::FixInteger { value: value as i32 })
+    } else {
+        Term::BigInteger(eetf::BigInteger::from(value))
+    }
+}
+
+/// Convert i128 to Term (FixInteger if fits in i32, otherwise BigInteger)
+#[inline]
+pub fn i128_to_term(value: i128) -> Term {
+    if value >= i32::MIN as i128 && value <= i32::MAX as i128 {
+        Term::FixInteger(eetf::FixInteger { value: value as i32 })
+    } else if value >= 0 && value <= u64::MAX as i128 {
+        Term::BigInteger(eetf::BigInteger::from(value as u64))
+    } else {
+        // For values outside u64 range or negative, create BigInteger manually
+        Term::BigInteger(eetf::BigInteger { value: BigInt::from(value) })
+    }
+}
+
+/// Convert u32 to Term (FixInteger if fits in i32, otherwise BigInteger)
+#[inline]
+pub fn u32_to_term(value: u32) -> Term {
+    if value <= i32::MAX as u32 {
+        Term::FixInteger(eetf::FixInteger { value: value as i32 })
+    } else {
+        Term::BigInteger(eetf::BigInteger::from(value as u64))
+    }
+}
+
+/// Convert u32 to Term (FixInteger if fits in i32, otherwise BigInteger)
+#[inline]
+pub fn i32_to_term(value: i32) -> Term {
+    Term::FixInteger(eetf::FixInteger { value })
+}
 
 /// Encode an EETF term using small atoms (tag 119) instead of legacy atoms (tag 100)
 /// This ensures compatibility with Elixir's [:safe] option which rejects old atom encoding

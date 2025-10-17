@@ -1,4 +1,3 @@
-use bitvec::prelude::*;
 use crate::node::anr::{Anr, NodeAnrs};
 use crate::node::peers::{HandshakeStatus, PeersSummary};
 use crate::node::protocol::*;
@@ -8,6 +7,7 @@ use crate::socket::UdpSocketExt;
 use crate::utils::misc::Typename;
 use crate::utils::misc::{format_duration, get_unix_millis_now};
 use crate::{SystemStats, Ver, config, consensus, get_system_stats, metrics, node, utils};
+use bitvec::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::{Ipv4Addr, SocketAddr};

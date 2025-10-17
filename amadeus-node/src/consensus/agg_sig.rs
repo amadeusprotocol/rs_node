@@ -1,5 +1,5 @@
-use bitvec::prelude::*;
 use crate::utils::bls12_381::{Error, aggregate_signatures};
+use bitvec::prelude::*;
 
 // domain separation tags (DST)
 pub const DST: &[u8] = b"AMADEUS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";

@@ -8,9 +8,9 @@ use crate::node::protocol::Protocol;
 use crate::utils::bls12_381 as bls;
 use crate::utils::misc::{TermExt, bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
 use crate::utils::rocksdb::RocksDb;
-use crate::utils::safe_etf::encode_safe_deterministic;
+use crate::utils::safe_etf::{encode_safe_deterministic, u32_to_term};
 use bitvec::prelude::*;
-use eetf::{Atom, Binary, FixInteger, Term};
+use eetf::{Atom, Binary, Term};
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
@@ -527,7 +527,7 @@ pub fn apply_entry(
             }
 
             // Print ETF encoding of this mutation
-            use eetf::{Atom, Binary, FixInteger, Map, Term};
+            use eetf::{Atom, Binary, Map, Term};
             use std::collections::HashMap;
             let mut map = HashMap::new();
             let op_atom = match &m.op {
@@ -543,20 +543,11 @@ pub fn apply_entry(
                     map.insert(Term::Atom(Atom::from("value")), Term::Binary(Binary { bytes: v.clone() }));
                 }
                 (crate::consensus::kv::Op::SetBit { bit_idx, bloom_size }, _) => {
-                    map.insert(
-                        Term::Atom(Atom::from("value")),
-                        Term::FixInteger(FixInteger { value: *bit_idx as i32 }),
-                    );
-                    map.insert(
-                        Term::Atom(Atom::from("bloomsize")),
-                        Term::FixInteger(FixInteger { value: *bloom_size as i32 }),
-                    );
+                    map.insert(Term::Atom(Atom::from("value")), u32_to_term(*bit_idx));
+                    map.insert(Term::Atom(Atom::from("bloomsize")), u32_to_term(*bloom_size));
                 }
                 (crate::consensus::kv::Op::ClearBit { bit_idx }, _) => {
-                    map.insert(
-                        Term::Atom(Atom::from("value")),
-                        Term::FixInteger(FixInteger { value: *bit_idx as i32 }),
-                    );
+                    map.insert(Term::Atom(Atom::from("value")), u32_to_term(*bit_idx));
                 }
                 _ => {}
             }
@@ -575,7 +566,7 @@ pub fn apply_entry(
         use eetf::{List, Term};
         let mut etf_muts = Vec::new();
         for m in &muts {
-            use eetf::{Atom, Binary, FixInteger, Map};
+            use eetf::{Atom, Binary, Map};
             use std::collections::HashMap;
             let mut map = HashMap::new();
             let op_atom = match &m.op {
@@ -591,20 +582,11 @@ pub fn apply_entry(
                     map.insert(Term::Atom(Atom::from("value")), Term::Binary(Binary { bytes: v.clone() }));
                 }
                 (crate::consensus::kv::Op::SetBit { bit_idx, bloom_size }, _) => {
-                    map.insert(
-                        Term::Atom(Atom::from("value")),
-                        Term::FixInteger(FixInteger { value: *bit_idx as i32 }),
-                    );
-                    map.insert(
-                        Term::Atom(Atom::from("bloomsize")),
-                        Term::FixInteger(FixInteger { value: *bloom_size as i32 }),
-                    );
+                    map.insert(Term::Atom(Atom::from("value")), u32_to_term(*bit_idx));
+                    map.insert(Term::Atom(Atom::from("bloomsize")), u32_to_term(*bloom_size));
                 }
                 (crate::consensus::kv::Op::ClearBit { bit_idx }, _) => {
-                    map.insert(
-                        Term::Atom(Atom::from("value")),
-                        Term::FixInteger(FixInteger { value: *bit_idx as i32 }),
-                    );
+                    map.insert(Term::Atom(Atom::from("value")), u32_to_term(*bit_idx));
                 }
                 _ => {}
             }
@@ -673,12 +655,8 @@ pub fn apply_entry(
                     Term::from(Binary { bytes: next_entry.hash.to_vec() }),
                 );
                 tx_meta.insert(Term::Atom(Atom::from("result")), result.to_term());
-                tx_meta
-                    .insert(Term::Atom(Atom::from("index_start")), Term::FixInteger(FixInteger { value: pos as i32 }));
-                tx_meta.insert(
-                    Term::Atom(Atom::from("index_size")),
-                    Term::FixInteger(FixInteger { value: tx_packed.len() as i32 }),
-                );
+                tx_meta.insert(Term::Atom(Atom::from("index_start")), u32_to_term(pos as u32));
+                tx_meta.insert(Term::Atom(Atom::from("index_size")), u32_to_term(tx_packed.len() as u32));
 
                 let term = Term::Map(eetf::Map { map: tx_meta });
                 let tx_meta_bin = encode_safe_deterministic(&term);
@@ -743,8 +721,7 @@ pub fn chain_rewind(fabric: &fabric::Fabric, target_hash: &[u8; 32]) -> Result<b
     let db = fabric.db();
     db.put("sysconf", b"temporal_tip", &entry.hash)?;
     // store temporal_height as ETF term (matches Elixir term: true)
-    use crate::utils::safe_etf::encode_safe_deterministic;
-    let height_term = encode_safe_deterministic(&Term::from(eetf::FixInteger { value: entry.header.height as i32 }));
+    let height_term = encode_safe_deterministic(&u32_to_term(entry.header.height));
     db.put("sysconf", b"temporal_height", &height_term)?;
 
     // update rooted tip if needed

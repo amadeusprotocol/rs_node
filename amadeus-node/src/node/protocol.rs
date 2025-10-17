@@ -13,7 +13,7 @@ use crate::node::peers::HandshakeStatus;
 use crate::node::{anr, peers};
 use crate::utils::bls12_381;
 use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now, parse_list, serialize_list};
-use crate::utils::safe_etf::encode_safe;
+use crate::utils::safe_etf::{encode_safe, u32_to_term};
 use eetf::convert::TryAsRef;
 use eetf::{Atom, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, List, Map, Term};
 use std::collections::HashMap;
@@ -337,7 +337,7 @@ impl Protocol for Catchup {
             .iter()
             .map(|flag| {
                 let mut flag_map = HashMap::new();
-                flag_map.insert(Term::Atom(Atom::from("height")), Term::FixInteger((flag.height as i32).into()));
+                flag_map.insert(Term::Atom(Atom::from("height")), u32_to_term(flag.height));
 
                 if let Some(true) = flag.c {
                     flag_map.insert(Term::Atom(Atom::from("c")), Term::Atom(Atom::from("true")));
@@ -435,7 +435,7 @@ impl Protocol for CatchupReply {
             .iter()
             .map(|trie| {
                 let mut trie_map = HashMap::new();
-                trie_map.insert(Term::Atom(Atom::from("height")), Term::FixInteger((trie.height as i32).into()));
+                trie_map.insert(Term::Atom(Atom::from("height")), u32_to_term(trie.height));
 
                 if let Some(ref entries) = trie.entries {
                     if let Some(term) = serialize_list(entries, |e| e.pack()) {
@@ -934,10 +934,10 @@ impl SpecialBusinessReply {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitvec::prelude::{bitvec, Msb0};
     use crate::config::Config;
     use crate::consensus::doms::entry::{EntryHeader, EntrySummary};
     use crate::utils::bls12_381::sign as bls_sign;
+    use bitvec::prelude::{Msb0, bitvec};
 
     #[tokio::test]
     async fn test_ping_etf_roundtrip() {
