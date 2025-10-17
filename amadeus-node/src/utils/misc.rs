@@ -256,6 +256,15 @@ pub fn bitvec_to_bools(bytes: Vec<u8>) -> Vec<bool> {
     }
     out
 }
+
+/// Calculate percentage of true bits in a mask relative to total count
+pub fn get_bits_percentage(mask: &[bool], total_count: usize) -> f64 {
+    if total_count == 0 {
+        return 0.0;
+    }
+    let true_bits = mask.iter().filter(|&&b| b).count();
+    (true_bits as f64) / (total_count as f64)
+}
 // fn bitvec_to_bools(bytes: &[u8]) -> Vec<bool> {
 //     let mut out = Vec::with_capacity(bytes.len() * 8);
 //     for (_, byte) in bytes.iter().enumerate() {

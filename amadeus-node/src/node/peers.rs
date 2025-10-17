@@ -171,17 +171,7 @@ impl NodePeers {
         node_registry: &anr::NodeAnrs,
     ) -> Result<usize, Error> {
         let ts_m = get_unix_millis_now();
-
-        // let mut peers = Vec::new();
-        // self.peers
-        //     .scan(|_, peer| {
-        //         peers.push(peer.clone());
-        //     })
-        //     .await;
-        // let anrs = node_registry.get_all().await;
-        // println!("{:?} {:?}", peers.len(), anrs.len());
-        // Get validators for current height + 1
-        let height = fabric.chain_height();
+        let height = fabric.get_temporal_height_or_0();
         let validators = fabric.trainers_for_height(height + 1).unwrap_or_default();
         let validators_vec: Vec<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();
 
@@ -296,7 +286,7 @@ impl NodePeers {
         config: &Config,
         node_anrs: &anr::NodeAnrs,
     ) -> Result<(), Error> {
-        let height = fabric.chain_height();
+        let height = fabric.get_temporal_height_or_0();
         let validators = fabric.trainers_for_height(height + 1).unwrap_or_default();
         let validators: Vec<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();
 
@@ -455,7 +445,7 @@ impl NodePeers {
         match who {
             Who::Some(peer_ips) => Ok(peer_ips),
             Who::Trainers => {
-                let height = fabric.chain_height();
+                let height = fabric.get_temporal_height_or_0();
                 let trainer_peers = self.for_height(fabric, height + 1).await?;
                 let mut ips: Vec<_> = trainer_peers.iter().map(|p| p.ip).collect();
 
@@ -469,7 +459,7 @@ impl NodePeers {
                 Ok(ips)
             }
             Who::NotTrainers(cnt) => {
-                let height = fabric.chain_height();
+                let height = fabric.get_temporal_height_or_0();
                 let trainer_peers = self.for_height(fabric, height + 1).await?;
                 let trainer_ips: std::collections::HashSet<_> = trainer_peers.iter().map(|p| p.ip).collect();
 

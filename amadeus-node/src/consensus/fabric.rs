@@ -520,16 +520,18 @@ impl Fabric {
     }
 
     // Convenience wrappers for NodePeers and other components to avoid direct RocksDb usage
-    pub fn chain_height(&self) -> u32 {
+    pub fn get_temporal_height_or_0(&self) -> u32 {
         self.get_temporal_height().ok().flatten().unwrap_or(0)
     }
 
+    pub fn get_chain_epoch_or_0(&self) -> u32 {
+        self.get_temporal_height_or_0() / 100_000
+    }
+
     pub fn trainers_for_height(&self, height: u32) -> Option<Vec<[u8; 48]>> {
-        // Delegate to bic::epoch module
         crate::bic::epoch::trainers_for_height(self.db(), height)
     }
 
-    // === Muts/Muts_rev CF proxy methods ===
     pub fn get_muts_rev(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, Error> {
         Ok(self.db.get("muts_rev", hash)?)
     }
@@ -553,7 +555,6 @@ impl Fabric {
         Ok(())
     }
 
-    // === Attestation CF proxy methods ===
     pub fn put_attestation(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
         self.db.put(CF_MY_ATTESTATION_FOR_ENTRY, hash, data)?;
         Ok(())
@@ -564,7 +565,6 @@ impl Fabric {
         Ok(())
     }
 
-    // === Seen time CF proxy methods ===
     pub fn put_seen_time(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
         self.db.put(CF_MY_SEEN_TIME_FOR_ENTRY, hash, data)?;
         Ok(())
@@ -575,13 +575,11 @@ impl Fabric {
         Ok(())
     }
 
-    // === Consensus CF proxy methods ===
     pub fn delete_consensus(&self, hash: &[u8; 32]) -> Result<(), Error> {
         self.db.delete(CF_CONSENSUS_BY_ENTRYHASH, hash)?;
         Ok(())
     }
 
-    // === Entry indexing proxy methods ===
     pub fn delete_entry(&self, hash: &[u8; 32]) -> Result<(), Error> {
         let entry_cf = CF_ENTRY;
         self.db.delete(entry_cf, hash)?;
@@ -598,18 +596,26 @@ impl Fabric {
         Ok(())
     }
 
-    // === TX CF proxy methods ===
-    pub fn delete_tx(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        self.db.delete("tx", hash)?;
+    pub fn put_tx_metadata(&self, key: &[u8], tx: &[u8]) -> Result<(), Error> {
+        self.db.put("tx|txhash->entryhash", key, tx)?;
+        Ok(())
+    }
+
+    pub fn delete_tx_metadata(&self, hash: &[u8; 32]) -> Result<(), Error> {
+        self.db.delete("tx|txhash->entryhash", hash)?;
+        Ok(())
+    }
+
+    pub fn put_tx_account_nonce(&self, key: &[u8], tx_hash: &[u8; 32]) -> Result<(), Error> {
+        self.db.put("tx_account_nonce|account:nonce->txhash", key, tx_hash)?;
         Ok(())
     }
 
     pub fn delete_tx_account_nonce(&self, key: &[u8]) -> Result<(), Error> {
-        self.db.delete("tx_account_nonce", key)?;
+        self.db.delete("tx_account_nonce|account:nonce->txhash", key)?;
         Ok(())
     }
 
-    // === Entry CF proxy methods ===
     pub fn put_entry_raw(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
         let entry_cf = CF_ENTRY;
         self.db.put(entry_cf, hash, data)?;
@@ -644,5 +650,113 @@ impl Fabric {
             let _ = txn.commit();
         }
         Ok(())
+    }
+
+    /// Return true if our trainer_pk is included in trainers_for_height(chain_height()+1)
+    pub fn are_we_trainer(&self, config: &crate::config::Config) -> bool {
+        let Some(h) = self.get_temporal_height().ok().flatten() else { return false };
+        let Some(trainers) = self.trainers_for_height(h + 1) else { return false };
+        trainers.iter().any(|pk| pk == &config.get_pk())
+    }
+
+    /// Select trainer for a slot from the roster for the corresponding height
+    pub fn get_trainer_for_slot(&self, height: u32, slot: u32) -> Option<[u8; 48]> {
+        let trainers = self.trainers_for_height(height)?;
+        if trainers.is_empty() {
+            return None;
+        }
+        let idx = (slot as u64).rem_euclid(trainers.len() as u64) as usize;
+        trainers.get(idx).copied()
+    }
+
+    pub fn get_trainer_for_current_slot(&self) -> Option<[u8; 48]> {
+        let h = self.get_temporal_height().ok()??;
+        self.get_trainer_for_slot(h, h)
+    }
+
+    pub fn get_trainer_for_next_slot(&self) -> Option<[u8; 48]> {
+        let h = self.get_temporal_height().ok()??;
+        self.get_trainer_for_slot(h + 1, h + 1)
+    }
+
+    pub fn are_we_trainer_for_next_slot(&self, config: &crate::config::Config) -> bool {
+        match self.get_trainer_for_next_slot() {
+            Some(pk) => pk == config.get_pk(),
+            None => false,
+        }
+    }
+
+    pub fn is_in_chain(&self, target_hash: &[u8; 32]) -> bool {
+        // check if entry exists
+        let target_entry = match self.get_entry_by_hash(target_hash) {
+            Some(e) => e,
+            None => return false,
+        };
+
+        let target_height = target_entry.header.height;
+
+        // get tip entry
+        let tip_hash = match self.get_temporal_hash() {
+            Ok(Some(h)) => h,
+            _ => return false,
+        };
+        let tip_entry = match self.get_entry_by_hash(&tip_hash) {
+            Some(e) => e,
+            None => return false,
+        };
+
+        let tip_height = tip_entry.header.height;
+
+        // if target is higher than tip, it can't be in chain
+        if tip_height < target_height {
+            return false;
+        }
+
+        // walk back from tip to target height
+        self.is_in_chain_internal(&tip_entry.hash, target_hash, target_height)
+    }
+
+    fn is_in_chain_internal(&self, current_hash: &[u8; 32], target_hash: &[u8; 32], target_height: u32) -> bool {
+        // check if we found the target
+        if current_hash == target_hash {
+            return true;
+        }
+
+        // get current entry
+        let current_entry = match self.get_entry_by_hash(current_hash) {
+            Some(e) => e,
+            None => return false,
+        };
+
+        // if we're below target height, target is not in chain
+        if current_entry.header.height <= target_height {
+            return false;
+        }
+
+        // continue walking back
+        self.is_in_chain_internal(&current_entry.header.prev_hash, target_hash, target_height)
+    }
+
+    /// Check if entry is in its designated slot
+    pub fn validate_entry_slot_trainer(&self, entry: &Entry, prev_slot: u32) -> bool {
+        let next_slot = entry.header.slot;
+        let slot_trainer = self.get_trainer_for_slot(entry.header.height, next_slot);
+
+        // check incremental slot
+        if (next_slot as i64) - (prev_slot as i64) != 1 {
+            return false;
+        }
+
+        // check trainer authorization
+        match slot_trainer {
+            Some(expected_trainer) if entry.header.signer == expected_trainer => true,
+            Some(_) if entry.mask.is_some() => {
+                // aggregate signature path - check if score >= 0.67
+                let trainers = self.trainers_for_height(entry.header.height).unwrap_or_default();
+                let score = crate::utils::misc::get_bits_percentage(entry.mask.as_ref().unwrap(), trainers.len());
+                score >= 0.67
+            }
+            _ => false,
+        }
     }
 }

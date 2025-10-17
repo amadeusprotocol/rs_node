@@ -226,7 +226,7 @@ async fn test_applying_entry_34076383() -> Result<(), Box<dyn std::error::Error>
 
     // Get mutations hash from stored attestation
     let my_att =
-        crate::consensus::consensus::my_attestation_by_entryhash(&db, &entry.hash).ok_or("No attestation found")?;
+        fabric.my_attestation_by_entryhash(&entry.hash)?.ok_or("No attestation found")?;
     let mutations_hash_b58 = bs58::encode(my_att.mutations_hash).into_string();
 
     println!("Expected hash: {}", EXPECTED_MUTATIONS_HASH);

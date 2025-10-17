@@ -2,15 +2,16 @@ use crate::consensus::agg_sig::{DST_ATT, DST_VRF};
 use crate::consensus::doms::attestation::Attestation;
 use crate::consensus::doms::entry::Entry;
 use crate::consensus::doms::tx::TxU;
-use crate::consensus::{self, fabric};
+use crate::consensus::fabric;
+use crate::consensus::fabric::Fabric;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381 as bls;
 use crate::utils::misc::{TermExt, bitvec_to_bools, bools_to_bitvec, get_unix_millis_now};
 use crate::utils::rocksdb::RocksDb;
 use crate::utils::safe_etf::encode_safe_deterministic;
-use eetf::{Atom, Binary, Term};
+use eetf::{Atom, Binary, FixInteger, Term};
 use std::collections::HashMap;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -95,7 +96,7 @@ impl Consensus {
         to_sign[32..].copy_from_slice(&self.mutations_hash);
 
         // Fetch entry stub (height only for now)
-        let entry = get_entry_by_hash_local(fabric, &self.entry_hash);
+        let entry = fabric.get_entry_by_hash(&self.entry_hash);
         let Some(entry) = entry else { return Err(Error::InvalidEntry) };
 
         // Ensure entry height is not in the future
@@ -106,15 +107,14 @@ impl Consensus {
         }
 
         // Trainers
-        let trainers = consensus::trainers_for_height(fabric.db(), entry.header.height)
-            .ok_or(Error::Missing("trainers_for_height"))?;
+        let trainers = fabric.trainers_for_height(entry.header.height).ok_or(Error::Missing("trainers_for_height"))?;
         if trainers.is_empty() {
             return Err(Error::Missing("trainers_for_height:empty"));
         }
 
         // Score by mask weight (unit weights)
         let (score, signed_pks) = if let Some(mask) = &self.mask {
-            let score = score_mask_unit(mask, trainers.len());
+            let score = crate::utils::misc::get_bits_percentage(mask, trainers.len());
             let signed_pks = unmask_trainers(mask, &trainers);
             (score, signed_pks)
         } else {
@@ -129,46 +129,9 @@ impl Consensus {
     }
 }
 
-/// Return true if our trainer_pk is included in trainers_for_height(chain_height()+1)
-pub fn is_trainer(config: &crate::config::Config, db: &RocksDb) -> bool {
-    let fabric = fabric::Fabric::with_db(db.clone());
-    let Some(h) = get_chain_height(&fabric).ok() else { return false };
-    let Some(trainers) = consensus::trainers_for_height(db, h + 1) else { return false };
-    trainers.iter().any(|pk| pk == &config.get_pk())
-}
-
-/// Select trainer for a slot from the roster for the corresponding height
-pub fn get_trainer_for_slot(db: &RocksDb, height: u32, slot: u32) -> Option<[u8; 48]> {
-    let trainers = consensus::trainers_for_height(db, height)?;
-    if trainers.is_empty() {
-        return None;
-    }
-    let idx = (slot as u64).rem_euclid(trainers.len() as u64) as usize;
-    trainers.get(idx).copied()
-}
-
-pub fn get_trainer_for_current_slot(db: &RocksDb) -> Option<[u8; 48]> {
-    let fabric = fabric::Fabric::with_db(db.clone());
-    let h = fabric.get_temporal_height().ok()??;
-    get_trainer_for_slot(db, h, h)
-}
-
-pub fn get_trainer_for_next_slot(db: &RocksDb) -> Option<[u8; 48]> {
-    let fabric = fabric::Fabric::with_db(db.clone());
-    let h = fabric.get_temporal_height().ok()??;
-    get_trainer_for_slot(db, h + 1, h + 1)
-}
-
-pub fn are_we_trainer_for_next_slot(config: &crate::config::Config, db: &RocksDb) -> bool {
-    match get_trainer_for_next_slot(db) {
-        Some(pk) => pk == config.get_pk(),
-        None => false,
-    }
-}
-
 /// Falls back to genesis if no entries yet
 pub fn get_chain_tip_entry(fabric: &fabric::Fabric) -> Result<Entry, Error> {
-    match fabric.get_temporal_hash()?.and_then(|h| get_entry_by_hash_local(fabric, &h)) {
+    match fabric.get_temporal_hash()?.and_then(|h| fabric.get_entry_by_hash(&h)) {
         Some(entry) => Ok(entry),
         None => Err(Error::Missing("temporal_tip")),
     }
@@ -176,18 +139,10 @@ pub fn get_chain_tip_entry(fabric: &fabric::Fabric) -> Result<Entry, Error> {
 
 /// Falls back to genesis if no entries yet
 pub fn get_rooted_tip_entry(fabric: &fabric::Fabric) -> Result<Entry, Error> {
-    match get_rooted_tip_hash(fabric)?.and_then(|h| get_entry_by_hash_local(fabric, &h)) {
+    match get_rooted_tip_hash(fabric)?.and_then(|h| fabric.get_entry_by_hash(&h)) {
         Some(entry) => Ok(entry),
         None => Err(Error::Missing("rooted_tip")),
     }
-}
-
-pub fn get_chain_height(fabric: &fabric::Fabric) -> Result<u32, Error> {
-    fabric.get_temporal_height()?.ok_or(Error::Missing("temporal_height"))
-}
-
-fn get_entry_by_hash_local(fabric: &fabric::Fabric, hash: &[u8; 32]) -> Option<Entry> {
-    fabric.get_entry_by_hash(hash)
 }
 
 fn get_rooted_tip_hash(fabric: &fabric::Fabric) -> Result<Option<[u8; 32]>, Error> {
@@ -196,17 +151,6 @@ fn get_rooted_tip_hash(fabric: &fabric::Fabric) -> Result<Option<[u8; 32]>, Erro
 
 fn unmask_trainers(mask: &[bool], trainers: &[[u8; 48]]) -> Vec<[u8; 48]> {
     mask.iter().zip(trainers.iter()).filter_map(|(&bit, pk)| if bit { Some(*pk) } else { None }).collect()
-}
-fn score_mask_unit(mask: &[bool], total_trainers: usize) -> f64 {
-    if total_trainers == 0 {
-        return 0.0;
-    }
-    let signed = mask.iter().filter(|&&b| b).count();
-    (signed as f64) / (total_trainers as f64)
-}
-
-pub fn chain_epoch(fabric: &fabric::Fabric) -> u32 {
-    get_chain_height(fabric).ok().map(|h| h / 100_000).unwrap_or(0)
 }
 
 pub fn chain_muts_rev(fabric: &fabric::Fabric, hash: &[u8; 32]) -> Option<Vec<crate::consensus::kv::Mutation>> {
@@ -220,67 +164,26 @@ pub fn chain_muts(fabric: &fabric::Fabric, hash: &[u8; 32]) -> Option<Vec<crate:
 }
 
 #[derive(Debug, Clone)]
-pub struct MapEnv {
-    pub readonly: bool,
-    pub seed: Option<Vec<u8>>,
-    pub seedf64: f64,
-    pub entry_signer: [u8; 48],
-    pub entry_prev_hash: [u8; 32],
-    pub entry_slot: u32,
-    pub entry_prev_slot: i32,
-    pub entry_height: u32,
-    pub entry_epoch: u32,
-    pub entry_vr: [u8; 96],
-    pub entry_vr_b3: [u8; 32],
-    pub entry_dr: [u8; 32],
-    pub tx_index: usize,
-    pub tx_signer: Option<[u8; 48]>,
-    pub tx_nonce: Option<i128>,
-    pub tx_hash: Option<[u8; 32]>,
-    pub account_origin: Option<[u8; 48]>,
-    pub account_caller: Option<[u8; 48]>,
-    pub account_current: Option<Vec<u8>>,
-    pub attached_symbol: String,
-    pub attached_amount: String,
-    pub call_counter: u32,
-    pub call_exec_points: u64,
-    pub call_exec_points_remaining: u64,
-}
-
-pub fn make_mapenv(next_entry: &Entry) -> MapEnv {
-    let entry_vr_b3 = crate::utils::blake3::hash(&next_entry.header.vr);
-    MapEnv {
-        readonly: false,
-        seed: None,
-        seedf64: 1.0,
-        entry_signer: next_entry.header.signer,
-        entry_prev_hash: next_entry.header.prev_hash,
-        entry_slot: next_entry.header.slot,
-        entry_prev_slot: next_entry.header.prev_slot,
-        entry_height: next_entry.header.height,
-        entry_epoch: next_entry.header.height / 100_000,
-        entry_vr: next_entry.header.vr,
-        entry_vr_b3,
-        entry_dr: next_entry.header.dr,
-        tx_index: 0,
-        tx_signer: None,
-        tx_nonce: None,
-        tx_hash: None,
-        account_origin: None,
-        account_caller: None,
-        account_current: None,
-        attached_symbol: String::new(),
-        attached_amount: String::new(),
-        call_counter: 0,
-        call_exec_points: 10_000_000,
-        call_exec_points_remaining: 10_000_000,
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct TxResult {
     pub error: String,
     pub logs: Vec<String>,
+}
+
+impl TxResult {
+    /// Convert TxResult to ETF term matching Elixir format: %{error: :ok, logs: []}
+    pub fn to_term(&self) -> Term {
+        let mut map = HashMap::new();
+
+        // error field as atom
+        map.insert(Term::Atom(Atom::from("error")), Term::Atom(Atom::from(self.error.as_str())));
+
+        // logs field as list of binaries
+        let logs_terms: Vec<Term> =
+            self.logs.iter().map(|log| Term::from(Binary { bytes: log.as_bytes().to_vec() })).collect();
+        map.insert(Term::Atom(Atom::from("logs")), Term::from(eetf::List { elements: logs_terms }));
+
+        Term::from(eetf::Map { map })
+    }
 }
 
 /// Execute a single transaction, routing to the appropriate contract handler
@@ -540,13 +443,15 @@ fn call_exit(ctx: &mut crate::consensus::kv::ApplyCtx, db: &RocksDb, next_entry:
 }
 
 pub fn apply_entry(
-    fabric: &fabric::Fabric,
+    fabric: &Fabric,
     config: &crate::config::Config,
     next_entry: &Entry,
 ) -> Result<Option<Vec<u8>>, Error> {
     let mut ctx = crate::consensus::kv::ApplyCtx::new();
 
-    let curr_h = fabric.get_temporal_height()?.unwrap_or(0);
+    let Some(curr_h) = fabric.get_temporal_height().ok().flatten() else {
+        return Err(Error::Missing("temporal_height"));
+    };
     if next_entry.header.height != curr_h + 1 {
         return Err(Error::WrongType("invalid_height"));
     }
@@ -762,17 +667,33 @@ pub fn apply_entry(
     fabric.insert_entry(&next_entry.hash, next_entry.header.height, next_entry.header.slot, &entry_bin, seen_time)?;
 
     // store transactions with results
-    for (tx_packed, _result) in next_entry.txs.iter().zip(tx_results.iter()) {
-        if let Ok(_txu) = TxU::from_vanilla(tx_packed) {
+    for (tx_packed, result) in next_entry.txs.iter().zip(tx_results.iter()) {
+        if let Ok(txu) = TxU::from_vanilla(tx_packed) {
+            // Store tx_account_nonce index: signer:nonce -> tx_hash
+            let nonce_padded = format!("{:020}", txu.tx.nonce);
+            let key = format!("{}:{}", bs58::encode(&txu.tx.signer).into_string(), nonce_padded);
+            fabric.put_tx_account_nonce(key.as_bytes(), &txu.hash)?;
+
             // find position in entry binary for indexing
             let entry_bin = next_entry.pack()?;
             if let Some(pos) = entry_bin.windows(tx_packed.len()).position(|w| w == tx_packed) {
-                let _tx_meta = HashMap::from([
-                    ("entry_hash".to_string(), next_entry.hash.to_vec()),
-                    ("index_start".to_string(), (pos as u32).to_be_bytes().to_vec()),
-                    ("index_size".to_string(), (tx_packed.len() as u32).to_be_bytes().to_vec()),
-                ]);
-                // TODO: store tx_meta properly
+                // Build tx metadata map matching Elixir structure
+                let mut tx_meta = HashMap::new();
+                tx_meta.insert(
+                    Term::Atom(Atom::from("entry_hash")),
+                    Term::from(Binary { bytes: next_entry.hash.to_vec() }),
+                );
+                tx_meta.insert(Term::Atom(Atom::from("result")), result.to_term());
+                tx_meta
+                    .insert(Term::Atom(Atom::from("index_start")), Term::FixInteger(FixInteger { value: pos as i32 }));
+                tx_meta.insert(
+                    Term::Atom(Atom::from("index_size")),
+                    Term::FixInteger(FixInteger { value: tx_packed.len() as i32 }),
+                );
+
+                let term = Term::Map(eetf::Map { map: tx_meta });
+                let tx_meta_bin = encode_safe_deterministic(&term);
+                fabric.put_tx_metadata(&txu.hash, &tx_meta_bin)?;
             }
         }
     }
@@ -780,9 +701,8 @@ pub fn apply_entry(
     Ok(if is_trainer { Some(attestation_packed) } else { None })
 }
 
-pub fn produce_entry(db: &RocksDb, config: &crate::config::Config, slot: u32) -> Result<Entry, Error> {
-    let fabric = fabric::Fabric::with_db(db.clone());
-    let cur_entry = get_chain_tip_entry(&fabric)?;
+pub fn produce_entry(fabric: &fabric::Fabric, config: &crate::config::Config, slot: u32) -> Result<Entry, Error> {
+    let cur_entry = get_chain_tip_entry(fabric)?;
 
     // build next header
     let pk = config.get_pk();
@@ -821,66 +741,17 @@ pub fn produce_entry(db: &RocksDb, config: &crate::config::Config, slot: u32) ->
     Ok(Entry { hash, header: entry.header, signature: entry.signature, mask: entry.mask, txs: entry.txs })
 }
 
-pub fn is_in_chain(db: &RocksDb, target_hash: &[u8; 32]) -> bool {
-    let fabric = fabric::Fabric::with_db(db.clone());
-    // check if entry exists
-    let target_entry = match get_entry_by_hash_local(&fabric, target_hash) {
-        Some(e) => e,
-        None => return false,
-    };
-
-    let target_height = target_entry.header.height;
-
-    // get tip entry
-    let tip_entry = match get_chain_tip_entry(&fabric) {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
-
-    let tip_height = tip_entry.header.height;
-
-    // if target is higher than tip, it can't be in chain
-    if tip_height < target_height {
-        return false;
-    }
-
-    // walk back from tip to target height
-    is_in_chain_internal(db, &tip_entry.hash, target_hash, target_height)
-}
-
-fn is_in_chain_internal(db: &RocksDb, current_hash: &[u8; 32], target_hash: &[u8; 32], target_height: u32) -> bool {
-    let fabric = fabric::Fabric::with_db(db.clone());
-    // check if we found the target
-    if current_hash == target_hash {
-        return true;
-    }
-
-    // get current entry
-    let current_entry = match get_entry_by_hash_local(&fabric, current_hash) {
-        Some(e) => e,
-        None => return false,
-    };
-
-    // if we're below target height, target is not in chain
-    if current_entry.header.height <= target_height {
-        return false;
-    }
-
-    // continue walking back
-    is_in_chain_internal(db, &current_entry.header.prev_hash, target_hash, target_height)
-}
-
-pub fn chain_rewind(db: &RocksDb, target_hash: &[u8; 32]) -> Result<bool, Error> {
-    let fabric = fabric::Fabric::with_db(db.clone());
+pub fn chain_rewind(fabric: &fabric::Fabric, target_hash: &[u8; 32]) -> Result<bool, Error> {
     // check if target is in chain
-    if !is_in_chain(db, target_hash) {
+    if !fabric.is_in_chain(target_hash) {
         return Ok(false);
     }
 
-    let tip_entry = get_chain_tip_entry(&fabric)?;
-    let entry = chain_rewind_internal(db, &tip_entry, target_hash)?;
+    let tip_entry = get_chain_tip_entry(fabric)?;
+    let entry = chain_rewind_internal(fabric, &tip_entry, target_hash)?;
 
     // update chain tips
+    let db = fabric.db();
     db.put("sysconf", b"temporal_tip", &entry.hash)?;
     // store temporal_height as ETF term (matches Elixir term: true)
     use crate::utils::safe_etf::encode_safe_deterministic;
@@ -888,7 +759,7 @@ pub fn chain_rewind(db: &RocksDb, target_hash: &[u8; 32]) -> Result<bool, Error>
     db.put("sysconf", b"temporal_height", &height_term)?;
 
     // update rooted tip if needed
-    if let Ok(Some(rooted_hash)) = get_rooted_tip_hash(&fabric) {
+    if let Ok(Some(rooted_hash)) = get_rooted_tip_hash(fabric) {
         if fabric.get_entry_raw(&rooted_hash)?.is_none() {
             db.put("sysconf", b"rooted_tip", &entry.hash)?;
         }
@@ -897,10 +768,14 @@ pub fn chain_rewind(db: &RocksDb, target_hash: &[u8; 32]) -> Result<bool, Error>
     Ok(true)
 }
 
-fn chain_rewind_internal(db: &RocksDb, current_entry: &Entry, target_hash: &[u8; 32]) -> Result<Entry, Error> {
-    let fabric = fabric::Fabric::with_db(db.clone());
+fn chain_rewind_internal(
+    fabric: &fabric::Fabric,
+    current_entry: &Entry,
+    target_hash: &[u8; 32],
+) -> Result<Entry, Error> {
     // revert mutations for current entry - create local context for rewind
-    if let Some(m_rev) = chain_muts_rev(&fabric, &current_entry.hash) {
+    let db = fabric.db();
+    if let Some(m_rev) = chain_muts_rev(fabric, &current_entry.hash) {
         crate::consensus::kv::revert(db, &m_rev);
     }
 
@@ -925,24 +800,24 @@ fn chain_rewind_internal(db: &RocksDb, current_entry: &Entry, target_hash: &[u8;
     // remove transaction indices
     for tx_packed in &current_entry.txs {
         if let Ok(txu) = TxU::from_vanilla(tx_packed) {
-            db.delete("tx", &txu.hash)?;
+            fabric.delete_tx_metadata(&txu.hash)?;
             let nonce_padded = format!("{:020}", txu.tx.nonce);
             let key = format!("{}:{}", bs58::encode(&txu.tx.signer).into_string(), nonce_padded);
-            db.delete("tx_account_nonce", key.as_bytes())?;
+            fabric.delete_tx_account_nonce(key.as_bytes())?;
         }
     }
 
     // if we reached the target, get previous entry and return it
     if current_entry.hash == *target_hash {
-        let prev_entry = get_entry_by_hash_local(&fabric, &current_entry.header.prev_hash)
-            .ok_or(Error::Missing("prev_entry_in_rewind"))?;
+        let prev_entry =
+            fabric.get_entry_by_hash(&current_entry.header.prev_hash).ok_or(Error::Missing("prev_entry_in_rewind"))?;
         return Ok(prev_entry);
     }
 
     // continue rewinding
-    let prev_entry = get_entry_by_hash_local(&fabric, &current_entry.header.prev_hash)
-        .ok_or(Error::Missing("prev_entry_in_rewind"))?;
-    chain_rewind_internal(db, &prev_entry, target_hash)
+    let prev_entry =
+        fabric.get_entry_by_hash(&current_entry.header.prev_hash).ok_or(Error::Missing("prev_entry_in_rewind"))?;
+    chain_rewind_internal(fabric, &prev_entry, target_hash)
 }
 
 pub fn best_by_weight(
@@ -999,8 +874,7 @@ pub fn best_entry_for_height(fabric: &fabric::Fabric, height: u32) -> Result<Vec
         }
 
         // get trainers for this height
-        let trainers = consensus::trainers_for_height(fabric.db(), entry.header.height)
-            .ok_or(Error::Missing("trainers_for_height"))?;
+        let trainers = fabric.trainers_for_height(entry.header.height).ok_or(Error::Missing("trainers_for_height"))?;
 
         // get best consensus for this entry
         let (mutations_hash, score, _consensus) = fabric.best_consensus_by_entryhash(&trainers, &entry.hash)?;
@@ -1036,11 +910,6 @@ pub fn best_entry_for_height(fabric: &fabric::Fabric, height: u32) -> Result<Vec
 pub fn set_rooted_tip(db: &RocksDb, hash: &[u8; 32]) -> Result<(), Error> {
     db.put("sysconf", b"rooted_tip", hash)?;
     Ok(())
-}
-
-pub fn my_attestation_by_entryhash(db: &RocksDb, entry_hash: &[u8; 32]) -> Option<Attestation> {
-    let fabric = fabric::Fabric::with_db(db.clone());
-    fabric.my_attestation_by_entryhash(entry_hash).ok()?
 }
 
 pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {
@@ -1103,7 +972,7 @@ pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {
         let mutations_hash = best_entry_info.mutations_hash.unwrap();
 
         // get our local attestation for this entry to verify we applied it with same mutations
-        let my_attestation = my_attestation_by_entryhash(db, &best_entry.hash);
+        let my_attestation = fabric.my_attestation_by_entryhash(&best_entry.hash).ok().flatten();
 
         match my_attestation {
             None => {
@@ -1115,7 +984,7 @@ pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {
                 );
                 // rewind to previous entry and try again
                 let prev_entry = get_rooted_tip_entry(fabric)?;
-                chain_rewind(db, &prev_entry.hash)?;
+                chain_rewind(fabric, &prev_entry.hash)?;
                 break; // exit after rewind
             }
             Some(my_att) => {
@@ -1228,41 +1097,13 @@ pub fn get_softfork_settings() -> SoftforkSettings {
     SoftforkSettings { softfork_hash: Vec::new(), softfork_deny_hash: Vec::new() }
 }
 
-/// Helper function to check if entry is in its designated slot
-fn is_entry_in_slot(db: &RocksDb, entry: &Entry, cur_slot: u32) -> bool {
-    let next_slot = entry.header.slot;
-    let slot_trainer = get_trainer_for_slot(db, entry.header.height, next_slot);
-
-    // check incremental slot
-    if (next_slot as i64) - (cur_slot as i64) != 1 {
-        return false;
-    }
-
-    // check trainer authorization
-    match slot_trainer {
-        Some(expected_trainer) if entry.header.signer == expected_trainer => true,
-        Some(_) if entry.mask.is_some() => {
-            // aggregate signature path - check if score >= 0.67
-            let trainers = consensus::trainers_for_height(db, entry.header.height).unwrap_or_default();
-            let score = score_mask_unit(entry.mask.as_ref().unwrap(), trainers.len());
-            score >= 0.67
-        }
-        _ => false,
-    }
-}
-
-pub async fn proc_entries(
-    fabric: &fabric::Fabric,
-    config: &crate::config::Config,
-    ctx: &crate::Context,
-) -> Result<(), Error> {
+pub async fn proc_entries(fabric: &Fabric, config: &crate::config::Config, ctx: &crate::Context) -> Result<(), Error> {
     // Skip processing if no temporal_tip or if entry data not available yet
     if get_chain_tip_entry(fabric).is_err() {
         return Ok(());
     }
 
     let softfork_settings = get_softfork_settings();
-    let db = fabric.db();
 
     // use a loop instead of tail recursion (Rust doesn't optimize tail calls)
     loop {
@@ -1276,12 +1117,12 @@ pub async fn proc_entries(
             .into_iter()
             .filter_map(|entry_bin| {
                 Entry::unpack(&entry_bin)
-                    .map_err(|e| tracing::warn!("failed to unpack entry at height {}: {}", next_height, e))
+                    .map_err(|e| warn!("failed to unpack entry at height {}: {}", next_height, e))
                     .ok()
             })
             .filter(|next_entry| {
                 // all conditions must be true (matches Elixir cond logic)
-                is_entry_in_slot(db, next_entry, cur_slot)
+                fabric.validate_entry_slot_trainer(next_entry, cur_slot)
                     && !softfork_settings.softfork_deny_hash.contains(&next_entry.hash)
                     && validate_next_entry(&cur_entry, next_entry).is_ok()
             })
@@ -1327,23 +1168,21 @@ async fn broadcast_attestation(ctx: &crate::Context, attestation_packed: &[u8], 
     use crate::consensus::doms::attestation::{Attestation, EventAttestation};
 
     let Ok(attestation) = Attestation::from_etf_bin(attestation_packed) else {
-        tracing::warn!("failed to decode attestation for broadcast");
+        warn!("failed to decode attestation for broadcast");
         return;
     };
 
     let event_att = EventAttestation { attestation };
 
-    // broadcast to all peers (matches NodeGen.broadcast)
     if let Ok(peers) = ctx.node_peers.get_all().await {
         for peer in peers {
             let _ = event_att.send_to_with_metrics(ctx, peer.ip).await;
         }
     }
 
-    // send to seed nodes for RPC updates (matches seedanrs_as_peers logic)
     for seed_ip in &ctx.config.seed_ips {
         let _ = event_att.send_to_with_metrics(ctx, *seed_ip).await;
     }
 
-    tracing::info!("Broadcasted attestation for entry {}", bs58::encode(entry_hash).into_string());
+    debug!("Broadcasted attestation for entry {}", bs58::encode(entry_hash).into_string());
 }

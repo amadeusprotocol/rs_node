@@ -333,7 +333,7 @@ async fn test_applying_entry_34076357() -> Result<(), Box<dyn std::error::Error>
     // Get mutations hash from our stored attestation
     println!("\n=== Mutations Hash Comparison ===");
     let my_att =
-        crate::consensus::consensus::my_attestation_by_entryhash(&db, &entry.hash).ok_or("No attestation found")?;
+        fabric.my_attestation_by_entryhash(&entry.hash)?.ok_or("No attestation found")?;
     let rust_hash = bs58::encode(&my_att.mutations_hash).into_string();
 
     println!("Rust hash:     {}", rust_hash);
@@ -507,7 +507,7 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
 
     let result1_muts = crate::consensus::consensus::chain_muts(&fabric, &entry.hash)
         .ok_or("No mutations found after first application")?;
-    let my_att1 = crate::consensus::consensus::my_attestation_by_entryhash(&db, &entry.hash)
+    let my_att1 = fabric.my_attestation_by_entryhash(&entry.hash)?
         .ok_or("No attestation found after first application")?;
     println!("  Forward mutations: {}", result1_muts.len());
     println!("  Mutations hash: {}", bs58::encode(&my_att1.mutations_hash).into_string());
@@ -526,7 +526,7 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
 
     // === REWIND ===
     println!("\n=== STEP 2: Rewind ===");
-    let rewound = crate::consensus::consensus::chain_rewind(&db, &entry.hash)?;
+    let rewound = crate::consensus::consensus::chain_rewind(&fabric, &entry.hash)?;
     assert!(rewound, "Rewind failed");
     println!("✓ Rewind successful");
 
@@ -548,7 +548,7 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
 
     let result2_muts = crate::consensus::consensus::chain_muts(&fabric, &entry.hash)
         .ok_or("No mutations found after second application")?;
-    let my_att2 = crate::consensus::consensus::my_attestation_by_entryhash(&db, &entry.hash)
+    let my_att2 = fabric.my_attestation_by_entryhash(&entry.hash)?
         .ok_or("No attestation found after second application")?;
     println!("  Forward mutations: {}", result2_muts.len());
     println!("  Mutations hash: {}", bs58::encode(&my_att2.mutations_hash).into_string());
