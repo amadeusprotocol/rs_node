@@ -238,20 +238,17 @@ async fn test_applying_entry_34076357() -> Result<(), Box<dyn std::error::Error>
     // If the test fails with 7 mutations instead of 6, it means bloom page 0 bit 0 is missing.
 
     println!("\n=== Applying Entry ===");
-    let result = apply_entry(&fabric, &config, &entry)?;
-
-    if result.error != "ok" {
-        println!("✗ Entry application failed: {}", result.error);
-        // Cleanup
-        std::fs::remove_dir_all(&temp_db_path).ok();
-        return Err(format!("Entry application failed: {}", result.error).into());
-    }
+    let _attestation = apply_entry(&fabric, &config, &entry)?;
     println!("✓ Entry applied successfully");
+
+    // Retrieve mutations from fabric storage
+    let result_muts = crate::consensus::consensus::chain_muts(&fabric, &entry.hash)
+        .ok_or("No mutations found in database")?;
 
     // Get expected forward mutations
     let expected_muts = get_expected_mutations();
     println!("\n=== Forward Mutations Comparison ===");
-    println!("Rust generated {} mutations", result.muts.len());
+    println!("Rust generated {} mutations", result_muts.len());
     println!("Elixir expected {} mutations", expected_muts.len());
 
     // Get expected reverse mutations
@@ -315,10 +312,10 @@ async fn test_applying_entry_34076357() -> Result<(), Box<dyn std::error::Error>
     }
 
     // Compare mutations count
-    if result.muts.len() != expected_muts.len() {
-        println!("✗ Mutation count mismatch: got {}, expected {}", result.muts.len(), expected_muts.len());
+    if result_muts.len() != expected_muts.len() {
+        println!("✗ Mutation count mismatch: got {}, expected {}", result_muts.len(), expected_muts.len());
         println!("\nRust mutations:");
-        for (i, m) in result.muts.iter().enumerate() {
+        for (i, m) in result_muts.iter().enumerate() {
             println!("  {}: {:?} key={:?}", i + 1, m.op, String::from_utf8_lossy(&m.key));
             if let Some(v) = &m.value {
                 println!("      value={:?}", String::from_utf8_lossy(v));
@@ -333,9 +330,11 @@ async fn test_applying_entry_34076357() -> Result<(), Box<dyn std::error::Error>
         }
     }
 
-    // Compare mutations hash
+    // Get mutations hash from our stored attestation
     println!("\n=== Mutations Hash Comparison ===");
-    let rust_hash = bs58::encode(&result.mutations_hash).into_string();
+    let my_att = crate::consensus::consensus::my_attestation_by_entryhash(&db, &entry.hash)
+        .ok_or("No attestation found")?;
+    let rust_hash = bs58::encode(&my_att.mutations_hash).into_string();
     println!("Rust hash:     {}", rust_hash);
     println!("Expected hash: {}", EXPECTED_MUTATIONS_HASH);
 
@@ -348,7 +347,7 @@ async fn test_applying_entry_34076357() -> Result<(), Box<dyn std::error::Error>
         Ok(())
     } else {
         println!("✗ Mutations hash mismatch!");
-        debug_mutations_encoding(&result.muts);
+        debug_mutations_encoding(&result_muts);
         Err("Mutations hash mismatch".into())
     }
 }
@@ -501,11 +500,15 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
 
     // === FIRST APPLICATION ===
     println!("\n=== STEP 1: First Application ===");
-    let result1 = apply_entry(&fabric, &config, &entry)?;
-    assert_eq!(result1.error, "ok", "First application failed");
+    let _attestation1 = apply_entry(&fabric, &config, &entry)?;
     println!("✓ First application successful");
-    println!("  Forward mutations: {}", result1.muts.len());
-    println!("  Mutations hash: {}", bs58::encode(&result1.mutations_hash).into_string());
+
+    let result1_muts = crate::consensus::consensus::chain_muts(&fabric, &entry.hash)
+        .ok_or("No mutations found after first application")?;
+    let my_att1 = crate::consensus::consensus::my_attestation_by_entryhash(&db, &entry.hash)
+        .ok_or("No attestation found after first application")?;
+    println!("  Forward mutations: {}", result1_muts.len());
+    println!("  Mutations hash: {}", bs58::encode(&my_att1.mutations_hash).into_string());
 
     // Get reverse mutations from database
     let reverse_muts1 = crate::consensus::consensus::chain_muts_rev(&fabric, &entry.hash)
@@ -538,11 +541,15 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
 
     // === SECOND APPLICATION ===
     println!("\n=== STEP 3: Second Application ===");
-    let result2 = apply_entry(&fabric, &config, &entry)?;
-    assert_eq!(result2.error, "ok", "Second application failed");
+    let _attestation2 = apply_entry(&fabric, &config, &entry)?;
     println!("✓ Second application successful");
-    println!("  Forward mutations: {}", result2.muts.len());
-    println!("  Mutations hash: {}", bs58::encode(&result2.mutations_hash).into_string());
+
+    let result2_muts = crate::consensus::consensus::chain_muts(&fabric, &entry.hash)
+        .ok_or("No mutations found after second application")?;
+    let my_att2 = crate::consensus::consensus::my_attestation_by_entryhash(&db, &entry.hash)
+        .ok_or("No attestation found after second application")?;
+    println!("  Forward mutations: {}", result2_muts.len());
+    println!("  Mutations hash: {}", bs58::encode(&my_att2.mutations_hash).into_string());
 
     // Get reverse mutations from second application
     let reverse_muts2 = crate::consensus::consensus::chain_muts_rev(&fabric, &entry.hash)
@@ -554,13 +561,13 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
 
     // Compare forward mutations counts
     assert_eq!(
-        result1.muts.len(),
-        result2.muts.len(),
+        result1_muts.len(),
+        result2_muts.len(),
         "Forward mutation counts differ: {} vs {}",
-        result1.muts.len(),
-        result2.muts.len()
+        result1_muts.len(),
+        result2_muts.len()
     );
-    println!("✓ Forward mutation counts match: {}", result1.muts.len());
+    println!("✓ Forward mutation counts match: {}", result1_muts.len());
 
     // Compare reverse mutations counts
     assert_eq!(
@@ -574,7 +581,7 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
 
     // Compare each forward mutation
     let mut forward_mismatches = 0;
-    for (i, (m1, m2)) in result1.muts.iter().zip(result2.muts.iter()).enumerate() {
+    for (i, (m1, m2)) in result1_muts.iter().zip(result2_muts.iter()).enumerate() {
         if m1.key != m2.key || m1.op != m2.op || m1.value != m2.value {
             forward_mismatches += 1;
             println!("✗ Forward mutation {} differs:", i + 1);
@@ -619,7 +626,7 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
     println!("✓ All reverse mutations identical");
 
     // Compare mutations hashes
-    assert_eq!(result1.mutations_hash, result2.mutations_hash, "Mutations hashes differ");
+    assert_eq!(my_att1.mutations_hash, my_att2.mutations_hash, "Mutations hashes differ");
     println!("✓ Mutations hashes match");
 
     // Cleanup

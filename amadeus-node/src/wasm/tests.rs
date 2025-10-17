@@ -137,24 +137,24 @@ mod runtime_tests {
     fn test_storage_operations_integration() {
         let db = setup_test_db("storage_ops");
         let mut ctx = kv::ApplyCtx::new();
-        kv::reset_for_tests(&mut ctx, &db); // clear any existing data
+        ctx.reset_for_tests(&db); // clear any existing data
 
         let _env = setup_test_env();
 
         // test kv operations that the wasm host functions would use
-        kv::kv_put(&mut ctx, &db, b"test_key", b"test_value");
-        assert!(kv::kv_exists(&mut ctx, &db, b"test_key"));
-        assert_eq!(kv::kv_get(&mut ctx, &db, b"test_key").unwrap(), b"test_value");
+        ctx.put(&db, b"test_key", b"test_value");
+        assert!(ctx.exists(&db, b"test_key"));
+        assert_eq!(ctx.get(&db, b"test_key").unwrap(), b"test_value");
 
-        let new_value = kv::kv_increment(&mut ctx, &db, b"counter", 42);
+        let new_value = ctx.increment(&db, b"counter", 42);
         assert_eq!(new_value, 42);
-        let incremented = kv::kv_increment(&mut ctx, &db, b"counter", 8);
+        let incremented = ctx.increment(&db, b"counter", 8);
         assert_eq!(incremented, 50);
 
-        kv::kv_delete(&mut ctx, &db, b"test_key");
-        assert!(!kv::kv_exists(&mut ctx, &db, b"test_key"));
+        ctx.delete(&db, b"test_key");
+        assert!(!ctx.exists(&db, b"test_key"));
 
-        let cleared_count = kv::kv_clear(&mut ctx, &db, b"count");
+        let cleared_count = ctx.clear(&db, b"count");
         assert!(cleared_count >= 1); // should clear the counter key
 
         println!("storage integration test ok");
@@ -247,7 +247,7 @@ mod contract_tests {
         let env = setup_test_env();
         let db = setup_test_db("counter");
         let mut ctx = kv::ApplyCtx::new();
-        kv::reset_for_tests(&mut ctx, &db);
+        ctx.reset_for_tests(&db);
 
         let wasm_bytecode = load_wasm_file("simple_counter.wasm");
         println!("loaded simple_counter.wasm ({} bytes)", wasm_bytecode.len());
@@ -290,7 +290,7 @@ mod contract_tests {
         }
 
         let mut ctx2 = kv::ApplyCtx::new();
-        let counter_value = kv::kv_get(&mut ctx2, &db, b"counter");
+        let counter_value = ctx2.get(&db, b"counter");
         println!("counter storage: {:?}", counter_value);
     }
 
@@ -299,7 +299,7 @@ mod contract_tests {
         let env = setup_test_env();
         let db = setup_test_db("token");
         let mut ctx = kv::ApplyCtx::new();
-        kv::reset_for_tests(&mut ctx, &db);
+        ctx.reset_for_tests(&db);
 
         let wasm_bytecode = load_wasm_file("token_contract.wasm");
         println!("loaded token_contract.wasm ({} bytes)", wasm_bytecode.len());

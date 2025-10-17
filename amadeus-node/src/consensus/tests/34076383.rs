@@ -125,23 +125,21 @@ async fn test_applying_entry_34076383() -> Result<(), Box<dyn std::error::Error>
     println!("✓ Entry hash verified");
 
     println!("\n=== Applying Entry ===");
-    let result = apply_entry(&fabric, &config, &entry)?;
-
-    if result.error != "ok" {
-        println!("✗ Entry application failed: {}", result.error);
-        std::fs::remove_dir_all(&temp_db_path).ok();
-        return Err(format!("Entry application failed: {}", result.error).into());
-    }
+    let _attestation = apply_entry(&fabric, &config, &entry)?;
     println!("✓ Entry applied successfully");
 
+    // Retrieve mutations from fabric storage for analysis
+    let result_muts = crate::consensus::consensus::chain_muts(&fabric, &entry.hash)
+        .ok_or("No mutations found in database")?;
+
     println!("\n=== Mutations Analysis ===");
-    println!("Rust generated {} mutations", result.muts.len());
+    println!("Rust generated {} mutations", result_muts.len());
 
     // Count different mutation types
-    let put_count = result.muts.iter().filter(|m| matches!(m.op, Op::Put)).count();
-    let set_bit_count = result.muts.iter().filter(|m| matches!(m.op, Op::SetBit { .. })).count();
-    let clear_bit_count = result.muts.iter().filter(|m| matches!(m.op, Op::ClearBit { .. })).count();
-    let delete_count = result.muts.iter().filter(|m| matches!(m.op, Op::Delete)).count();
+    let put_count = result_muts.iter().filter(|m| matches!(m.op, Op::Put)).count();
+    let set_bit_count = result_muts.iter().filter(|m| matches!(m.op, Op::SetBit { .. })).count();
+    let clear_bit_count = result_muts.iter().filter(|m| matches!(m.op, Op::ClearBit { .. })).count();
+    let delete_count = result_muts.iter().filter(|m| matches!(m.op, Op::Delete)).count();
 
     println!("  Put mutations:      {}", put_count);
     println!("  SetBit mutations:   {}", set_bit_count);
@@ -151,7 +149,7 @@ async fn test_applying_entry_34076383() -> Result<(), Box<dyn std::error::Error>
     // Expected counts from Elixir
     println!("\n=== Expected vs Actual ===");
     println!("Expected from Elixir: 130 total mutations");
-    println!("Actual from Rust:     {} mutations", result.muts.len());
+    println!("Actual from Rust:     {} mutations", result_muts.len());
 
     // The Elixir output shows approximately:
     // - 88 Put mutations (balance and nonce updates)
@@ -166,7 +164,7 @@ async fn test_applying_entry_34076383() -> Result<(), Box<dyn std::error::Error>
     println!("\n=== All Rust Mutations (for comparison with Elixir) ===");
     let mut mutation_summary = std::collections::HashMap::new();
 
-    for (i, mut_) in result.muts.iter().enumerate() {
+    for (i, mut_) in result_muts.iter().enumerate() {
         let key_str = String::from_utf8_lossy(&mut_.key);
         let _mutation_type = match &mut_.op {
             Op::Put => {
@@ -223,69 +221,13 @@ async fn test_applying_entry_34076383() -> Result<(), Box<dyn std::error::Error>
         println!("  {}: {}", key, count);
     }
 
-    // === VERIFY LOGS ===
-    println!("\n=== Logs Verification ===");
-    println!("Number of logs: {}", result.logs.len());
-
-    // Expected logs from Elixir: 22 logs, all "ok" except #18 which is "sol_exists"
-    let expected_logs = vec![
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "sol_exists",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-    ];
-
-    if result.logs.len() != expected_logs.len() {
-        println!("✗ Log count mismatch!");
-        println!("  Expected: {} logs", expected_logs.len());
-        println!("  Got:      {} logs", result.logs.len());
-    } else {
-        println!("✓ Log count matches expected (22 logs)");
-
-        // Check each log
-        let mut all_logs_match = true;
-        for (i, (log, expected)) in result.logs.iter().zip(expected_logs.iter()).enumerate() {
-            if &log.error != expected {
-                println!("✗ Log #{} mismatch: expected '{}', got '{}'", i + 1, expected, log.error);
-                all_logs_match = false;
-            }
-        }
-
-        if all_logs_match {
-            println!("✓ All logs match expected values!");
-            println!("  - 21 transactions returned 'ok'");
-            println!("  - Transaction #18 returned 'sol_exists' (as expected)");
-        } else {
-            println!("\nActual logs:");
-            for (i, log) in result.logs.iter().enumerate() {
-                println!("  #{}: {}", i + 1, log.error);
-            }
-        }
-    }
-
     // === VERIFY MUTATIONS HASH ===
     println!("\n=== Mutations Hash Verification ===");
 
-    // The ApplyResult already contains the mutations_hash calculated in apply_entry
-    let mutations_hash_b58 = bs58::encode(result.mutations_hash).into_string();
+    // Get mutations hash from stored attestation
+    let my_att = crate::consensus::consensus::my_attestation_by_entryhash(&db, &entry.hash)
+        .ok_or("No attestation found")?;
+    let mutations_hash_b58 = bs58::encode(my_att.mutations_hash).into_string();
 
     println!("Expected hash: {}", EXPECTED_MUTATIONS_HASH);
     println!("Actual hash:   {}", mutations_hash_b58);
@@ -298,15 +240,9 @@ async fn test_applying_entry_34076383() -> Result<(), Box<dyn std::error::Error>
 
         // Let's also check just the mutations without tx_results
         println!("\n  Checking just mutations (without tx_results):");
-        let mutations_hash_no_results = crate::consensus::kv::hash_mutations(&result.muts);
+        let mutations_hash_no_results = crate::consensus::kv::hash_mutations(&result_muts);
         let mutations_hash_no_results_b58 = bs58::encode(mutations_hash_no_results).into_string();
         println!("  Hash without results: {}", mutations_hash_no_results_b58);
-
-        // Let's also manually check with tx_results prepended
-        println!("\n  Checking with tx_results manually prepended:");
-        let mutations_hash_with_results = crate::consensus::kv::hash_mutations_with_results(&result.logs, &result.muts);
-        let mutations_hash_with_results_b58 = bs58::encode(mutations_hash_with_results).into_string();
-        println!("  Hash with results: {}", mutations_hash_with_results_b58);
     }
 
     // === VERIFY REVERSE MUTATIONS ===
@@ -332,11 +268,11 @@ async fn test_applying_entry_34076383() -> Result<(), Box<dyn std::error::Error>
         println!("  Expected from Elixir: {} mutations", EXPECTED_REV_TOTAL);
 
         // Verify that we have reverse mutations for each forward mutation
-        if rust_muts_rev.len() != result.muts.len() {
+        if rust_muts_rev.len() != result_muts.len() {
             println!(
                 "⚠ Warning: Reverse mutation count ({}) differs from forward mutation count ({})",
                 rust_muts_rev.len(),
-                result.muts.len()
+                result_muts.len()
             );
 
             // Show some details about the differences
@@ -429,14 +365,14 @@ async fn test_applying_entry_34076383() -> Result<(), Box<dyn std::error::Error>
     std::fs::remove_dir_all(&temp_db_path).ok();
 
     // Check if mutation count is in expected range
-    let diff = (result.muts.len() as i32 - expected_total as i32).abs();
+    let diff = (result_muts.len() as i32 - expected_total as i32).abs();
     if diff > 10 {
         println!("\n✗ Mutation count differs significantly from expected!");
         println!("  Expected: {}", expected_total);
-        println!("  Got:      {}", result.muts.len());
+        println!("  Got:      {}", result_muts.len());
         println!("  This is likely due to the bloom filter bug where Rust processes");
         println!("  all segments instead of just the first one.");
-        return Err(format!("Mutation count mismatch: expected ~{}, got {}", expected_total, result.muts.len()).into());
+        return Err(format!("Mutation count mismatch: expected ~{}, got {}", expected_total, result_muts.len()).into());
     }
 
     println!("\n✓ Test completed - mutations generated within expected range");

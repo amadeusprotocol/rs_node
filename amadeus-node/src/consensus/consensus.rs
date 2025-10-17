@@ -99,7 +99,7 @@ impl Consensus {
         let Some(entry) = entry else { return Err(Error::InvalidEntry) };
 
         // Ensure entry height is not in the future
-        if let Ok(cur_h) = get_chain_height(fabric)
+        if let Ok(Some(cur_h)) = fabric.get_temporal_height()
             && entry.header.height > cur_h
         {
             return Err(Error::TooFarInFuture);
@@ -138,7 +138,7 @@ pub fn is_trainer(config: &crate::config::Config, db: &RocksDb) -> bool {
 }
 
 /// Select trainer for a slot from the roster for the corresponding height
-pub fn trainer_for_slot(db: &RocksDb, height: u32, slot: u32) -> Option<[u8; 48]> {
+pub fn get_trainer_for_slot(db: &RocksDb, height: u32, slot: u32) -> Option<[u8; 48]> {
     let trainers = consensus::trainers_for_height(db, height)?;
     if trainers.is_empty() {
         return None;
@@ -147,20 +147,20 @@ pub fn trainer_for_slot(db: &RocksDb, height: u32, slot: u32) -> Option<[u8; 48]
     trainers.get(idx).copied()
 }
 
-pub fn trainer_for_slot_current(db: &RocksDb) -> Option<[u8; 48]> {
+pub fn get_trainer_for_current_slot(db: &RocksDb) -> Option<[u8; 48]> {
     let fabric = fabric::Fabric::with_db(db.clone());
-    let h = get_chain_height(&fabric).ok()?;
-    trainer_for_slot(db, h, h)
+    let h = fabric.get_temporal_height().ok()??;
+    get_trainer_for_slot(db, h, h)
 }
 
-pub fn trainer_for_slot_next(db: &RocksDb) -> Option<[u8; 48]> {
+pub fn get_trainer_for_next_slot(db: &RocksDb) -> Option<[u8; 48]> {
     let fabric = fabric::Fabric::with_db(db.clone());
-    let h = get_chain_height(&fabric).ok()?;
-    trainer_for_slot(db, h + 1, h + 1)
+    let h = fabric.get_temporal_height().ok()??;
+    get_trainer_for_slot(db, h + 1, h + 1)
 }
 
-pub fn trainer_for_slot_next_me(config: &crate::config::Config, db: &RocksDb) -> bool {
-    match trainer_for_slot_next(db) {
+pub fn are_we_trainer_for_next_slot(config: &crate::config::Config, db: &RocksDb) -> bool {
+    match get_trainer_for_next_slot(db) {
         Some(pk) => pk == config.get_pk(),
         None => false,
     }
@@ -337,15 +337,6 @@ pub struct TxResult {
     pub logs: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ApplyResult {
-    pub error: String,
-    pub attestation_packed: Option<Vec<u8>>,
-    pub mutations_hash: [u8; 32],
-    pub logs: Vec<TxResult>,
-    pub muts: Vec<crate::consensus::kv::Mutation>,
-}
-
 /// Execute a single transaction, routing to the appropriate contract handler
 /// Returns (error, logs, mutations, mutations_reverse, mutations_gas, mutations_gas_reverse)
 fn execute_transaction(
@@ -361,14 +352,12 @@ fn execute_transaction(
     Vec<crate::consensus::kv::Mutation>,
     Vec<crate::consensus::kv::Mutation>,
 ) {
-    use crate::consensus::kv;
-
     let action = match txu.tx.actions.first() {
         Some(a) => a,
         None => return ("no_actions".to_string(), vec![], vec![], vec![], vec![], vec![]),
     };
 
-    kv::reset(ctx);
+    ctx.reset();
 
     let call_env = crate::bic::epoch::CallEnv {
         entry_epoch: next_entry.header.height as u64 / 100_000,
@@ -399,14 +388,7 @@ fn execute_transaction(
         _ => ("invalid_contract".to_string(), vec![]),
     };
 
-    (
-        error,
-        logs,
-        kv::mutations(ctx),
-        kv::mutations_reverse(ctx),
-        kv::mutations_gas(ctx),
-        kv::mutations_gas_reverse(ctx),
-    )
+    (error, logs, ctx.mutations(), ctx.mutations_reverse(), ctx.mutations_gas(), ctx.mutations_gas_reverse())
 }
 
 fn execute_epoch_call(
@@ -456,8 +438,6 @@ fn execute_wasm_call(
     function: &str,
     args: &[Vec<u8>],
 ) -> (String, Vec<String>) {
-    use crate::consensus::kv;
-
     let contract_pk: [u8; 48] = contract.try_into().expect("contract len checked");
 
     // Handle attached tokens BEFORE WASM execution (regular mutations)
@@ -473,8 +453,8 @@ fn execute_wasm_call(
             );
             let contract_key =
                 crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &contract_pk, symbol_suffix.as_bytes());
-            kv::kv_increment(ctx, db, &signer_key, -amount);
-            kv::kv_increment(ctx, db, &contract_key, amount);
+            ctx.increment(db, &signer_key, -amount);
+            ctx.increment(db, &contract_key, amount);
         }
     }
 
@@ -484,16 +464,16 @@ fn execute_wasm_call(
             match crate::wasm::runtime::execute(env, db, ctx.clone(), &wasm_bytes, function, args) {
                 Ok(result) => {
                     // Save regular mutations and switch to gas context
-                    let muts = kv::mutations(ctx);
-                    let muts_rev = kv::mutations_reverse(ctx);
-                    kv::save_to_gas_and_restore(ctx, vec![], vec![]); // clear and prepare gas context
+                    let muts = ctx.mutations();
+                    let muts_rev = ctx.mutations_reverse();
+                    ctx.save_to_gas_and_restore(vec![], vec![]); // clear and prepare gas context
 
                     // Charge gas (gas mutations)
                     let exec_used = (result.exec_used * 100) as i64;
                     let signer_key =
                         crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &env.tx_signer, b":AMA");
-                    kv::use_gas_context(ctx, true);
-                    kv::kv_increment(ctx, db, &signer_key, -exec_used);
+                    ctx.use_gas_context(true);
+                    ctx.increment(db, &signer_key, -exec_used);
 
                     if env.entry_epoch >= 295 {
                         let half_exec_cost = exec_used / 2;
@@ -502,17 +482,17 @@ fn execute_wasm_call(
                         let zero_pubkey = [0u8; 48];
                         let burn_key =
                             crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &zero_pubkey, b":AMA");
-                        kv::kv_increment(ctx, db, &entry_signer_key, half_exec_cost);
-                        kv::kv_increment(ctx, db, &burn_key, half_exec_cost);
+                        ctx.increment(db, &entry_signer_key, half_exec_cost);
+                        ctx.increment(db, &burn_key, half_exec_cost);
                     } else {
                         let entry_signer_key =
                             crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &env.entry_signer, b":AMA");
-                        kv::kv_increment(ctx, db, &entry_signer_key, exec_used);
+                        ctx.increment(db, &entry_signer_key, exec_used);
                     }
-                    kv::use_gas_context(ctx, false);
+                    ctx.use_gas_context(false);
 
                     // Restore regular mutations
-                    kv::save_to_gas_and_restore(ctx, muts, muts_rev);
+                    ctx.save_to_gas_and_restore(muts, muts_rev);
 
                     ("ok".to_string(), result.logs)
                 }
@@ -547,7 +527,6 @@ fn parse_epoch_call(function: &str, args: &[Vec<u8>]) -> Result<crate::bic::epoc
 
 /// Pre-process transactions: update nonces, deduct gas
 fn call_txs_pre(ctx: &mut crate::consensus::kv::ApplyCtx, db: &RocksDb, next_entry: &Entry, txus: &[TxU]) {
-    use crate::consensus::kv;
     // DON'T reset here - we want to accumulate mutations from the entire entry processing
 
     let epoch = next_entry.header.height / 100_000;
@@ -561,7 +540,7 @@ fn call_txs_pre(ctx: &mut crate::consensus::kv::ApplyCtx, db: &RocksDb, next_ent
     for txu in txus {
         // Update nonce (using raw binary key with pubkey bytes)
         let nonce_key = crate::utils::misc::build_key(b"bic:base:nonce:", &txu.tx.signer);
-        kv::kv_put(ctx, db, &nonce_key, &(txu.tx.nonce as i64).to_string().into_bytes());
+        ctx.put(db, &nonce_key, &(txu.tx.nonce as i64).to_string().into_bytes());
 
         // Calculate and deduct exec cost using proper unit conversion
         let bytes = txu.tx_encoded.len() + 32 + 96;
@@ -575,26 +554,25 @@ fn call_txs_pre(ctx: &mut crate::consensus::kv::ApplyCtx, db: &RocksDb, next_ent
 
         let signer_balance_key =
             crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &txu.tx.signer, b":AMA");
-        kv::kv_increment(ctx, db, &signer_balance_key, -exec_cost);
+        ctx.increment(db, &signer_balance_key, -exec_cost);
 
         // Credit entry signer and burn address
         if epoch >= 295 {
-            kv::kv_increment(ctx, db, &entry_signer_key, exec_cost / 2);
-            kv::kv_increment(ctx, db, &burn_key, exec_cost / 2);
+            ctx.increment(db, &entry_signer_key, exec_cost / 2);
+            ctx.increment(db, &burn_key, exec_cost / 2);
         } else {
-            kv::kv_increment(ctx, db, &entry_signer_key, exec_cost);
+            ctx.increment(db, &entry_signer_key, exec_cost);
         }
     }
 }
 
 /// Exit logic: segment VR updates and epoch transitions
 fn call_exit(ctx: &mut crate::consensus::kv::ApplyCtx, db: &RocksDb, next_entry: &Entry) {
-    use crate::consensus::kv;
     // DON'T reset here - we want to accumulate mutations from the entire entry processing
 
     // Update segment VR hash every 1000 blocks
     if next_entry.header.height % 1000 == 0 {
-        kv::kv_put(ctx, db, b"bic:epoch:segment_vr_hash", &crate::utils::blake3::hash(&next_entry.header.vr));
+        ctx.put(db, b"bic:epoch:segment_vr_hash", &crate::utils::blake3::hash(&next_entry.header.vr));
     }
 
     // Epoch transition every 100k blocks
@@ -625,20 +603,12 @@ pub fn apply_entry(
     fabric: &fabric::Fabric,
     config: &crate::config::Config,
     next_entry: &Entry,
-) -> Result<ApplyResult, Error> {
-    // Create KvCtx once at the start of entry processing
+) -> Result<Option<Vec<u8>>, Error> {
     let mut ctx = crate::consensus::kv::ApplyCtx::new();
 
-    // check height validity
-    let current_height = get_chain_height(fabric).unwrap_or(0);
-    if next_entry.header.height != current_height + 1 {
-        return Ok(ApplyResult {
-            error: "invalid_height".to_string(),
-            attestation_packed: None,
-            mutations_hash: [0u8; 32],
-            logs: vec![],
-            muts: vec![],
-        });
+    let curr_h = fabric.get_temporal_height()?.unwrap_or(0);
+    if next_entry.header.height != curr_h + 1 {
+        return Err(Error::WrongType("invalid_height"));
     }
 
     // decode transactions
@@ -654,8 +624,8 @@ pub fn apply_entry(
     let db = fabric.db();
     call_txs_pre(&mut ctx, db, next_entry, &txus);
     // Collect mutations from pre-processing AFTER call_txs_pre
-    let mut muts = crate::consensus::kv::mutations(&ctx);
-    let mut muts_rev = crate::consensus::kv::mutations_reverse(&ctx);
+    let mut muts = ctx.mutations();
+    let mut muts_rev = ctx.mutations_reverse();
 
     // execute transactions with gas separation (matches Elixir logic)
     let mut tx_results = Vec::new();
@@ -679,14 +649,14 @@ pub fn apply_entry(
     }
 
     // Reset mutations before call_exit to avoid collecting the last transaction's mutations twice
-    crate::consensus::kv::reset(&mut ctx);
+    ctx.reset();
 
     // call exit logic (segment VR updates, epoch transitions)
     call_exit(&mut ctx, db, next_entry);
 
     // get exit mutations and combine
-    let muts_exit = crate::consensus::kv::mutations(&ctx);
-    let muts_exit_rev = crate::consensus::kv::mutations_reverse(&ctx);
+    let muts_exit = ctx.mutations();
+    let muts_exit_rev = ctx.mutations_reverse();
     muts.extend(muts_exit);
     muts_rev.extend(muts_exit_rev);
 
@@ -841,7 +811,9 @@ pub fn apply_entry(
     // update chain tip
     fabric.set_temporal(next_entry)?;
 
-    // store mutations reverse for potential rewind
+    // store mutations and reverse mutations for potential rewind
+    let muts_bin = crate::consensus::kv::mutations_to_etf(&muts);
+    fabric.put_muts(&next_entry.hash, &muts_bin)?;
     let muts_rev_bin = crate::consensus::kv::mutations_to_etf(&muts_rev);
     fabric.put_muts_rev(&next_entry.hash, &muts_rev_bin)?;
 
@@ -865,13 +837,7 @@ pub fn apply_entry(
         }
     }
 
-    Ok(ApplyResult {
-        error: "ok".to_string(),
-        attestation_packed: if is_trainer { Some(attestation_packed) } else { None },
-        mutations_hash,
-        logs: tx_results,
-        muts,
-    })
+    Ok(if is_trainer { Some(attestation_packed) } else { None })
 }
 
 pub fn produce_entry(db: &RocksDb, config: &crate::config::Config, slot: u32) -> Result<Entry, Error> {
@@ -1324,7 +1290,7 @@ pub fn get_softfork_settings() -> SoftforkSettings {
 /// Helper function to check if entry is in its designated slot
 fn is_entry_in_slot(db: &RocksDb, entry: &Entry, cur_slot: u32) -> bool {
     let next_slot = entry.header.slot;
-    let slot_trainer = trainer_for_slot(db, entry.header.height, next_slot);
+    let slot_trainer = get_trainer_for_slot(db, entry.header.height, next_slot);
 
     // check incremental slot
     let slot_delta = next_slot as i64 - cur_slot as i64;
@@ -1397,16 +1363,13 @@ pub async fn proc_entries(
         };
 
         // apply entry (matches Elixir Task.async pattern but synchronously)
-        let apply_result = apply_entry(fabric, config, entry)?;
-        if apply_result.error != "ok" {
-            return Ok(());
-        }
+        let attestation_packed = apply_entry(fabric, config, entry)?;
 
         // TODO: FabricEventGen.event_applied(entry, mutations_hash, muts, logs)
         tracing::info!("Applied entry {} at height {}", bs58::encode(&entry.hash).into_string(), entry.header.height);
 
         // broadcast attestation if synced and we're a trainer
-        if let Some(attestation_packed) = apply_result.attestation_packed {
+        if let Some(attestation_packed) = attestation_packed {
             if is_quorum_synced_off_by_x(fabric, 6) {
                 broadcast_attestation(ctx, &attestation_packed, &entry.hash).await;
             }

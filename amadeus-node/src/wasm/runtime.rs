@@ -87,7 +87,7 @@ mod host_functions {
         match context.read_bytes_with_store(&store, key_ptr as u32, key_len as u32) {
             Ok(key) => {
                 let mut kv_ctx = context.kv_ctx.lock().unwrap();
-                match kv::kv_get(&mut *kv_ctx, &context.db, &key) {
+                match kv_ctx.get(&context.db, &key) {
                     Some(value) => {
                         // Store value in shared buffer and return pointer
                         let mut buffer = context.memory_buffer.lock().unwrap();
@@ -110,7 +110,7 @@ mod host_functions {
         match context.read_bytes_with_store(&store, key_ptr as u32, key_len as u32) {
             Ok(key) => {
                 let mut kv_ctx = context.kv_ctx.lock().unwrap();
-                if kv::kv_exists(&mut *kv_ctx, &context.db, &key) { 1 } else { 0 }
+                if kv_ctx.exists(&context.db, &key) { 1 } else { 0 }
             }
             Err(_) => 0,
         }
@@ -133,7 +133,7 @@ mod host_functions {
         ) {
             (Ok(key), Ok(value)) => {
                 let mut kv_ctx = context.kv_ctx.lock().unwrap();
-                kv::kv_put(&mut *kv_ctx, &context.db, &key, &value);
+                kv_ctx.put(&context.db, &key, &value);
                 0
             }
             _ => -1,
@@ -148,7 +148,7 @@ mod host_functions {
         match context.read_bytes_with_store(&store, key_ptr as u32, key_len as u32) {
             Ok(key) => {
                 let mut kv_ctx = context.kv_ctx.lock().unwrap();
-                kv::kv_increment(&mut *kv_ctx, &context.db, &key, delta)
+                kv_ctx.increment(&context.db, &key, delta)
             }
             Err(_) => 0,
         }
@@ -162,7 +162,7 @@ mod host_functions {
         match context.read_bytes_with_store(&store, key_ptr as u32, key_len as u32) {
             Ok(key) => {
                 let mut kv_ctx = context.kv_ctx.lock().unwrap();
-                kv::kv_delete(&mut *kv_ctx, &context.db, &key);
+                kv_ctx.delete(&context.db, &key);
                 0
             }
             Err(_) => -1,
@@ -177,7 +177,7 @@ mod host_functions {
         match context.read_bytes_with_store(&store, prefix_ptr as u32, prefix_len as u32) {
             Ok(prefix) => {
                 let mut kv_ctx = context.kv_ctx.lock().unwrap();
-                kv::kv_clear(&mut *kv_ctx, &context.db, &prefix) as i32
+                kv_ctx.clear(&context.db, &prefix) as i32
             }
             Err(_) => -1,
         }
@@ -382,8 +382,8 @@ mod host_functions {
                         format!(":{}", symbol).as_bytes(),
                     );
                     let mut kv_ctx = context.kv_ctx.lock().unwrap();
-                    kv::kv_increment(&mut *kv_ctx, &context.db, &caller_key, -amount);
-                    kv::kv_increment(&mut *kv_ctx, &context.db, &contract_key, amount);
+                    kv_ctx.increment(&context.db, &caller_key, -amount);
+                    kv_ctx.increment(&context.db, &contract_key, amount);
                 }
             }
         }

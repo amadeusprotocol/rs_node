@@ -46,7 +46,7 @@ fn key_permission_admin(symbol: &str, pk: &[u8; 48]) -> Vec<u8> {
 }
 
 pub fn balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, pubkey: &[u8; 48], symbol: &str) -> u64 {
-    kv::kv_get_to_i64(ctx, db, &key_balance(pubkey, symbol)).unwrap_or(0).max(0) as u64
+    ctx.get_to_i64(db, &key_balance(pubkey, symbol)).unwrap_or(0).max(0) as u64
 }
 
 pub fn burn_balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, symbol: &str) -> u64 {
@@ -262,8 +262,8 @@ pub fn call(
     let parsed = CoinCall::parse(function, args)?;
     match parsed {
         CoinCall::Transfer { receiver, amount, symbol } => {
-            if kv::kv_get(ctx, db, &key_pausable(&symbol)) == Some(b"true".to_vec())
-                && kv::kv_get(ctx, db, &key_paused(&symbol)) == Some(b"true".to_vec())
+            if ctx.get(db, &key_pausable(&symbol)) == Some(b"true".to_vec())
+                && ctx.get(db, &key_paused(&symbol)) == Some(b"true".to_vec())
             {
                 return Err(CoinError::Paused);
             }
@@ -277,66 +277,66 @@ pub fn call(
             }
             // apply
             let amt_i64 = amount as i64; // NOTE: may overflow if > i64::MAX; assumed safe in current use
-            kv::kv_increment(ctx, db, &key_balance(&env.account_caller, &symbol), -(amt_i64));
-            kv::kv_increment(ctx, db, &key_balance(&receiver, &symbol), amt_i64);
+            ctx.increment(db, &key_balance(&env.account_caller, &symbol), -(amt_i64));
+            ctx.increment(db, &key_balance(&receiver, &symbol), amt_i64);
             Ok(())
         }
         CoinCall::CreateAndMint { symbol, amount, mintable, pausable } => {
             // symbol checks already in parse
-            if kv::kv_exists(ctx, db, &key_total_supply(&symbol)) {
+            if ctx.exists(db, &key_total_supply(&symbol)) {
                 return Err(CoinError::SymbolExists);
             }
             if amount == 0 {
                 return Err(CoinError::InvalidAmount);
             }
             let amt_i64 = amount as i64;
-            kv::kv_increment(ctx, db, &key_balance(&env.account_caller, &symbol), amt_i64);
-            kv::kv_increment(ctx, db, &key_total_supply(&symbol), amt_i64);
+            ctx.increment(db, &key_balance(&env.account_caller, &symbol), amt_i64);
+            ctx.increment(db, &key_total_supply(&symbol), amt_i64);
             // permissions: mark caller as admin
-            kv::kv_put(ctx, db, &key_permission_admin(&symbol, &env.account_caller), b"1");
+            ctx.put(db, &key_permission_admin(&symbol, &env.account_caller), b"1");
             if mintable {
-                kv::kv_put(ctx, db, &key_mintable(&symbol), b"true");
+                ctx.put(db, &key_mintable(&symbol), b"true");
             }
             if pausable {
-                kv::kv_put(ctx, db, &key_pausable(&symbol), b"true");
+                ctx.put(db, &key_pausable(&symbol), b"true");
             }
             Ok(())
         }
         CoinCall::Mint { symbol, amount } => {
-            if !kv::kv_exists(ctx, db, &key_total_supply(&symbol)) {
+            if !ctx.exists(db, &key_total_supply(&symbol)) {
                 return Err(CoinError::SymbolDoesntExist);
             }
-            if kv::kv_get(ctx, db, &key_mintable(&symbol)) != Some(b"true".to_vec()) {
+            if ctx.get(db, &key_mintable(&symbol)) != Some(b"true".to_vec()) {
                 return Err(CoinError::NotMintable);
             }
-            if kv::kv_get(ctx, db, &key_pausable(&symbol)) == Some(b"true".to_vec())
-                && kv::kv_get(ctx, db, &key_paused(&symbol)) == Some(b"true".to_vec())
+            if ctx.get(db, &key_pausable(&symbol)) == Some(b"true".to_vec())
+                && ctx.get(db, &key_paused(&symbol)) == Some(b"true".to_vec())
             {
                 return Err(CoinError::Paused);
             }
             // permission check: caller must be admin
-            if !kv::kv_exists(ctx, db, &key_permission_admin(&symbol, &env.account_caller)) {
+            if !ctx.exists(db, &key_permission_admin(&symbol, &env.account_caller)) {
                 return Err(CoinError::NoPermissions);
             }
             if amount == 0 {
                 return Err(CoinError::InvalidAmount);
             }
             let amt_i64 = amount as i64;
-            kv::kv_increment(ctx, db, &key_balance(&env.account_caller, &symbol), amt_i64);
-            kv::kv_increment(ctx, db, &key_total_supply(&symbol), amt_i64);
+            ctx.increment(db, &key_balance(&env.account_caller, &symbol), amt_i64);
+            ctx.increment(db, &key_total_supply(&symbol), amt_i64);
             Ok(())
         }
         CoinCall::Pause { symbol, direction } => {
-            if !kv::kv_exists(ctx, db, &key_total_supply(&symbol)) {
+            if !ctx.exists(db, &key_total_supply(&symbol)) {
                 return Err(CoinError::SymbolDoesntExist);
             }
-            if kv::kv_get(ctx, db, &key_pausable(&symbol)) != Some(b"true".to_vec()) {
+            if ctx.get(db, &key_pausable(&symbol)) != Some(b"true".to_vec()) {
                 return Err(CoinError::NotPausable);
             }
-            if !kv::kv_exists(ctx, db, &key_permission_admin(&symbol, &env.account_caller)) {
+            if !ctx.exists(db, &key_permission_admin(&symbol, &env.account_caller)) {
                 return Err(CoinError::NoPermissions);
             }
-            kv::kv_put(ctx, db, &key_paused(&symbol), if direction { b"true" } else { b"false" });
+            ctx.put(db, &key_paused(&symbol), if direction { b"true" } else { b"false" });
             Ok(())
         }
     }
