@@ -35,7 +35,7 @@ pub const EPOCH_INTERVAL: u64 = 100_000;
 // Fixed-point constants scaled by 1e9 to avoid floating point
 const A_SCALED: u128 = 23_072_960_000_000_000_000; // 23_072_960_000.0 * 1e9
 const C_SCALED: u128 = 1_110_573_766_000; // 1_110.573_766 * 1e6 (using 1e6 for C to prevent overflow)
-const START_EPOCH: u64 = 500;
+const START_EPOCH: u64 = 420;
 
 /// Integer approximation of pow(x, 1.5) using integer arithmetic
 /// Returns result scaled by 1e9
@@ -76,6 +76,10 @@ pub fn epoch_emission(epoch: u64) -> u128 {
         }
         let val = A_SCALED.saturating_mul(1_000_000_000) / (denominator.saturating_mul(2));
         coin::to_flat(val / 1_000_000_000)
+    } else if epoch >= 282 {
+        epoch_emission_1(epoch, EPOCH_EMISSION_BASE)
+    } else if epoch >= 103 {
+        epoch_emission_1(epoch, EPOCH_EMISSION_BASE) + EPOCH_EMISSION_FIXED * 2
     } else {
         epoch_emission_1(epoch, EPOCH_EMISSION_BASE) + EPOCH_EMISSION_FIXED
     }
@@ -279,7 +283,7 @@ impl Epoch {
             EpochCall::SubmitSol { sol } => self.submit_sol(ctx, env, db, &sol),
             EpochCall::SetEmissionAddress { address } => self.set_emission_address(ctx, env, db, &address),
             EpochCall::SlashTrainer { epoch, malicious_pk, signature, mask, trainers } => {
-                self.slash_trainer(env, epoch, &malicious_pk, &signature, &mask, trainers)
+                self.slash_trainer(ctx, env, db, epoch, &malicious_pk, &signature, &mask, trainers)
             }
         }
     }
@@ -297,7 +301,6 @@ impl Epoch {
         let segs = crate::bic::sol_bloom::segs(&hash);
         let mut any_bit_newly_set = false;
         // Only process first segment to match Elixir
-        // FIXME: check if this is 100% correct
         for seg in segs.iter().take(1) {
             let key = format!("bic:epoch:solbloom:{}", seg.page);
             let was_newly_set = ctx.set_bit(db, key.as_bytes(), seg.bit_offset, Some(65536));
@@ -326,7 +329,7 @@ impl Epoch {
         // The cache check happens before this function is called
         // So we trust that if we got here, the solution is valid
 
-        // Check if POP already exists for this public key
+        // Check if POP already exists for this public key (key uses raw binary pk)
         let pop_key = crate::utils::misc::bcat(&[b"bic:epoch:pop:", &pk]);
         let pop_exists = db.get("contractstate", &pop_key).ok().flatten().is_some();
 
@@ -339,7 +342,7 @@ impl Epoch {
             ctx.put(db, &pop_key, &pop);
         }
 
-        // Increment solution count for this address (matching Elixir implementation)
+        // Increment solution count for this address (key uses raw binary pk, matching Elixir implementation)
         let count_key = crate::utils::misc::bcat(&[b"bic:epoch:solutions_count:", &pk]);
         ctx.increment(db, &count_key, 1);
 
@@ -357,6 +360,7 @@ impl Epoch {
             return Err(EpochError::InvalidAddressPk);
         }
 
+        // Key uses raw binary account_caller (matching Elixir implementation)
         let key = crate::utils::misc::bcat(&[b"bic:epoch:emission_address:", &env.account_caller]);
         ctx.put(db, &key, address);
 
@@ -366,14 +370,18 @@ impl Epoch {
     #[allow(clippy::too_many_arguments)]
     fn slash_trainer(
         &self,
+        ctx: &mut crate::consensus::kv::ApplyCtx,
         env: &CallEnv,
+        db: &crate::utils::rocksdb::RocksDb,
         epoch: u64,
         malicious_pk: &[u8; 48],
         signature: &[u8],
         mask: &Vec<bool>,
         trainers_opt: Option<Vec<[u8; 48]>>,
     ) -> Result<(), EpochError> {
-        if env.entry_epoch != epoch {
+        let cur_epoch = env.entry_epoch;
+
+        if cur_epoch != epoch {
             return Err(EpochError::InvalidEpoch);
         }
 
@@ -381,8 +389,49 @@ impl Epoch {
         let trainers = match trainers_opt {
             Some(t) => t,
             None => {
-                // TODO: requires DB handle to fetch trainers; not available in this env
-                return Err(EpochError::InvalidEpoch);
+                // Fetch from KV (stored as Term/ETF format)
+                db.get("contractstate", format!("bic:epoch:trainers:{}", cur_epoch).as_bytes())
+                    .ok()
+                    .flatten()
+                    .and_then(|bytes| {
+                        // Try to decode as Term first (new format)
+                        Term::decode(&bytes[..])
+                            .ok()
+                            .and_then(|term| {
+                                term.get_list().map(|list| {
+                                    list.iter()
+                                        .filter_map(|t| {
+                                            let pk = t.get_binary()?;
+                                            if pk.len() == 48 {
+                                                let mut arr = [0u8; 48];
+                                                arr.copy_from_slice(pk);
+                                                Some(arr)
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                            })
+                            .or_else(|| {
+                                // Fallback: try raw bytes format (old format for compatibility)
+                                if bytes.len() % 48 == 0 {
+                                    Some(
+                                        bytes
+                                            .chunks_exact(48)
+                                            .map(|c| {
+                                                let mut pk = [0u8; 48];
+                                                pk.copy_from_slice(c);
+                                                pk
+                                            })
+                                            .collect::<Vec<_>>(),
+                                    )
+                                } else {
+                                    None
+                                }
+                            })
+                    })
+                    .ok_or(EpochError::InvalidEpoch)?
             }
         };
 
@@ -393,7 +442,56 @@ impl Epoch {
         // verify and threshold as in Elixir
         slash_trainer_verify(epoch, malicious_pk, &trainers, mask, signature)?;
 
-        // TODO: persist removal into KV and update trainer set and height index
+        // Persist removal into KV: add to removed list
+        let removed_key = format!("bic:epoch:trainers:removed:{}", cur_epoch);
+        let mut removed: Vec<[u8; 48]> = db
+            .get("contractstate", removed_key.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|bytes| {
+                Term::decode(&bytes[..]).ok().and_then(|term| {
+                    term.get_list().map(|list| {
+                        list.iter()
+                            .filter_map(|t| {
+                                let pk = t.get_binary()?;
+                                if pk.len() == 48 {
+                                    let mut arr = [0u8; 48];
+                                    arr.copy_from_slice(pk);
+                                    Some(arr)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    })
+                })
+            })
+            .unwrap_or_default();
+
+        removed.push(*malicious_pk);
+        let removed_terms: Vec<Term> = removed.iter().map(|pk| Term::Binary(eetf::Binary::from(pk.to_vec()))).collect();
+        let removed_term = Term::List(eetf::List::from(removed_terms));
+        let mut removed_bytes = Vec::new();
+        let _ = removed_term.encode(&mut removed_bytes);
+        ctx.put(db, removed_key.as_bytes(), &removed_bytes);
+
+        // Update trainer set by removing the malicious trainer
+        let new_trainers: Vec<[u8; 48]> = trainers.into_iter().filter(|pk| pk != malicious_pk).collect();
+
+        // Store as Term (ETF format) to match Elixir implementation
+        let trainers_terms: Vec<Term> =
+            new_trainers.iter().map(|pk| Term::Binary(eetf::Binary::from(pk.to_vec()))).collect();
+        let trainers_term = Term::List(eetf::List::from(trainers_terms));
+        let mut trainers_bytes = Vec::new();
+        let _ = trainers_term.encode(&mut trainers_bytes);
+
+        let trainers_key = format!("bic:epoch:trainers:{}", cur_epoch);
+        ctx.put(db, trainers_key.as_bytes(), &trainers_bytes);
+
+        // Update height index
+        let trainers_height_key = format!("bic:epoch:trainers:height:{:012}", env.entry_height + 1);
+        ctx.put(db, trainers_height_key.as_bytes(), &trainers_bytes);
+
         Ok(())
     }
 
@@ -407,7 +505,33 @@ impl Epoch {
         let epoch_cur = env.entry_epoch;
         let epoch_next = epoch_cur + 1;
 
-        // Get all solution counts from KV prefix scan
+        // Get removed trainers for this epoch
+        let removed_key = format!("bic:epoch:trainers:removed:{}", epoch_cur);
+        let removed_trainers: std::collections::HashSet<[u8; 48]> = db
+            .get("contractstate", removed_key.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|bytes| {
+                Term::decode(&bytes[..]).ok().and_then(|term| {
+                    term.get_list().map(|list| {
+                        list.iter()
+                            .filter_map(|t| {
+                                let pk = t.get_binary()?;
+                                if pk.len() == 48 {
+                                    let mut arr = [0u8; 48];
+                                    arr.copy_from_slice(pk);
+                                    Some(arr)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    })
+                })
+            })
+            .unwrap_or_default();
+
+        // Get all solution counts from KV prefix scan, filtering out removed trainers
         let prefix = b"bic:epoch:solutions_count:";
         let mut leaders: Vec<([u8; 48], i64)> = db
             .iter_prefix("contractstate", prefix)
@@ -415,14 +539,14 @@ impl Epoch {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|(key, value)| {
-                let key_str = String::from_utf8(key).ok()?;
-                let b58_pk = key_str.strip_prefix("bic:epoch:solutions_count:")?;
-                let pk_bytes = bs58::decode(b58_pk).into_vec().ok()?;
-                if pk_bytes.len() == 48 && value.len() == 8 {
+                // Key format: b"bic:epoch:solutions_count:" + raw 48 bytes of pk
+                if key.len() == prefix.len() + 48 && value.len() == 8 {
+                    let pk_bytes = &key[prefix.len()..];
                     let count = i64::from_be_bytes(value.try_into().ok()?);
                     let mut pk = [0u8; 48];
-                    pk.copy_from_slice(&pk_bytes);
-                    Some((pk, count))
+                    pk.copy_from_slice(pk_bytes);
+                    // Filter out removed trainers (matching Elixir implementation)
+                    if !removed_trainers.contains(&pk) { Some((pk, count)) } else { None }
                 } else {
                     None
                 }
@@ -430,26 +554,48 @@ impl Epoch {
             .collect();
         leaders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
 
-        // Get current trainers
+        // Get current trainers (stored as Term/ETF format)
         let trainers = db
             .get("contractstate", format!("bic:epoch:trainers:{}", epoch_cur).as_bytes())
             .ok()
             .flatten()
             .and_then(|bytes| {
-                if bytes.len() % 48 == 0 {
-                    Some(
-                        bytes
-                            .chunks_exact(48)
-                            .map(|c| {
-                                let mut pk = [0u8; 48];
-                                pk.copy_from_slice(c);
-                                pk
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                } else {
-                    None
-                }
+                // Try to decode as Term first (new format)
+                Term::decode(&bytes[..])
+                    .ok()
+                    .and_then(|term| {
+                        term.get_list().map(|list| {
+                            list.iter()
+                                .filter_map(|t| {
+                                    let pk = t.get_binary()?;
+                                    if pk.len() == 48 {
+                                        let mut arr = [0u8; 48];
+                                        arr.copy_from_slice(pk);
+                                        Some(arr)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .or_else(|| {
+                        // Fallback: try raw bytes format (old format for compatibility)
+                        if bytes.len() % 48 == 0 {
+                            Some(
+                                bytes
+                                    .chunks_exact(48)
+                                    .map(|c| {
+                                        let mut pk = [0u8; 48];
+                                        pk.copy_from_slice(c);
+                                        pk
+                                    })
+                                    .collect::<Vec<_>>(),
+                            )
+                        } else {
+                            None
+                        }
+                    })
             })
             .unwrap_or_default();
 
@@ -468,11 +614,9 @@ impl Epoch {
             let r = community_fund % n;
             for (i, pk) in pb67.iter().enumerate() {
                 let coins = if (i as u128) < r { q + 1 } else { q } as i128;
+                let emission_key = crate::utils::misc::bcat(&[b"bic:epoch:emission_address:", pk]);
                 let emission_addr = db
-                    .get(
-                        "contractstate",
-                        format!("bic:epoch:emission_address:{}", bs58::encode(pk).into_string()).as_bytes(),
-                    )
+                    .get("contractstate", &emission_key)
                     .ok()
                     .flatten()
                     .and_then(|b| {
@@ -496,11 +640,9 @@ impl Epoch {
             if total_sols > 0 {
                 for (pk, sols) in trainers_to_recv {
                     let coins = ((*sols).max(0) as u128 * early_adopter / total_sols) as i128;
+                    let emission_key = crate::utils::misc::bcat(&[b"bic:epoch:emission_address:", pk]);
                     let emission_addr = db
-                        .get(
-                            "contractstate",
-                            format!("bic:epoch:emission_address:{}", bs58::encode(pk).into_string()).as_bytes(),
-                        )
+                        .get("contractstate", &emission_key)
                         .ok()
                         .flatten()
                         .and_then(|b| {
@@ -524,11 +666,9 @@ impl Epoch {
             if total_sols > 0 {
                 for (pk, sols) in trainers_to_recv {
                     let coins = ((*sols).max(0) as u128 * emission / total_sols) as i128;
+                    let emission_key = crate::utils::misc::bcat(&[b"bic:epoch:emission_address:", pk]);
                     let emission_addr = db
-                        .get(
-                            "contractstate",
-                            format!("bic:epoch:emission_address:{}", bs58::encode(pk).into_string()).as_bytes(),
-                        )
+                        .get("contractstate", &emission_key)
                         .ok()
                         .flatten()
                         .and_then(|b| {
@@ -554,11 +694,18 @@ impl Epoch {
         // Select new validators and store for next epoch
         let leader_pks: Vec<[u8; 48]> = leaders.into_iter().map(|(pk, _)| pk).collect();
         let new_validators = select_validators(&leader_pks);
-        let trainers_bin: Vec<u8> = new_validators.iter().flat_map(|pk| pk.iter().copied()).collect();
+
+        // Store as Term (ETF format) to match Elixir implementation
+        let trainers_terms: Vec<Term> =
+            new_validators.iter().map(|pk| Term::Binary(eetf::Binary::from(pk.to_vec()))).collect();
+        let trainers_term = Term::List(eetf::List::from(trainers_terms));
+        let mut trainers_bytes = Vec::new();
+        let _ = trainers_term.encode(&mut trainers_bytes);
+
         let trainers_key = format!("bic:epoch:trainers:{}", epoch_next).into_bytes();
-        ctx.put(db, &trainers_key, &trainers_bin);
+        ctx.put(db, &trainers_key, &trainers_bytes);
         let trainers_height_key = format!("bic:epoch:trainers:height:{:012}", env.entry_height + 1).into_bytes();
-        ctx.put(db, &trainers_height_key, &trainers_bin);
+        ctx.put(db, &trainers_height_key, &trainers_bytes);
 
         Ok(())
     }

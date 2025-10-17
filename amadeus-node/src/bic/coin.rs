@@ -15,8 +15,11 @@ pub fn to_tenthousandth(coins: u128) -> u128 {
     coins.saturating_mul(100_000)
 }
 
-pub fn from_flat(coins: u128) -> u128 {
-    coins / 1_000_000_000
+/// DANGER: floating points
+/// Don't use in smart contracts, only for display purposes
+pub fn from_flat(coins: u128) -> f64 {
+    let value = (coins as f64) / 1_000_000_000.0;
+    (value * 1_000_000_000.0).round() / 1_000_000_000.0
 }
 
 pub fn burn_address() -> [u8; 48] {
@@ -38,8 +41,8 @@ fn key_paused(symbol: &str) -> Vec<u8> {
 fn key_mintable(symbol: &str) -> Vec<u8> {
     crate::utils::misc::bcat(&[b"bic:coin:mintable:", symbol.as_bytes()])
 }
-fn key_permission_admin(symbol: &str, pk: &[u8; 48]) -> Vec<u8> {
-    crate::utils::misc::bcat(&[b"bic:coin:permission:", symbol.as_bytes(), b":admin:", pk])
+fn key_permission(symbol: &str) -> Vec<u8> {
+    crate::utils::misc::bcat(&[b"bic:coin:permission:", symbol.as_bytes()])
 }
 
 pub fn balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, pubkey: &[u8; 48], symbol: &str) -> u128 {
@@ -136,6 +139,57 @@ fn parse_bool_str(bytes: &[u8]) -> Option<bool> {
     }
 }
 
+/// Encode a list of public keys as ETF term (matching Elixir's term storage)
+fn encode_pk_list(pks: &[[u8; 48]]) -> Vec<u8> {
+    use crate::utils::safe_etf::encode_safe;
+    use eetf::{Binary, List, Term};
+    let elements: Vec<Term> = pks.iter().map(|pk| Term::Binary(Binary { bytes: pk.to_vec() })).collect();
+    let list = Term::List(List { elements });
+    encode_safe(&list)
+}
+
+/// Decode ETF term to list of public keys
+fn decode_pk_list(bytes: &[u8]) -> Result<Vec<[u8; 48]>, CoinError> {
+    use eetf::Term;
+    let term = Term::decode(&bytes[..]).map_err(|_| CoinError::NoPermissions)?;
+    match term {
+        Term::List(list) => {
+            let mut pks = Vec::new();
+            for elem in list.elements {
+                match elem {
+                    Term::Binary(bin) => {
+                        let pk = to_fixed_48(&bin.bytes).ok_or(CoinError::NoPermissions)?;
+                        pks.push(pk);
+                    }
+                    _ => return Err(CoinError::NoPermissions),
+                }
+            }
+            Ok(pks)
+        }
+        _ => Err(CoinError::NoPermissions),
+    }
+}
+
+/// Check if a public key is in the admin list for a symbol
+fn is_admin(ctx: &mut kv::ApplyCtx, db: &RocksDb, symbol: &str, pk: &[u8; 48]) -> bool {
+    match ctx.get(db, &key_permission(symbol)) {
+        Some(bytes) => decode_pk_list(&bytes).map(|admins| admins.contains(pk)).unwrap_or(false),
+        None => false,
+    }
+}
+
+/// Add a public key to the admin list for a symbol
+fn add_admin(ctx: &mut kv::ApplyCtx, db: &RocksDb, symbol: &str, pk: &[u8; 48]) {
+    let mut admins = match ctx.get(db, &key_permission(symbol)) {
+        Some(bytes) => decode_pk_list(&bytes).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    if !admins.contains(pk) {
+        admins.push(*pk);
+    }
+    ctx.put(db, &key_permission(symbol), &encode_pk_list(&admins));
+}
+
 impl CoinCall {
     /// Parse function name and byte args (decoded from ETF) into a typed CoinCall,
     /// performing the same front-end validations as Elixir before touching state.
@@ -150,18 +204,27 @@ impl CoinCall {
                     [receiver, amount] => {
                         let receiver = validate_receiver_pk(receiver)?;
                         let amount = parse_u128_ascii_decimal(amount)?;
+                        if amount == 0 {
+                            return Err(CoinError::InvalidAmount);
+                        }
                         Ok(CoinCall::Transfer { receiver, amount, symbol: "AMA".to_string() })
                     }
                     // ["AMA", receiver, amount]
                     [ama, receiver, amount] if std::str::from_utf8(ama).ok() == Some("AMA") => {
                         let receiver = validate_receiver_pk(receiver)?;
                         let amount = parse_u128_ascii_decimal(amount)?;
+                        if amount == 0 {
+                            return Err(CoinError::InvalidAmount);
+                        }
                         Ok(CoinCall::Transfer { receiver, amount, symbol: "AMA".to_string() })
                     }
                     // [receiver, amount, symbol]
                     [receiver, amount, symbol] => {
                         let receiver = validate_receiver_pk(receiver)?;
                         let amount = parse_u128_ascii_decimal(amount)?;
+                        if amount == 0 {
+                            return Err(CoinError::InvalidAmount);
+                        }
                         let symbol_str = std::str::from_utf8(symbol).map_err(|_| CoinError::InvalidSymbol)?;
                         if !is_alphanumeric_ascii(symbol_str) {
                             return Err(CoinError::InvalidSymbol);
@@ -260,6 +323,7 @@ pub fn call(
     let parsed = CoinCall::parse(function, args)?;
     match parsed {
         CoinCall::Transfer { receiver, amount, symbol } => {
+            // check if paused
             if ctx.get(db, &key_pausable(&symbol)) == Some(b"true".to_vec())
                 && ctx.get(db, &key_paused(&symbol)) == Some(b"true".to_vec())
             {
@@ -267,9 +331,6 @@ pub fn call(
             }
             // balance check
             let bal = balance(ctx, db, &env.account_caller, &symbol);
-            if amount == 0 {
-                return Err(CoinError::InvalidAmount);
-            }
             if bal < amount {
                 return Err(CoinError::InsufficientFunds);
             }
@@ -283,13 +344,10 @@ pub fn call(
             if ctx.exists(db, &key_total_supply(&symbol)) {
                 return Err(CoinError::SymbolExists);
             }
-            if amount == 0 {
-                return Err(CoinError::InvalidAmount);
-            }
             ctx.increment(db, &key_balance(&env.account_caller, &symbol), amount as i128);
             ctx.increment(db, &key_total_supply(&symbol), amount as i128);
-            // permissions: mark caller as admin
-            ctx.put(db, &key_permission_admin(&symbol, &env.account_caller), b"1");
+            // permissions: add caller to admin list
+            add_admin(ctx, db, &symbol, &env.account_caller);
             if mintable {
                 ctx.put(db, &key_mintable(&symbol), b"true");
             }
@@ -302,6 +360,10 @@ pub fn call(
             if !ctx.exists(db, &key_total_supply(&symbol)) {
                 return Err(CoinError::SymbolDoesntExist);
             }
+            // permission check: caller must be admin
+            if !is_admin(ctx, db, &symbol, &env.account_caller) {
+                return Err(CoinError::NoPermissions);
+            }
             if ctx.get(db, &key_mintable(&symbol)) != Some(b"true".to_vec()) {
                 return Err(CoinError::NotMintable);
             }
@@ -309,13 +371,6 @@ pub fn call(
                 && ctx.get(db, &key_paused(&symbol)) == Some(b"true".to_vec())
             {
                 return Err(CoinError::Paused);
-            }
-            // permission check: caller must be admin
-            if !ctx.exists(db, &key_permission_admin(&symbol, &env.account_caller)) {
-                return Err(CoinError::NoPermissions);
-            }
-            if amount == 0 {
-                return Err(CoinError::InvalidAmount);
             }
             ctx.increment(db, &key_balance(&env.account_caller, &symbol), amount as i128);
             ctx.increment(db, &key_total_supply(&symbol), amount as i128);
@@ -325,11 +380,12 @@ pub fn call(
             if !ctx.exists(db, &key_total_supply(&symbol)) {
                 return Err(CoinError::SymbolDoesntExist);
             }
+            // permission check: caller must be admin
+            if !is_admin(ctx, db, &symbol, &env.account_caller) {
+                return Err(CoinError::NoPermissions);
+            }
             if ctx.get(db, &key_pausable(&symbol)) != Some(b"true".to_vec()) {
                 return Err(CoinError::NotPausable);
-            }
-            if !ctx.exists(db, &key_permission_admin(&symbol, &env.account_caller)) {
-                return Err(CoinError::NoPermissions);
             }
             ctx.put(db, &key_paused(&symbol), if direction { b"true" } else { b"false" });
             Ok(())

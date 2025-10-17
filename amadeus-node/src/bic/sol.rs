@@ -35,6 +35,7 @@ pub struct SolV2 {
     pub pk: [u8; 48],
     pub pop: [u8; 96],
     pub computor: [u8; 48],
+    pub nonce: [u8; 12],
     pub tensor_c: [u8; 1024],
 }
 
@@ -84,7 +85,7 @@ impl Protocol for Solution {
                 buf.extend_from_slice(&v2.pk);
                 buf.extend_from_slice(&v2.pop);
                 buf.extend_from_slice(&v2.computor);
-                buf.extend_from_slice(&[0u8; 12]); // nonce placeholder
+                buf.extend_from_slice(&v2.nonce);
                 buf.extend_from_slice(&v2.tensor_c);
                 buf
             }
@@ -143,7 +144,7 @@ impl Solution {
                 buf.extend_from_slice(&v2.pk);
                 buf.extend_from_slice(&v2.pop);
                 buf.extend_from_slice(&v2.computor);
-                buf.extend_from_slice(&[0u8; 12]); // nonce placeholder
+                buf.extend_from_slice(&v2.nonce);
                 buf.extend_from_slice(&v2.tensor_c);
                 buf
             }
@@ -198,9 +199,9 @@ impl Solution {
             let pk: [u8; 48] = sol[36..84].try_into().unwrap();
             let pop: [u8; 96] = sol[84..180].try_into().unwrap();
             let computor: [u8; 48] = sol[180..228].try_into().unwrap();
-            // skip nonce (12 bytes)
+            let nonce: [u8; 12] = sol[228..240].try_into().unwrap();
             let tensor_c: [u8; 1024] = sol[240..(240 + 1024)].try_into().unwrap();
-            Ok(Solution::V2(SolV2 { epoch, segment_vr_hash, pk, pop, computor, tensor_c }))
+            Ok(Solution::V2(SolV2 { epoch, segment_vr_hash, pk, pop, computor, nonce, tensor_c }))
         } else if epoch >= 1 {
             // <<epoch::32-little, sol_pk::48-binary, pop::96-binary, computor_pk::48-binary, segment_vr::96-binary, _::binary>>
             if sol.len() < 4 + 48 + 96 + 48 + 96 {
@@ -245,12 +246,16 @@ impl Solution {
             if sol.len() != 320 {
                 return Err(Error::InvalidSolSeedSize);
             }
-            Ok(verify_cache(epoch, sol, true))
+            // reference implementation throws :null error for epoch < 156
+            // we return false to indicate verification not supported
+            Ok(false)
         } else {
             if sol.len() != 256 {
                 return Err(Error::InvalidSolSeedSize);
             }
-            Ok(verify_cache(epoch, sol, false))
+            // reference implementation throws :null error for epoch < 1
+            // we return false to indicate verification not supported
+            Ok(false)
         }
     }
 }
@@ -258,8 +263,9 @@ impl Solution {
 pub fn verify_hash(epoch: u32, hash: &[u8; 32]) -> bool {
     if epoch >= 244 {
         hash[0] == 0 && hash[1] == 0 && hash[2] == 0
+    } else if epoch >= 156 {
+        hash[0] == 0 && hash[1] == 0
     } else if epoch >= 1 {
-        // there may be separate case for 156
         hash[0] == 0 && hash[1] == 0
     } else {
         hash[0] == 0
@@ -313,12 +319,16 @@ pub fn verify_with_hash(sol: &[u8], hash: &[u8; 32]) -> Result<bool, Error> {
         if sol.len() != 320 {
             return Err(Error::InvalidSolSeedSize);
         }
-        Ok(verify_cache(epoch, sol, true))
+        // reference implementation throws :null error for epoch < 156
+        // we return false to indicate verification not supported
+        Ok(false)
     } else {
         if sol.len() != 256 {
             return Err(Error::InvalidSolSeedSize);
         }
-        Ok(verify_cache(epoch, sol, false))
+        // reference implementation throws :null error for epoch < 1
+        // we return false to indicate verification not supported
+        Ok(false)
     }
 }
 
@@ -371,6 +381,7 @@ mod tests {
                 assert_eq!(v2.pk, [1u8; 48]);
                 assert_eq!(v2.pop, [2u8; 96]);
                 assert_eq!(v2.computor, [3u8; 48]);
+                assert_eq!(v2.nonce, [4u8; 12]);
                 assert_eq!(v2.tensor_c, [5u8; 1024]);
             }
             _ => panic!("expected V2"),
