@@ -754,51 +754,53 @@ fn chain_rewind_internal(
     current_entry: &Entry,
     target_hash: &[u8; 32],
 ) -> Result<Entry, Error> {
-    // revert mutations for current entry - create local context for rewind
-    let db = fabric.db();
-    if let Some(m_rev) = chain_muts_rev(fabric, &current_entry.hash) {
-        crate::consensus::kv::revert(db, &m_rev);
-    }
+    let mut current = current_entry.clone();
 
-    // remove current entry from indices using Fabric methods
-    fabric.delete_entry(&current_entry.hash)?;
-    fabric.delete_seen_time(&current_entry.hash)?;
+    loop {
+        // get previous entry BEFORE unapplying (since unapply deletes the entry from DB)
+        let prev_entry = fabric.get_entry_by_hash(&current.header.prev_hash);
 
-    // Match Elixir format: "#{height}:#{hash}" - no padding, raw hash bytes
-    let mut height_key = current_entry.header.height.to_string().into_bytes();
-    height_key.push(b':');
-    height_key.extend_from_slice(&current_entry.hash);
-    fabric.delete_entry_by_height(&height_key)?;
-
-    let mut slot_key = current_entry.header.slot.to_string().into_bytes();
-    slot_key.push(b':');
-    slot_key.extend_from_slice(&current_entry.hash);
-    fabric.delete_entry_by_slot(&slot_key)?;
-
-    fabric.delete_consensus(&current_entry.hash)?;
-    fabric.delete_attestation(&current_entry.hash)?;
-
-    // remove transaction indices
-    for tx_packed in &current_entry.txs {
-        if let Ok(txu) = TxU::from_vanilla(tx_packed) {
-            fabric.delete_tx_metadata(&txu.hash)?;
-            let nonce_padded = format!("{:020}", txu.tx.nonce);
-            let key = format!("{}:{}", bs58::encode(&txu.tx.signer).into_string(), nonce_padded);
-            fabric.delete_tx_account_nonce(key.as_bytes())?;
+        // revert mutations for current entry
+        let db = fabric.db();
+        if let Some(m_rev) = chain_muts_rev(fabric, &current.hash) {
+            crate::consensus::kv::revert(db, &m_rev);
         }
-    }
 
-    // if we reached the target, get previous entry and return it
-    if current_entry.hash == *target_hash {
-        let prev_entry =
-            fabric.get_entry_by_hash(&current_entry.header.prev_hash).ok_or(Error::Missing("prev_entry_in_rewind"))?;
-        return Ok(prev_entry);
-    }
+        // remove current entry from indices
+        fabric.delete_entry(&current.hash)?;
+        fabric.delete_seen_time(&current.hash)?;
 
-    // continue rewinding
-    let prev_entry =
-        fabric.get_entry_by_hash(&current_entry.header.prev_hash).ok_or(Error::Missing("prev_entry_in_rewind"))?;
-    chain_rewind_internal(fabric, &prev_entry, target_hash)
+        let mut height_key = current.header.height.to_string().into_bytes();
+        height_key.push(b':');
+        height_key.extend_from_slice(&current.hash);
+        fabric.delete_entry_by_height(&height_key)?;
+
+        let mut slot_key = current.header.slot.to_string().into_bytes();
+        slot_key.push(b':');
+        slot_key.extend_from_slice(&current.hash);
+        fabric.delete_entry_by_slot(&slot_key)?;
+
+        fabric.delete_consensus(&current.hash)?;
+        fabric.delete_attestation(&current.hash)?;
+
+        // remove transaction indices
+        for tx_packed in &current.txs {
+            if let Ok(txu) = TxU::from_vanilla(tx_packed) {
+                fabric.delete_tx_metadata(&txu.hash)?;
+                let nonce_padded = format!("{:020}", txu.tx.nonce);
+                let key = format!("{}:{}", bs58::encode(&txu.tx.signer).into_string(), nonce_padded);
+                fabric.delete_tx_account_nonce(key.as_bytes())?;
+            }
+        }
+
+        // if we just unapplied the target, return its parent
+        if current.hash == *target_hash {
+            return prev_entry.ok_or(Error::Missing("prev_entry_in_rewind"));
+        }
+
+        // continue rewinding
+        current = prev_entry.ok_or(Error::Missing("prev_entry_in_rewind"))?;
+    }
 }
 
 pub fn best_by_weight(

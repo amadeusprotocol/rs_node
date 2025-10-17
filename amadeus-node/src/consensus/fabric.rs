@@ -447,7 +447,7 @@ impl Fabric {
     }
 
     pub fn get_temporal_entry(&self) -> Result<Option<Entry>, Error> {
-        Ok(self.get_rooted_hash()?.and_then(|h| self.get_entry_by_hash(&h)))
+        Ok(self.get_temporal_hash()?.and_then(|h| self.get_entry_by_hash(&h)))
     }
 
     pub fn get_temporal_hash(&self) -> Result<Option<[u8; 32]>, Error> {
