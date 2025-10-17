@@ -129,25 +129,6 @@ impl Consensus {
     }
 }
 
-/// Falls back to genesis if no entries yet
-pub fn get_chain_tip_entry(fabric: &fabric::Fabric) -> Result<Entry, Error> {
-    match fabric.get_temporal_hash()?.and_then(|h| fabric.get_entry_by_hash(&h)) {
-        Some(entry) => Ok(entry),
-        None => Err(Error::Missing("temporal_tip")),
-    }
-}
-
-/// Falls back to genesis if no entries yet
-pub fn get_rooted_tip_entry(fabric: &fabric::Fabric) -> Result<Entry, Error> {
-    match get_rooted_tip_hash(fabric)?.and_then(|h| fabric.get_entry_by_hash(&h)) {
-        Some(entry) => Ok(entry),
-        None => Err(Error::Missing("rooted_tip")),
-    }
-}
-
-fn get_rooted_tip_hash(fabric: &fabric::Fabric) -> Result<Option<[u8; 32]>, Error> {
-    Ok(fabric.get_rooted_hash()?)
-}
 
 fn unmask_trainers(mask: &[bool], trainers: &[[u8; 48]]) -> Vec<[u8; 48]> {
     mask.iter().zip(trainers.iter()).filter_map(|(&bit, pk)| if bit { Some(*pk) } else { None }).collect()
@@ -654,7 +635,7 @@ pub fn apply_entry(
     fabric.put_seen_time(&next_entry.hash, &seen_time_bin)?;
 
     // update chain tip
-    fabric.set_temporal(next_entry)?;
+    fabric.set_temporal_hash_height(next_entry)?;
 
     // store mutations and reverse mutations for potential rewind
     let muts_bin = crate::consensus::kv::mutations_to_etf(&muts);
@@ -702,7 +683,7 @@ pub fn apply_entry(
 }
 
 pub fn produce_entry(fabric: &fabric::Fabric, config: &crate::config::Config, slot: u32) -> Result<Entry, Error> {
-    let cur_entry = get_chain_tip_entry(fabric)?;
+    let cur_entry = fabric.get_temporal_entry()?.ok_or(Error::Missing("temporal_tip"))?;
 
     // build next header
     let pk = config.get_pk();
@@ -747,7 +728,7 @@ pub fn chain_rewind(fabric: &fabric::Fabric, target_hash: &[u8; 32]) -> Result<b
         return Ok(false);
     }
 
-    let tip_entry = get_chain_tip_entry(fabric)?;
+    let tip_entry = fabric.get_temporal_entry()?.ok_or(Error::Missing("temporal_tip"))?;
     let entry = chain_rewind_internal(fabric, &tip_entry, target_hash)?;
 
     // update chain tips
@@ -759,7 +740,7 @@ pub fn chain_rewind(fabric: &fabric::Fabric, target_hash: &[u8; 32]) -> Result<b
     db.put("sysconf", b"temporal_height", &height_term)?;
 
     // update rooted tip if needed
-    if let Ok(Some(rooted_hash)) = get_rooted_tip_hash(fabric) {
+    if let Ok(Some(rooted_hash)) = fabric.get_rooted_hash() {
         if fabric.get_entry_raw(&rooted_hash)?.is_none() {
             db.put("sysconf", b"rooted_tip", &entry.hash)?;
         }
@@ -859,7 +840,7 @@ pub struct BestEntry {
 }
 
 pub fn best_entry_for_height(fabric: &fabric::Fabric, height: u32) -> Result<Vec<BestEntry>, Error> {
-    let rooted_tip = get_rooted_tip_hash(fabric)?.unwrap_or([0u8; 32]);
+    let rooted_tip = fabric.get_rooted_hash()?.unwrap_or([0u8; 32]);
 
     // get entries by height
     let entry_bins = fabric.entries_by_height(height as u64)?;
@@ -916,15 +897,15 @@ pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {
     let db = fabric.db();
 
     // Skip processing if no temporal_tip or if entry data not available yet
-    if get_chain_tip_entry(fabric).is_err() {
+    if fabric.get_temporal_entry()?.is_none() {
         return Ok(());
     }
 
-    let initial_rooted_hash = get_rooted_tip_hash(fabric)?.unwrap_or([0u8; 32]);
+    let initial_rooted_hash = fabric.get_rooted_hash()?.unwrap_or([0u8; 32]);
 
     loop {
-        let entry_root = get_rooted_tip_entry(fabric)?;
-        let entry_temp = get_chain_tip_entry(fabric)?;
+        let entry_root = fabric.get_rooted_entry()?.ok_or(Error::Missing("rooted_tip"))?;
+        let entry_temp = fabric.get_temporal_entry()?.ok_or(Error::Missing("temporal_tip"))?;
         let height_root = entry_root.header.height;
         let height_temp = entry_temp.header.height;
 
@@ -983,7 +964,7 @@ pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {
                     best_entry.header.height
                 );
                 // rewind to previous entry and try again
-                let prev_entry = get_rooted_tip_entry(fabric)?;
+                let prev_entry = fabric.get_rooted_entry()?.ok_or(Error::Missing("rooted_tip"))?;
                 chain_rewind(fabric, &prev_entry.hash)?;
                 break; // exit after rewind
             }
@@ -1014,7 +995,7 @@ pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {
     }
 
     // check if rooted tip changed
-    let final_rooted_hash = get_rooted_tip_hash(fabric)?.unwrap_or([0u8; 32]);
+    let final_rooted_hash = fabric.get_rooted_hash()?.unwrap_or([0u8; 32]);
     if final_rooted_hash != initial_rooted_hash {
         info!(
             "proc_consensus: rooted tip changed from {} to {}",
@@ -1099,7 +1080,7 @@ pub fn get_softfork_settings() -> SoftforkSettings {
 
 pub async fn proc_entries(fabric: &Fabric, config: &crate::config::Config, ctx: &crate::Context) -> Result<(), Error> {
     // Skip processing if no temporal_tip or if entry data not available yet
-    if get_chain_tip_entry(fabric).is_err() {
+    if fabric.get_temporal_entry()?.is_none() {
         return Ok(());
     }
 
@@ -1107,7 +1088,7 @@ pub async fn proc_entries(fabric: &Fabric, config: &crate::config::Config, ctx: 
 
     // use a loop instead of tail recursion (Rust doesn't optimize tail calls)
     loop {
-        let cur_entry = get_chain_tip_entry(fabric)?;
+        let cur_entry = fabric.get_temporal_entry()?.ok_or(Error::Missing("temporal_tip"))?;
         let cur_slot = cur_entry.header.slot;
         let next_height = cur_entry.header.height + 1;
 

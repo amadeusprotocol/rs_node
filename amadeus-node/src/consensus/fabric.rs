@@ -435,7 +435,7 @@ impl Fabric {
     }
 
     /// Sets temporal entry hash and height
-    pub fn set_temporal(&self, entry: &Entry) -> Result<(), Error> {
+    pub fn set_temporal_hash_height(&self, entry: &Entry) -> Result<(), Error> {
         let txn = self.db.begin_transaction()?;
         txn.put(CF_SYSCONF, b"temporal_tip", &entry.hash)?;
         // Store as ETF term to match Elixir's `term: true`
@@ -444,6 +444,10 @@ impl Fabric {
         txn.put(CF_SYSCONF, b"temporal_height", &height_term)?;
         txn.commit()?;
         Ok(())
+    }
+
+    pub fn get_temporal_entry(&self) -> Result<Option<Entry>, Error> {
+        Ok(self.get_rooted_hash()?.and_then(|h| self.get_entry_by_hash(&h)))
     }
 
     pub fn get_temporal_hash(&self) -> Result<Option<[u8; 32]>, Error> {
@@ -479,12 +483,16 @@ impl Fabric {
     }
 
     /// Sets rooted entry hash and height
-    pub fn set_rooted(&self, entry: &Entry) -> Result<(), Error> {
+    pub fn set_rooted_hash_height(&self, entry: &Entry) -> Result<(), Error> {
         let txn = self.db.begin_transaction()?;
         txn.put(CF_SYSCONF, b"rooted_tip", &entry.hash)?;
         txn.put(CF_SYSCONF, b"rooted_height", &(entry.header.height as u64).to_be_bytes())?;
         txn.commit()?;
         Ok(())
+    }
+
+    pub fn get_rooted_entry(&self) -> Result<Option<Entry>, Error> {
+        Ok(self.get_rooted_hash()?.and_then(|h| self.get_entry_by_hash(&h)))
     }
 
     pub fn get_rooted_hash(&self) -> Result<Option<[u8; 32]>, Error> {
