@@ -45,12 +45,11 @@ fn key_permission(symbol: &str) -> Vec<u8> {
     crate::utils::misc::bcat(&[b"bic:coin:permission:", symbol.as_bytes()])
 }
 
-pub fn balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, pubkey: &[u8; 48], symbol: &str) -> u128 {
-    let balance_i128 = ctx.get_to_i128(db, &key_balance(pubkey, symbol)).unwrap_or(0).max(0);
-    u128::try_from(balance_i128).unwrap_or(0)
+pub fn balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, pubkey: &[u8; 48], symbol: &str) -> i128 {
+    ctx.get_to_i128(db, &key_balance(pubkey, symbol)).unwrap_or(0)
 }
 
-pub fn burn_balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, symbol: &str) -> u128 {
+pub fn burn_balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, symbol: &str) -> i128 {
     balance(ctx, db, &BURN_ADDRESS, symbol)
 }
 
@@ -90,9 +89,9 @@ pub enum CoinError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoinCall {
-    Transfer { receiver: [u8; 48], amount: u128, symbol: String },
-    CreateAndMint { symbol: String, amount: u128, mintable: bool, pausable: bool },
-    Mint { symbol: String, amount: u128 },
+    Transfer { receiver: [u8; 48], amount: i128, symbol: String },
+    CreateAndMint { symbol: String, amount: i128, mintable: bool, pausable: bool },
+    Mint { symbol: String, amount: i128 },
     Pause { symbol: String, direction: bool },
 }
 
@@ -102,12 +101,12 @@ pub struct CallEnv {
     pub account_caller: [u8; 48],
 }
 
-fn parse_u128_ascii_decimal(bytes: &[u8]) -> Result<u128, CoinError> {
+fn parse_i128_ascii_decimal(bytes: &[u8]) -> Result<i128, CoinError> {
     if bytes.is_empty() {
         return Err(CoinError::InvalidAmount);
     }
     let s = std::str::from_utf8(bytes).map_err(|_| CoinError::InvalidAmount)?;
-    s.parse::<u128>().map_err(|_| CoinError::InvalidAmount)
+    s.parse::<i128>().map_err(|_| CoinError::InvalidAmount)
 }
 
 fn is_alphanumeric_ascii(s: &str) -> bool {
@@ -203,7 +202,7 @@ impl CoinCall {
                     // [receiver, amount]
                     [receiver, amount] => {
                         let receiver = validate_receiver_pk(receiver)?;
-                        let amount = parse_u128_ascii_decimal(amount)?;
+                        let amount = parse_i128_ascii_decimal(amount)?;
                         if amount == 0 {
                             return Err(CoinError::InvalidAmount);
                         }
@@ -212,7 +211,7 @@ impl CoinCall {
                     // ["AMA", receiver, amount]
                     [ama, receiver, amount] if std::str::from_utf8(ama).ok() == Some("AMA") => {
                         let receiver = validate_receiver_pk(receiver)?;
-                        let amount = parse_u128_ascii_decimal(amount)?;
+                        let amount = parse_i128_ascii_decimal(amount)?;
                         if amount == 0 {
                             return Err(CoinError::InvalidAmount);
                         }
@@ -221,7 +220,7 @@ impl CoinCall {
                     // [receiver, amount, symbol]
                     [receiver, amount, symbol] => {
                         let receiver = validate_receiver_pk(receiver)?;
-                        let amount = parse_u128_ascii_decimal(amount)?;
+                        let amount = parse_i128_ascii_decimal(amount)?;
                         if amount == 0 {
                             return Err(CoinError::InvalidAmount);
                         }
@@ -260,7 +259,7 @@ impl CoinCall {
                 if symbol.len() > 32 {
                     return Err(CoinError::SymbolTooLong);
                 }
-                let amount = parse_u128_ascii_decimal(amount_b)?;
+                let amount = parse_i128_ascii_decimal(amount_b)?;
                 if amount == 0 {
                     return Err(CoinError::InvalidAmount);
                 }
@@ -284,7 +283,7 @@ impl CoinCall {
                 if symbol.len() > 32 {
                     return Err(CoinError::SymbolTooLong);
                 }
-                let amount = parse_u128_ascii_decimal(&args[1])?;
+                let amount = parse_i128_ascii_decimal(&args[1])?;
                 if amount == 0 {
                     return Err(CoinError::InvalidAmount);
                 }
@@ -335,8 +334,8 @@ pub fn call(
                 return Err(CoinError::InsufficientFunds);
             }
             // apply
-            ctx.increment(db, &key_balance(&env.account_caller, &symbol), -(amount as i128));
-            ctx.increment(db, &key_balance(&receiver, &symbol), amount as i128);
+            ctx.increment(db, &key_balance(&env.account_caller, &symbol), -amount);
+            ctx.increment(db, &key_balance(&receiver, &symbol), amount);
             Ok(())
         }
         CoinCall::CreateAndMint { symbol, amount, mintable, pausable } => {
@@ -344,8 +343,8 @@ pub fn call(
             if ctx.exists(db, &key_total_supply(&symbol)) {
                 return Err(CoinError::SymbolExists);
             }
-            ctx.increment(db, &key_balance(&env.account_caller, &symbol), amount as i128);
-            ctx.increment(db, &key_total_supply(&symbol), amount as i128);
+            ctx.increment(db, &key_balance(&env.account_caller, &symbol), amount);
+            ctx.increment(db, &key_total_supply(&symbol), amount);
             // permissions: add caller to admin list
             add_admin(ctx, db, &symbol, &env.account_caller);
             if mintable {
@@ -372,8 +371,8 @@ pub fn call(
             {
                 return Err(CoinError::Paused);
             }
-            ctx.increment(db, &key_balance(&env.account_caller, &symbol), amount as i128);
-            ctx.increment(db, &key_total_supply(&symbol), amount as i128);
+            ctx.increment(db, &key_balance(&env.account_caller, &symbol), amount);
+            ctx.increment(db, &key_total_supply(&symbol), amount);
             Ok(())
         }
         CoinCall::Pause { symbol, direction } => {

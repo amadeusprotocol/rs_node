@@ -43,18 +43,18 @@ pub fn chain_nonce(db: &RocksDb, signer: &[u8]) -> Option<i128> {
 }
 
 /// Balance accessor (defaults to "AMA")
-pub fn chain_balance(db: &RocksDb, signer: &[u8]) -> u128 {
+pub fn chain_balance(db: &RocksDb, signer: &[u8]) -> i128 {
     chain_balance_symbol(db, signer, "AMA")
 }
 
 /// Balance accessor with specific symbol
-pub fn chain_balance_symbol(db: &RocksDb, signer: &[u8], symbol: &str) -> u128 {
+pub fn chain_balance_symbol(db: &RocksDb, signer: &[u8], symbol: &str) -> i128 {
     let key = crate::utils::misc::bcat(&[b"bic:coin:balance:", signer, b":", symbol.as_bytes()]);
     match db.get("contractstate", &key) {
         Ok(Some(bytes)) => {
             // Stored as ASCII string by kv.rs increment() / Elixir uses to_integer
             let s = std::str::from_utf8(&bytes).ok();
-            s.and_then(|s| s.parse::<i128>().ok()).map(|balance| balance.max(0) as u128).unwrap_or(0)
+            s.and_then(|s| s.parse::<i128>().ok()).unwrap_or(0)
         }
         _ => 0, // default to 0 if no balance found
     }

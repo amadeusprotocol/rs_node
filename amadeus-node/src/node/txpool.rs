@@ -17,7 +17,7 @@ pub struct ValidateTxArgs {
 #[derive(Debug, Clone, Default)]
 pub struct BatchState {
     chain_nonces: HashMap<Vec<u8>, i128>,
-    balances: HashMap<Vec<u8>, u128>,
+    balances: HashMap<Vec<u8>, i128>,
 }
 
 #[derive(Debug)]
@@ -96,11 +96,11 @@ impl TxPool {
             .cloned()
             .unwrap_or_else(|| bic::chain_balance(self.db.as_ref(), &txu.tx.signer));
 
-        let exec_cost = txu.exec_cost(args.epoch);
-        let fee = coin::to_cents(1);
+        let exec_cost = txu.exec_cost(args.epoch) as i128;
+        let fee = coin::to_cents(1) as i128;
 
         let new_balance = balance.saturating_sub(exec_cost).saturating_sub(fee);
-        if balance < exec_cost + fee {
+        if balance < exec_cost.saturating_add(fee) {
             return Err(TxPoolError::InsufficientBalance { nonce: txu.tx.nonce, hash: txu.hash });
         }
         args.batch_state.balances.insert(signer_vec, new_balance);

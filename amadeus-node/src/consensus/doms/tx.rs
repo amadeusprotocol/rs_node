@@ -451,7 +451,7 @@ pub fn chain_valid_txu(db: &crate::utils::rocksdb::RocksDb, txu: &TxU) -> bool {
 
     // hasBalance = BIC.Base.exec_cost(txu) <= Consensus.chain_balance(txu.tx.signer)
     let has_balance =
-        txu.exec_cost(crate::consensus::chain_epoch(db)) <= crate::consensus::chain_balance(db, &txu.tx.signer);
+        txu.exec_cost(crate::consensus::chain_epoch(db)) as i128 <= crate::consensus::chain_balance(db, &txu.tx.signer);
 
     // hasSol / epochSolValid
     let mut epoch_sol_valid = true;

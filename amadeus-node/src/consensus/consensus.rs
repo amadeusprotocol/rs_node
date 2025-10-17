@@ -8,7 +8,7 @@ use crate::node::protocol::Protocol;
 use crate::utils::bls12_381 as bls;
 use crate::utils::misc::{TermExt, bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
 use crate::utils::rocksdb::RocksDb;
-use crate::utils::safe_etf::{encode_safe_deterministic, u32_to_term, u64_to_term};
+use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
 use bitvec::prelude::*;
 use eetf::{Atom, Binary, Term};
 use std::collections::HashMap;
@@ -494,115 +494,6 @@ pub fn apply_entry(
     muts.extend(muts_exit);
     muts_rev.extend(muts_exit_rev);
 
-    // DEBUG: Print mutations for height 34076357 to compare with Elixir
-    if next_entry.header.height == 34076357 && false {
-        println!("\n=== DEBUG: Rust Mutations for Entry at Height {} ===", next_entry.header.height);
-        println!("Entry hash: {}", bs58::encode(&next_entry.hash).into_string());
-        println!("Total mutations: {}", muts.len());
-
-        for (idx, m) in muts.iter().enumerate() {
-            println!("\n=== Mutation {} ===", idx + 1);
-            match &m.op {
-                crate::consensus::kv::Op::Put => println!("Op: put"),
-                crate::consensus::kv::Op::Delete => println!("Op: delete"),
-                crate::consensus::kv::Op::SetBit { .. } => println!("Op: set_bit"),
-                crate::consensus::kv::Op::ClearBit { .. } => println!("Op: clear_bit"),
-            }
-            println!("Key (string): {:?}", String::from_utf8_lossy(&m.key));
-            println!("Key (bytes): {:?}", m.key);
-            if let Some(val) = &m.value {
-                println!("Value: {:?}", String::from_utf8_lossy(val));
-                println!("Value (bytes): {:?}", val);
-            } else {
-                match &m.op {
-                    crate::consensus::kv::Op::SetBit { bit_idx, bloom_size } => {
-                        println!("Value (bit_idx): {}", bit_idx);
-                        println!("Bloom size: {}", bloom_size);
-                    }
-                    crate::consensus::kv::Op::ClearBit { bit_idx } => {
-                        println!("Value (bit_idx): {}", bit_idx);
-                    }
-                    _ => {}
-                }
-            }
-
-            // Print ETF encoding of this mutation
-            use eetf::{Atom, Binary, Map, Term};
-            use std::collections::HashMap;
-            let mut map = HashMap::new();
-            let op_atom = match &m.op {
-                crate::consensus::kv::Op::Put => Atom::from("put"),
-                crate::consensus::kv::Op::Delete => Atom::from("delete"),
-                crate::consensus::kv::Op::SetBit { .. } => Atom::from("set_bit"),
-                crate::consensus::kv::Op::ClearBit { .. } => Atom::from("clear_bit"),
-            };
-            map.insert(Term::Atom(Atom::from("op")), Term::Atom(op_atom));
-            map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: m.key.clone() }));
-            match (&m.op, &m.value) {
-                (crate::consensus::kv::Op::Put, Some(v)) => {
-                    map.insert(Term::Atom(Atom::from("value")), Term::Binary(Binary { bytes: v.clone() }));
-                }
-                (crate::consensus::kv::Op::SetBit { bit_idx, bloom_size }, _) => {
-                    map.insert(Term::Atom(Atom::from("value")), u32_to_term(*bit_idx));
-                    map.insert(Term::Atom(Atom::from("bloomsize")), u32_to_term(*bloom_size));
-                }
-                (crate::consensus::kv::Op::ClearBit { bit_idx }, _) => {
-                    map.insert(Term::Atom(Atom::from("value")), u32_to_term(*bit_idx));
-                }
-                _ => {}
-            }
-            let term = Term::Map(Map { map });
-            let mut etf = Vec::new();
-            match term.encode(&mut etf) {
-                Ok(_) => {
-                    println!("ETF (hex): {}", hex::encode(&etf).to_uppercase());
-                }
-                Err(e) => println!("ETF encode error: {}", e),
-            }
-        }
-
-        // Print full mutations list ETF
-        println!("\n=== Full ETF of mutations list ===");
-        use eetf::{List, Term};
-        let mut etf_muts = Vec::new();
-        for m in &muts {
-            use eetf::{Atom, Binary, Map};
-            use std::collections::HashMap;
-            let mut map = HashMap::new();
-            let op_atom = match &m.op {
-                crate::consensus::kv::Op::Put => Atom::from("put"),
-                crate::consensus::kv::Op::Delete => Atom::from("delete"),
-                crate::consensus::kv::Op::SetBit { .. } => Atom::from("set_bit"),
-                crate::consensus::kv::Op::ClearBit { .. } => Atom::from("clear_bit"),
-            };
-            map.insert(Term::Atom(Atom::from("op")), Term::Atom(op_atom));
-            map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: m.key.clone() }));
-            match (&m.op, &m.value) {
-                (crate::consensus::kv::Op::Put, Some(v)) => {
-                    map.insert(Term::Atom(Atom::from("value")), Term::Binary(Binary { bytes: v.clone() }));
-                }
-                (crate::consensus::kv::Op::SetBit { bit_idx, bloom_size }, _) => {
-                    map.insert(Term::Atom(Atom::from("value")), u32_to_term(*bit_idx));
-                    map.insert(Term::Atom(Atom::from("bloomsize")), u32_to_term(*bloom_size));
-                }
-                (crate::consensus::kv::Op::ClearBit { bit_idx }, _) => {
-                    map.insert(Term::Atom(Atom::from("value")), u32_to_term(*bit_idx));
-                }
-                _ => {}
-            }
-            etf_muts.push(Term::Map(Map { map }));
-        }
-        let list_term = Term::List(List { elements: etf_muts });
-        let mut full_etf = Vec::new();
-        match list_term.encode(&mut full_etf) {
-            Ok(_) => {
-                println!("Length: {} bytes", full_etf.len());
-                println!("Hex: {}", hex::encode(&full_etf).to_uppercase());
-            }
-            Err(e) => println!("Full ETF encode error: {}", e),
-        }
-    }
-
     // Hash results + mutations (matching Elixir: ConsensusKV.hash_mutations(l ++ m))
     let mutations_hash = crate::consensus::kv::hash_mutations_with_results(&tx_results, &muts);
 
@@ -881,8 +772,6 @@ pub fn set_rooted_tip(db: &RocksDb, hash: &[u8; 32]) -> Result<(), Error> {
 }
 
 pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {
-    let db = fabric.db();
-
     // Skip processing if no temporal_tip or if entry data not available yet
     if fabric.get_temporal_entry()?.is_none() {
         return Ok(());
@@ -974,7 +863,7 @@ pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {
                         best_entry.header.height,
                         score
                     );
-                    set_rooted_tip(db, &best_entry.hash)?;
+                    fabric.set_rooted_hash_height(best_entry)?;
                     // continue loop to process next height
                 }
             }

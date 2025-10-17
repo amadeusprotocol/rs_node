@@ -106,11 +106,11 @@ pub fn circulating_without_burn(epoch: u64) -> u128 {
 
 /// Trait to inject a burn meter
 pub trait BurnMeter {
-    fn burn_balance(&self) -> u128;
+    fn burn_balance(&self) -> i128;
 }
 
 pub fn circulating_with_burn(epoch: u64, burn_meter: &impl BurnMeter) -> u128 {
-    circulating_without_burn(epoch).saturating_sub(burn_meter.burn_balance())
+    circulating_without_burn(epoch).saturating_sub(burn_meter.burn_balance().max(0) as u128)
 }
 
 /// Environment for calls
