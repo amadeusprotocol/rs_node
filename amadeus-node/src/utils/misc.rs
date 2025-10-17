@@ -28,27 +28,22 @@ pub fn get_unix_nanos_now() -> u128 {
 
 /// DEPRECATED: This function incorrectly uses base58 encoding
 /// Elixir uses raw binary pubkeys in keys, not base58
-/// Use build_key() or build_key_with_suffix() instead
-#[deprecated(note = "Use raw binary keys instead of base58")]
+/// Use bcat() instead for building binary keys
+#[deprecated(note = "Use bcat() for raw binary keys instead of base58")]
 pub fn pk_hex(pk: &[u8]) -> String {
     bs58::encode(pk).into_string()
 }
 
-/// Build a key with prefix and raw binary pubkey
-/// Example: build_key(b"bic:base:nonce:", &pubkey) -> b"bic:base:nonce:<48_raw_bytes>"
-pub fn build_key(prefix: &[u8], pk: &[u8]) -> Vec<u8> {
-    let mut key = prefix.to_vec();
-    key.extend_from_slice(pk);
-    key
-}
-
-/// Build a key with prefix, pubkey, and suffix
-/// Example: build_key_with_suffix(b"bic:coin:balance:", &pubkey, b":AMA")
-pub fn build_key_with_suffix(prefix: &[u8], pk: &[u8], suffix: &[u8]) -> Vec<u8> {
-    let mut key = prefix.to_vec();
-    key.extend_from_slice(pk);
-    key.extend_from_slice(suffix);
-    key
+/// Concatenate multiple byte slices into a single Vec<u8>
+/// Example: bcat(&[b"bic:coin:balance:", pk, b":AMA"])
+#[inline]
+pub fn bcat(parts: &[&[u8]]) -> Vec<u8> {
+    let total: usize = parts.iter().map(|p| p.len()).sum();
+    let mut v = Vec::with_capacity(total);
+    for p in parts {
+        v.extend_from_slice(p);
+    }
+    v
 }
 
 /// Produce a hex dump similar to `hexdump -C` for a binary slice.
@@ -380,5 +375,25 @@ mod tests {
         for b in &bools[mask.len()..8 * bytes.len()] {
             assert!(!*b);
         }
+    }
+
+    #[test]
+    fn bcat_concatenates_slices() {
+        let pk = [0x01, 0x02, 0x03];
+        let result = bcat(&[b"prefix:", &pk, b":suffix"]);
+        assert_eq!(result, b"prefix:\x01\x02\x03:suffix");
+    }
+
+    #[test]
+    fn bcat_empty() {
+        let result = bcat(&[]);
+        assert_eq!(result, b"");
+    }
+
+    #[test]
+    fn bcat_builds_keys() {
+        let pk = [0xAA, 0xBB, 0xCC];
+        let result = bcat(&[b"bic:coin:balance:", &pk, b":AMA"]);
+        assert_eq!(result, b"bic:coin:balance:\xAA\xBB\xCC:AMA");
     }
 }

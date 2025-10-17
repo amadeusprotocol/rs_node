@@ -327,7 +327,7 @@ impl Epoch {
         // So we trust that if we got here, the solution is valid
 
         // Check if POP already exists for this public key
-        let pop_key = crate::utils::misc::build_key(b"bic:epoch:pop:", &pk);
+        let pop_key = crate::utils::misc::bcat(&[b"bic:epoch:pop:", &pk]);
         let pop_exists = db.get("contractstate", &pop_key).ok().flatten().is_some();
 
         if !pop_exists {
@@ -340,7 +340,7 @@ impl Epoch {
         }
 
         // Increment solution count for this address (matching Elixir implementation)
-        let count_key = crate::utils::misc::build_key(b"bic:epoch:solutions_count:", &pk);
+        let count_key = crate::utils::misc::bcat(&[b"bic:epoch:solutions_count:", &pk]);
         ctx.increment(db, &count_key, 1);
 
         Ok(())
@@ -357,7 +357,7 @@ impl Epoch {
             return Err(EpochError::InvalidAddressPk);
         }
 
-        let key = crate::utils::misc::build_key(b"bic:epoch:emission_address:", &env.account_caller);
+        let key = crate::utils::misc::bcat(&[b"bic:epoch:emission_address:", &env.account_caller]);
         ctx.put(db, &key, address);
 
         Ok(())
@@ -485,8 +485,7 @@ impl Epoch {
                         }
                     })
                     .unwrap_or(*pk);
-                let balance_key =
-                    crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &emission_addr, b":AMA");
+                let balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &emission_addr, b":AMA"]);
                 ctx.increment(db, &balance_key, coins);
             }
 
@@ -514,8 +513,7 @@ impl Epoch {
                             }
                         })
                         .unwrap_or(*pk);
-                    let balance_key =
-                        crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &emission_addr, b":AMA");
+                    let balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &emission_addr, b":AMA"]);
                     ctx.increment(db, &balance_key, coins);
                 }
             }
@@ -543,8 +541,7 @@ impl Epoch {
                             }
                         })
                         .unwrap_or(*pk);
-                    let balance_key =
-                        crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &emission_addr, b":AMA");
+                    let balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &emission_addr, b":AMA"]);
                     ctx.increment(db, &balance_key, coins);
                 }
             }

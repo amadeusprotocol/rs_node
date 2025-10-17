@@ -391,14 +391,10 @@ fn execute_wasm_call(
         let amount_str = String::from_utf8_lossy(&env.attached_amount);
         let amount = amount_str.parse::<i128>().unwrap_or(0);
         if amount > 0 {
-            let symbol_suffix = format!(":{}", String::from_utf8_lossy(&env.attached_symbol));
-            let signer_key = crate::utils::misc::build_key_with_suffix(
-                b"bic:coin:balance:",
-                &env.tx_signer,
-                symbol_suffix.as_bytes(),
-            );
+            let signer_key =
+                crate::utils::misc::bcat(&[b"bic:coin:balance:", &env.tx_signer, b":", &env.attached_symbol]);
             let contract_key =
-                crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &contract_pk, symbol_suffix.as_bytes());
+                crate::utils::misc::bcat(&[b"bic:coin:balance:", &contract_pk, b":", &env.attached_symbol]);
             ctx.increment(db, &signer_key, -amount);
             ctx.increment(db, &contract_key, amount);
         }
@@ -416,23 +412,21 @@ fn execute_wasm_call(
 
                     // Charge gas (gas mutations)
                     let exec_used = (result.exec_used * 100) as i128;
-                    let signer_key =
-                        crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &env.tx_signer, b":AMA");
+                    let signer_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &env.tx_signer, b":AMA"]);
                     ctx.use_gas_context(true);
                     ctx.increment(db, &signer_key, -exec_used);
 
                     if env.entry_epoch >= 295 {
                         let half_exec_cost = exec_used / 2;
                         let entry_signer_key =
-                            crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &env.entry_signer, b":AMA");
+                            crate::utils::misc::bcat(&[b"bic:coin:balance:", &env.entry_signer, b":AMA"]);
                         let zero_pubkey = [0u8; 48];
-                        let burn_key =
-                            crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &zero_pubkey, b":AMA");
+                        let burn_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &zero_pubkey, b":AMA"]);
                         ctx.increment(db, &entry_signer_key, half_exec_cost);
                         ctx.increment(db, &burn_key, half_exec_cost);
                     } else {
                         let entry_signer_key =
-                            crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &env.entry_signer, b":AMA");
+                            crate::utils::misc::bcat(&[b"bic:coin:balance:", &env.entry_signer, b":AMA"]);
                         ctx.increment(db, &entry_signer_key, exec_used);
                     }
                     ctx.use_gas_context(false);
@@ -478,14 +472,13 @@ fn call_txs_pre(ctx: &mut crate::consensus::kv::ApplyCtx, db: &RocksDb, next_ent
     let epoch = next_entry.header.height / 100_000;
 
     // Build keys with raw binary pubkey bytes (NOT base58!)
-    let entry_signer_key =
-        crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &next_entry.header.signer, b":AMA");
+    let entry_signer_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &next_entry.header.signer, b":AMA"]);
     let zero_pubkey = [0u8; 48]; // Burn address: all zeros
-    let burn_key = crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &zero_pubkey, b":AMA");
+    let burn_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &zero_pubkey, b":AMA"]);
 
     for txu in txus {
         // Update nonce (using raw binary key with pubkey bytes)
-        let nonce_key = crate::utils::misc::build_key(b"bic:base:nonce:", &txu.tx.signer);
+        let nonce_key = crate::utils::misc::bcat(&[b"bic:base:nonce:", &txu.tx.signer]);
         // unavoidable: i128 nonce needs to fit in i64 for storage
         let nonce_i64 = i64::try_from(txu.tx.nonce).unwrap_or(i64::MAX);
         ctx.put(db, &nonce_key, &nonce_i64.to_string().into_bytes());
@@ -500,8 +493,7 @@ fn call_txs_pre(ctx: &mut crate::consensus::kv::ApplyCtx, db: &RocksDb, next_ent
             crate::bic::coin::to_cents(3 + bytes as u128 / 256 * 3) as i128
         };
 
-        let signer_balance_key =
-            crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &txu.tx.signer, b":AMA");
+        let signer_balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &txu.tx.signer, b":AMA"]);
         ctx.increment(db, &signer_balance_key, -exec_cost);
 
         // Credit entry signer and burn address
@@ -1207,9 +1199,8 @@ pub fn validate_next_entry(current_entry: &Entry, next_entry: &Entry) -> Result<
 /// TODO: implement proper sync checking via FabricSyncAttestGen.isQuorumSyncedOffByX
 fn is_quorum_synced_off_by_x(fabric: &fabric::Fabric, x: u32) -> bool {
     // stub implementation - check if rooted tip is close to temporal tip
-    let temporal_height = get_chain_height(fabric).unwrap_or(0);
-    let rooted_entry = get_rooted_tip_entry(fabric).ok();
-    let rooted_height = rooted_entry.map(|e| e.header.height).unwrap_or(0);
+    let temporal_height = fabric.get_temporal_height().ok().flatten().unwrap_or(0);
+    let rooted_height = fabric.get_rooted_height().ok().flatten().unwrap_or(0);
 
     // consider synced if within X entries of temporal tip
     temporal_height.saturating_sub(rooted_height) <= x

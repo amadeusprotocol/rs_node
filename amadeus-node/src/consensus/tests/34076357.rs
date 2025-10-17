@@ -497,8 +497,8 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
         105, 157, 188, 251, 89, 12, 23, 165, 163, 53, 14, 68, 199, 199, 31, 162, 150, 137, 160, 19, 9, 212, 227, 136,
         137,
     ];
-    let nonce_key = crate::utils::misc::build_key(b"bic:base:nonce:", &pubkey1);
-    let balance_key1 = crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &pubkey1, b":AMA");
+    let nonce_key = crate::utils::misc::bcat(&[b"bic:base:nonce:", &pubkey1]);
+    let balance_key1 = crate::utils::misc::bcat(&[b"bic:coin:balance:", &pubkey1, b":AMA"]);
 
     // === FIRST APPLICATION ===
     println!("\n=== STEP 1: First Application ===");

@@ -31,7 +31,7 @@ pub fn get_deterministic_f64(vr: &[u8], txhash: &[u8], action_index: &[u8], call
 /// Latest observed nonce for a signer
 /// Returns the highest nonce used by this signer
 pub fn chain_nonce(db: &RocksDb, signer: &[u8]) -> Option<i128> {
-    let key = crate::utils::misc::build_key(b"bic:base:nonce:", signer);
+    let key = crate::utils::misc::bcat(&[b"bic:base:nonce:", signer]);
     match db.get("contractstate", &key) {
         Ok(Some(bytes)) => {
             // Stored as ASCII string by kv.rs put() / Elixir stores with to_integer
@@ -49,8 +49,7 @@ pub fn chain_balance(db: &RocksDb, signer: &[u8]) -> u128 {
 
 /// Balance accessor with specific symbol
 pub fn chain_balance_symbol(db: &RocksDb, signer: &[u8], symbol: &str) -> u128 {
-    let key =
-        crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", signer, format!(":{}", symbol).as_bytes());
+    let key = crate::utils::misc::bcat(&[b"bic:coin:balance:", signer, b":", symbol.as_bytes()]);
     match db.get("contractstate", &key) {
         Ok(Some(bytes)) => {
             // Stored as ASCII string by kv.rs increment() / Elixir uses to_integer
@@ -94,6 +93,6 @@ pub fn chain_total_sols(db: &RocksDb) -> u64 {
 
 /// Get proof-of-possession for a public key
 pub fn chain_pop(db: &RocksDb, pk: &[u8; 48]) -> Option<Vec<u8>> {
-    let key = crate::utils::misc::build_key(b"bic:epoch:pop:", pk);
+    let key = crate::utils::misc::bcat(&[b"bic:epoch:pop:", pk]);
     db.get("contractstate", &key).ok().flatten()
 }

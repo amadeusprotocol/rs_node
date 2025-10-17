@@ -371,16 +371,14 @@ mod host_functions {
                 if amount > 0 && contract.len() == 48 {
                     let mut contract_pk = [0u8; 48];
                     contract_pk.copy_from_slice(&contract);
-                    let caller_key = crate::utils::misc::build_key_with_suffix(
+                    let caller_key = crate::utils::misc::bcat(&[
                         b"bic:coin:balance:",
                         &context.env.account_caller,
-                        format!(":{}", symbol).as_bytes(),
-                    );
-                    let contract_key = crate::utils::misc::build_key_with_suffix(
-                        b"bic:coin:balance:",
-                        &contract_pk,
-                        format!(":{}", symbol).as_bytes(),
-                    );
+                        b":",
+                        symbol.as_bytes(),
+                    ]);
+                    let contract_key =
+                        crate::utils::misc::bcat(&[b"bic:coin:balance:", &contract_pk, b":", symbol.as_bytes()]);
                     let mut kv_ctx = context.kv_ctx.lock().unwrap();
                     kv_ctx.increment(&context.db, &caller_key, -amount);
                     kv_ctx.increment(&context.db, &contract_key, amount);

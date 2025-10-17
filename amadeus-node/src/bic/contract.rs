@@ -26,7 +26,7 @@ pub fn validate(wasm: &[u8]) -> Result<(), ContractError> {
 }
 
 fn key_bytecode(account: &[u8; 48]) -> Vec<u8> {
-    crate::utils::misc::build_key_with_suffix(b"bic:contract:account:", account, b":bytecode")
+    crate::utils::misc::bcat(&[b"bic:contract:account:", account, b":bytecode"])
 }
 
 /// Read stored bytecode for a given account public key

@@ -24,25 +24,22 @@ pub fn burn_address() -> [u8; 48] {
 }
 
 fn key_balance(pk: &[u8; 48], symbol: &str) -> Vec<u8> {
-    crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", pk, format!(":{}", symbol).as_bytes())
+    crate::utils::misc::bcat(&[b"bic:coin:balance:", pk, b":", symbol.as_bytes()])
 }
 fn key_total_supply(symbol: &str) -> Vec<u8> {
-    format!("bic:coin:totalSupply:{}", symbol).into_bytes()
+    crate::utils::misc::bcat(&[b"bic:coin:totalSupply:", symbol.as_bytes()])
 }
 fn key_pausable(symbol: &str) -> Vec<u8> {
-    format!("bic:coin:pausable:{}", symbol).into_bytes()
+    crate::utils::misc::bcat(&[b"bic:coin:pausable:", symbol.as_bytes()])
 }
 fn key_paused(symbol: &str) -> Vec<u8> {
-    format!("bic:coin:paused:{}", symbol).into_bytes()
+    crate::utils::misc::bcat(&[b"bic:coin:paused:", symbol.as_bytes()])
 }
 fn key_mintable(symbol: &str) -> Vec<u8> {
-    format!("bic:coin:mintable:{}", symbol).into_bytes()
+    crate::utils::misc::bcat(&[b"bic:coin:mintable:", symbol.as_bytes()])
 }
 fn key_permission_admin(symbol: &str, pk: &[u8; 48]) -> Vec<u8> {
-    let prefix = format!("bic:coin:permission:{}:admin:", symbol);
-    let mut key = prefix.into_bytes();
-    key.extend_from_slice(pk);
-    key
+    crate::utils::misc::bcat(&[b"bic:coin:permission:", symbol.as_bytes(), b":admin:", pk])
 }
 
 pub fn balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, pubkey: &[u8; 48], symbol: &str) -> u128 {
