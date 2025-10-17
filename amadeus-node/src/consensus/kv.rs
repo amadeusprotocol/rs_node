@@ -447,9 +447,15 @@ pub fn mutations_from_etf(bin: &[u8]) -> Result<Vec<Mutation>, std::io::Error> {
     let mut cursor = 0;
 
     while cursor < bin.len() {
+        if cursor + 1 > bin.len() {
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "incomplete op_code"));
+        }
         let op_code = bin[cursor];
         cursor += 1;
 
+        if cursor + 4 > bin.len() {
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "incomplete key_len"));
+        }
         let key_len = u32::from_le_bytes([bin[cursor], bin[cursor + 1], bin[cursor + 2], bin[cursor + 3]]) as usize;
         cursor += 4;
 

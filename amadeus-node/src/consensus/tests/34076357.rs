@@ -414,7 +414,6 @@ fn create_test_config() -> Config {
 /// The current test database at assets/rocksdb/34076356 may be missing some column families
 /// needed for the rewind operation.
 #[tokio::test]
-#[ignore]
 async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Testing Entry 34076357 Apply -> Rewind -> Re-apply ===\n");
 
@@ -640,9 +639,23 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
 
 /// Test to check bloom page 0 state in the local test database
 #[tokio::test]
-#[ignore]
 async fn check_local_bloom_page_0() -> Result<(), Box<dyn std::error::Error>> {
-    let db = RocksDb::open("../assets/rocksdb/34076356".to_string()).await?;
+    // Check if source database exists
+    if !Path::new(DB_PATH).exists() {
+        println!("⚠ Database not found at: {}", DB_PATH);
+        println!("  Skipping test...");
+        return Ok(());
+    }
+
+    // Create temporary database copy to avoid modifying source
+    let temp_db_path = format!("/tmp/check_bloom_{}", std::process::id());
+    if Path::new(&temp_db_path).exists() {
+        std::fs::remove_dir_all(&temp_db_path)?;
+    }
+    let db_target_path = format!("{}/db", temp_db_path);
+    copy_dir_all(DB_PATH, &db_target_path)?;
+
+    let db = RocksDb::open(temp_db_path.clone()).await?;
     let fabric = Fabric::with_db(db);
 
     let page0 = fabric.db().get("contractstate", b"bic:epoch:solbloom:0")?;
@@ -663,6 +676,9 @@ async fn check_local_bloom_page_0() -> Result<(), Box<dyn std::error::Error>> {
             println!("Bloom page 0 does NOT exist");
         }
     }
+
+    // Cleanup temporary database
+    std::fs::remove_dir_all(&temp_db_path).ok();
 
     Ok(())
 }
