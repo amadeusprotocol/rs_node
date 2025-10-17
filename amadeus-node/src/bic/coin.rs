@@ -252,7 +252,13 @@ impl CoinCall {
     }
 }
 
-pub fn call(ctx: &mut kv::ApplyCtx, db: &RocksDb, function: &str, env: &CallEnv, args: &[Vec<u8>]) -> Result<(), CoinError> {
+pub fn call(
+    ctx: &mut kv::ApplyCtx,
+    db: &RocksDb,
+    function: &str,
+    env: &CallEnv,
+    args: &[Vec<u8>],
+) -> Result<(), CoinError> {
     let parsed = CoinCall::parse(function, args)?;
     match parsed {
         CoinCall::Transfer { receiver, amount, symbol } => {

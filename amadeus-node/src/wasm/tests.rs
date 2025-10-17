@@ -341,7 +341,8 @@ mod contract_tests {
         let transfer_amount = 100u64;
         let amount_bytes = transfer_amount.to_le_bytes().to_vec();
         let kv_ctx = kv::ApplyCtx::new();
-        let result = runtime::execute(&env, &db, kv_ctx, &wasm_bytecode, "transfer", &[to_account.to_vec(), amount_bytes]);
+        let result =
+            runtime::execute(&env, &db, kv_ctx, &wasm_bytecode, "transfer", &[to_account.to_vec(), amount_bytes]);
         match result {
             Ok(execution_result) => {
                 println!("token transfer ok: {:?}", execution_result.return_value);

@@ -230,7 +230,13 @@ pub struct Epoch;
 
 impl Epoch {
     /// Dispatch a call with db access
-    pub fn call(&self, ctx: &mut crate::consensus::kv::ApplyCtx, op: EpochCall, env: &CallEnv, db: &crate::utils::rocksdb::RocksDb) -> Result<(), EpochError> {
+    pub fn call(
+        &self,
+        ctx: &mut crate::consensus::kv::ApplyCtx,
+        op: EpochCall,
+        env: &CallEnv,
+        db: &crate::utils::rocksdb::RocksDb,
+    ) -> Result<(), EpochError> {
         match op {
             EpochCall::SubmitSol { sol } => self.submit_sol(ctx, env, db, &sol),
             EpochCall::SetEmissionAddress { address } => self.set_emission_address(ctx, env, db, &address),
@@ -358,7 +364,12 @@ impl Epoch {
     }
 
     /// Epoch transition: distribute emissions, select validators, clear bloom filters
-    pub fn next(&self, ctx: &mut crate::consensus::kv::ApplyCtx, db: &crate::utils::rocksdb::RocksDb, env: &CallEnv) -> Result<(), EpochError> {
+    pub fn next(
+        &self,
+        ctx: &mut crate::consensus::kv::ApplyCtx,
+        db: &crate::utils::rocksdb::RocksDb,
+        env: &CallEnv,
+    ) -> Result<(), EpochError> {
         use crate::consensus::kv;
 
         let epoch_cur = env.entry_epoch;

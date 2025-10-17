@@ -246,7 +246,12 @@ fn execute_action_safe(_db: &RocksDb, _env: &crate::bic::epoch::CallEnv, _txu: &
 }
 
 #[allow(dead_code)]
-fn execute_wasm_contract(_db: &RocksDb, _env: &crate::bic::epoch::CallEnv, _txu: &TxU, _action: &TxAction) -> ActionResult {
+fn execute_wasm_contract(
+    _db: &RocksDb,
+    _env: &crate::bic::epoch::CallEnv,
+    _txu: &TxU,
+    _action: &TxAction,
+) -> ActionResult {
     panic!("execute_wasm_contract is deprecated - use consensus module implementation");
     /*
     // Check if contract has bytecode

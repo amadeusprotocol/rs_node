@@ -110,11 +110,7 @@ mod host_functions {
         match context.read_bytes_with_store(&store, key_ptr as u32, key_len as u32) {
             Ok(key) => {
                 let mut kv_ctx = context.kv_ctx.lock().unwrap();
-                if kv::kv_exists(&mut *kv_ctx, &context.db, &key) {
-                    1
-                } else {
-                    0
-                }
+                if kv::kv_exists(&mut *kv_ctx, &context.db, &key) { 1 } else { 0 }
             }
             Err(_) => 0,
         }
