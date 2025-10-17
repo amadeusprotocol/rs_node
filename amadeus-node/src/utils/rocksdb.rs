@@ -112,8 +112,7 @@ pub struct RocksDbTxn<'a> {
 }
 
 impl RocksDb {
-    pub async fn open(base: String) -> Result<Self, Error> {
-        let path = format!("{}/db", base);
+    pub async fn open(path: String) -> Result<Self, Error> {
         create_dir_all(&path).await?;
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);

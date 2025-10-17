@@ -195,11 +195,11 @@ impl Protocol for EventTip {
         // TODO: validate temporal and rooted entry signatures like in Elixir
 
         let signer = self.temporal.header.signer.to_vec();
-        let db = ctx.fabric.db();
-        let is_trainer = match crate::consensus::trainers_for_height(db, crate::consensus::chain_height(db)) {
-            Some(trainers) => trainers.iter().any(|pk| pk.as_slice() == signer),
-            None => false,
-        };
+        let is_trainer =
+            match ctx.fabric.trainers_for_height(ctx.fabric.get_temporal_height().ok().flatten().unwrap_or_default()) {
+                Some(trainers) => trainers.iter().any(|pk| pk.as_slice() == signer),
+                None => false,
+            };
 
         if is_trainer || ctx.is_peer_handshaked(src).await {
             ctx.node_peers.update_peer_from_tip(ctx, src, self).await;

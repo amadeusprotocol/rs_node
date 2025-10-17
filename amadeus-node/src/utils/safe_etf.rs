@@ -1297,4 +1297,112 @@ mod tests {
         ];
         assert_eq!(encode_safe_deterministic(&term34), expected34, "Test 34 failed");
     }
+
+    #[test]
+    fn test_large_integers_elixir_compatibility() {
+        use eetf::BigInteger;
+
+        let very_small = Term::BigInteger(BigInteger::from(214u64));
+        let encoded_very_small = encode_safe(&very_small);
+        println!("{:?}", encoded_very_small);
+
+        // Test 1: 2147483648 (1 << 31, just over i32::MAX)
+        // Expected from Elixir: <<131, 110, 4, 0, 0, 0, 0, 128>>
+        let small = Term::BigInteger(BigInteger::from(2147483648u64));
+        let encoded_small = encode_safe(&small);
+        let expected_small = vec![131, 110, 4, 0, 0, 0, 0, 128];
+        assert_eq!(
+            encoded_small, expected_small,
+            "Encoding mismatch for 2147483648\nOur:      {:?}\nExpected: {:?}",
+            encoded_small, expected_small
+        );
+
+        // Test 2: 4294967296 (1 << 32, just over u32::MAX)
+        // Expected from Elixir: <<131, 110, 5, 0, 0, 0, 0, 0, 1>>
+        let edge = Term::BigInteger(BigInteger::from(4294967296u64));
+        let encoded_edge = encode_safe(&edge);
+        let expected_edge = vec![131, 110, 5, 0, 0, 0, 0, 0, 1];
+        assert_eq!(
+            encoded_edge, expected_edge,
+            "Encoding mismatch for 4294967296\nOur:      {:?}\nExpected: {:?}",
+            encoded_edge, expected_edge
+        );
+
+        // Test 3: 8589934592 (1 << 33)
+        // Expected from Elixir: <<131, 110, 5, 0, 0, 0, 0, 0, 2>>
+        let over = Term::BigInteger(BigInteger::from(8589934592u64));
+        let encoded_over = encode_safe(&over);
+        let expected_over = vec![131, 110, 5, 0, 0, 0, 0, 0, 2];
+        assert_eq!(
+            encoded_over, expected_over,
+            "Encoding mismatch for 8589934592\nOur:      {:?}\nExpected: {:?}",
+            encoded_over, expected_over
+        );
+
+        // Verify all can be decoded back to the correct values
+        let decoded_small = Term::decode(&encoded_small[..]).unwrap();
+        if let Term::BigInteger(val) = decoded_small {
+            assert_eq!(val.value, BigInteger::from(2147483648u64).value);
+        } else {
+            panic!("Failed to decode 2147483648 as BigInteger");
+        }
+
+        let decoded_edge = Term::decode(&encoded_edge[..]).unwrap();
+        if let Term::BigInteger(val) = decoded_edge {
+            assert_eq!(val.value, BigInteger::from(4294967296u64).value);
+        } else {
+            panic!("Failed to decode 4294967296 as BigInteger");
+        }
+
+        let decoded_over = Term::decode(&encoded_over[..]).unwrap();
+        if let Term::BigInteger(val) = decoded_over {
+            assert_eq!(val.value, BigInteger::from(8589934592u64).value);
+        } else {
+            panic!("Failed to decode 8589934592 as BigInteger");
+        }
+
+        // Test 4: Map with large integer and binary containing ETF-encoded large integer
+        // Elixir: m = %{b: <<131, 110, 5, 0, 0, 0, 0, 0, 2>>, a: 8589934592}
+        // Expected: <<131, 116, 0, 0, 0, 2, 119, 1, 97, 110, 5, 0, 0, 0, 0, 0, 2, 119, 1, 98, 109, 0, 0, 0, 9, 131, 110, 5, 0, 0, 0, 0, 0, 2>>
+        let mut map = HashMap::new();
+        map.insert(Term::Atom(Atom::from("a")), Term::BigInteger(BigInteger::from(8589934592u64)));
+        map.insert(
+            Term::Atom(Atom::from("b")),
+            Term::Binary(eetf::Binary { bytes: vec![131, 110, 5, 0, 0, 0, 0, 0, 2] }),
+        );
+        let map_term = Term::Map(Map { map });
+        let encoded_map = encode_safe_deterministic(&map_term);
+        let expected_map = vec![
+            131, 116, 0, 0, 0, 2, // ETF version + map tag + size=2
+            119, 1, 97, 110, 5, 0, 0, 0, 0, 0, 2, // atom "a" -> big int 8589934592
+            119, 1, 98, 109, 0, 0, 0, 9, 131, 110, 5, 0, 0, 0, 0, 0, 2, // atom "b" -> binary containing ETF bytes
+        ];
+        assert_eq!(
+            encoded_map, expected_map,
+            "Encoding mismatch for map with large integer and binary\nOur:      {:?}\nExpected: {:?}",
+            encoded_map, expected_map
+        );
+
+        // Verify the map can be decoded back correctly
+        let decoded_map = Term::decode(&encoded_map[..]).unwrap();
+        if let Term::Map(decoded) = decoded_map {
+            assert_eq!(decoded.map.len(), 2);
+
+            // Check the large integer value
+            if let Some(Term::BigInteger(val)) = decoded.map.get(&Term::Atom(Atom::from("a"))) {
+                assert_eq!(val.value, BigInteger::from(8589934592u64).value);
+            } else {
+                panic!("Failed to find or decode key 'a' as BigInteger");
+            }
+
+            // Check the binary value
+            if let Some(Term::Binary(bin)) = decoded.map.get(&Term::Atom(Atom::from("b"))) {
+                assert_eq!(bin.bytes, vec![131, 110, 5, 0, 0, 0, 0, 0, 2]);
+            } else {
+                panic!("Failed to find or decode key 'b' as Binary");
+            }
+        } else {
+            panic!("Failed to decode map");
+        }
+    }
 }

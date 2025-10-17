@@ -129,7 +129,6 @@ impl Consensus {
     }
 }
 
-
 fn unmask_trainers(mask: &[bool], trainers: &[[u8; 48]]) -> Vec<[u8; 48]> {
     mask.iter().zip(trainers.iter()).filter_map(|(&bit, pk)| if bit { Some(*pk) } else { None }).collect()
 }
@@ -1130,7 +1129,7 @@ pub async fn proc_entries(fabric: &Fabric, config: &crate::config::Config, ctx: 
         let attestation_packed = apply_entry(fabric, config, entry)?;
 
         // TODO: FabricEventGen.event_applied(entry, mutations_hash, muts, logs)
-        tracing::info!("Applied entry {} at height {}", bs58::encode(&entry.hash).into_string(), entry.header.height);
+        info!("Applied entry {} at height {}", bs58::encode(&entry.hash).into_string(), entry.header.height);
 
         // broadcast attestation if synced and we're a trainer
         if let Some(attestation_packed) = attestation_packed {

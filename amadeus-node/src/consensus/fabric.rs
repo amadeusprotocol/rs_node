@@ -52,7 +52,7 @@ async fn init_kvdb(base: &str) -> Result<RocksDb, Error> {
     );
 
     // Open instance RocksDB for fabric namespace
-    let path = format!("{}/fabric", base);
+    let path = format!("{}/db/fabric", base);
     // Open and return the instance-oriented DB handle
     let db = RocksDb::open(path).await?;
     long_init_hint.abort();
