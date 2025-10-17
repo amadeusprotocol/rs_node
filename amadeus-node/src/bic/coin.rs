@@ -5,18 +5,18 @@ use crate::utils::rocksdb::RocksDb;
 pub const DECIMALS: u32 = 9;
 pub const BURN_ADDRESS: [u8; 48] = [0u8; 48];
 
-pub fn to_flat(coins: u64) -> u64 {
+pub fn to_flat(coins: u128) -> u128 {
     coins.saturating_mul(1_000_000_000)
 }
-pub fn to_cents(coins: u64) -> u64 {
+pub fn to_cents(coins: u128) -> u128 {
     coins.saturating_mul(10_000_000)
 }
-pub fn to_tenthousandth(coins: u64) -> u64 {
+pub fn to_tenthousandth(coins: u128) -> u128 {
     coins.saturating_mul(100_000)
 }
 
-pub fn from_flat(coins: u64) -> f64 {
-    (coins as f64) / 1_000_000_000.0
+pub fn from_flat(coins: u128) -> u128 {
+    coins / 1_000_000_000
 }
 
 pub fn burn_address() -> [u8; 48] {
@@ -45,11 +45,13 @@ fn key_permission_admin(symbol: &str, pk: &[u8; 48]) -> Vec<u8> {
     key
 }
 
-pub fn balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, pubkey: &[u8; 48], symbol: &str) -> u64 {
-    ctx.get_to_i64(db, &key_balance(pubkey, symbol)).unwrap_or(0).max(0) as u64
+pub fn balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, pubkey: &[u8; 48], symbol: &str) -> u128 {
+    let balance_i64 = ctx.get_to_i64(db, &key_balance(pubkey, symbol)).unwrap_or(0).max(0);
+    // unavoidable: storage uses i64, we need u128
+    u128::try_from(balance_i64).unwrap_or(0)
 }
 
-pub fn burn_balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, symbol: &str) -> u64 {
+pub fn burn_balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, symbol: &str) -> u128 {
     balance(ctx, db, &BURN_ADDRESS, symbol)
 }
 
@@ -89,9 +91,9 @@ pub enum CoinError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoinCall {
-    Transfer { receiver: [u8; 48], amount: u64, symbol: String },
-    CreateAndMint { symbol: String, amount: u64, mintable: bool, pausable: bool },
-    Mint { symbol: String, amount: u64 },
+    Transfer { receiver: [u8; 48], amount: u128, symbol: String },
+    CreateAndMint { symbol: String, amount: u128, mintable: bool, pausable: bool },
+    Mint { symbol: String, amount: u128 },
     Pause { symbol: String, direction: bool },
 }
 
@@ -101,12 +103,12 @@ pub struct CallEnv {
     pub account_caller: [u8; 48],
 }
 
-fn parse_u64_ascii_decimal(bytes: &[u8]) -> Result<u64, CoinError> {
+fn parse_u128_ascii_decimal(bytes: &[u8]) -> Result<u128, CoinError> {
     if bytes.is_empty() {
         return Err(CoinError::InvalidAmount);
     }
     let s = std::str::from_utf8(bytes).map_err(|_| CoinError::InvalidAmount)?;
-    s.parse::<u64>().map_err(|_| CoinError::InvalidAmount)
+    s.parse::<u128>().map_err(|_| CoinError::InvalidAmount)
 }
 
 fn is_alphanumeric_ascii(s: &str) -> bool {
@@ -151,19 +153,19 @@ impl CoinCall {
                     // [receiver, amount]
                     [receiver, amount] => {
                         let receiver = validate_receiver_pk(receiver)?;
-                        let amount = parse_u64_ascii_decimal(amount)?;
+                        let amount = parse_u128_ascii_decimal(amount)?;
                         Ok(CoinCall::Transfer { receiver, amount, symbol: "AMA".to_string() })
                     }
                     // ["AMA", receiver, amount]
                     [ama, receiver, amount] if std::str::from_utf8(ama).ok() == Some("AMA") => {
                         let receiver = validate_receiver_pk(receiver)?;
-                        let amount = parse_u64_ascii_decimal(amount)?;
+                        let amount = parse_u128_ascii_decimal(amount)?;
                         Ok(CoinCall::Transfer { receiver, amount, symbol: "AMA".to_string() })
                     }
                     // [receiver, amount, symbol]
                     [receiver, amount, symbol] => {
                         let receiver = validate_receiver_pk(receiver)?;
-                        let amount = parse_u64_ascii_decimal(amount)?;
+                        let amount = parse_u128_ascii_decimal(amount)?;
                         let symbol_str = std::str::from_utf8(symbol).map_err(|_| CoinError::InvalidSymbol)?;
                         if !is_alphanumeric_ascii(symbol_str) {
                             return Err(CoinError::InvalidSymbol);
@@ -199,7 +201,7 @@ impl CoinCall {
                 if symbol.len() > 32 {
                     return Err(CoinError::SymbolTooLong);
                 }
-                let amount = parse_u64_ascii_decimal(amount_b)?;
+                let amount = parse_u128_ascii_decimal(amount_b)?;
                 if amount == 0 {
                     return Err(CoinError::InvalidAmount);
                 }
@@ -223,7 +225,7 @@ impl CoinCall {
                 if symbol.len() > 32 {
                     return Err(CoinError::SymbolTooLong);
                 }
-                let amount = parse_u64_ascii_decimal(&args[1])?;
+                let amount = parse_u128_ascii_decimal(&args[1])?;
                 if amount == 0 {
                     return Err(CoinError::InvalidAmount);
                 }
@@ -269,15 +271,16 @@ pub fn call(
             }
             // balance check
             let bal = balance(ctx, db, &env.account_caller, &symbol);
-            if amount as i128 <= 0 || (amount as u128) == 0 {
+            if amount == 0 {
                 return Err(CoinError::InvalidAmount);
             }
             if bal < amount {
                 return Err(CoinError::InsufficientFunds);
             }
             // apply
-            let amt_i64 = amount as i64; // NOTE: may overflow if > i64::MAX; assumed safe in current use
-            ctx.increment(db, &key_balance(&env.account_caller, &symbol), -(amt_i64));
+            // unavoidable: ctx.increment requires i64, amount is u128
+            let amt_i64 = i64::try_from(amount).unwrap_or(i64::MAX);
+            ctx.increment(db, &key_balance(&env.account_caller, &symbol), -amt_i64);
             ctx.increment(db, &key_balance(&receiver, &symbol), amt_i64);
             Ok(())
         }
@@ -289,7 +292,8 @@ pub fn call(
             if amount == 0 {
                 return Err(CoinError::InvalidAmount);
             }
-            let amt_i64 = amount as i64;
+            // unavoidable: ctx.increment requires i64, amount is u128
+            let amt_i64 = i64::try_from(amount).unwrap_or(i64::MAX);
             ctx.increment(db, &key_balance(&env.account_caller, &symbol), amt_i64);
             ctx.increment(db, &key_total_supply(&symbol), amt_i64);
             // permissions: mark caller as admin
@@ -321,7 +325,8 @@ pub fn call(
             if amount == 0 {
                 return Err(CoinError::InvalidAmount);
             }
-            let amt_i64 = amount as i64;
+            // unavoidable: ctx.increment requires i64, amount is u128
+            let amt_i64 = i64::try_from(amount).unwrap_or(i64::MAX);
             ctx.increment(db, &key_balance(&env.account_caller, &symbol), amt_i64);
             ctx.increment(db, &key_total_supply(&symbol), amt_i64);
             Ok(())

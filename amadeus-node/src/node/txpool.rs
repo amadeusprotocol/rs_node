@@ -18,7 +18,7 @@ pub struct ValidateTxArgs {
 #[derive(Debug, Clone, Default)]
 pub struct BatchState {
     chain_nonces: HashMap<Vec<u8>, i128>,
-    balances: HashMap<Vec<u8>, u64>,
+    balances: HashMap<Vec<u8>, u128>,
 }
 
 #[derive(Debug)]

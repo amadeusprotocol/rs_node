@@ -24,9 +24,8 @@ use crate::utils::misc::TermExt;
 use crate::utils::rocksdb::RocksDb;
 use eetf::Term;
 
-/// Return trainers for the given height, reading from contractstate CF.
-/// Keys: "bic:epoch:trainers:height:{:012}" (ASCII), values: ETF list of 48-byte PKs.
-/// Special case: heights in 3195570..=3195575 map to fixed key "000000319557".
+/// Return trainers for the given height, reading from contractstate CF
+/// Special case: heights in 3195570..=3195575 map to fixed key "000000319557"
 pub fn trainers_for_height(db: &RocksDb, height: u32) -> Option<Vec<[u8; 48]>> {
     let cf = "contractstate";
     let value: Option<Vec<u8>> = if (3_195_570..=3_195_575).contains(&height) {
@@ -97,19 +96,23 @@ pub fn chain_nonce(db: &RocksDb, signer: &[u8]) -> Option<i128> {
 
 /// Balance accessor (Elixir: Consensus.chain_balance/1)
 /// Returns the balance for a given signer and symbol (defaults to "AMA")
-pub fn chain_balance(db: &RocksDb, signer: &[u8]) -> u64 {
+pub fn chain_balance(db: &RocksDb, signer: &[u8]) -> u128 {
     chain_balance_symbol(db, signer, "AMA")
 }
 
 /// Balance accessor with specific symbol
-pub fn chain_balance_symbol(db: &RocksDb, signer: &[u8], symbol: &str) -> u64 {
+pub fn chain_balance_symbol(db: &RocksDb, signer: &[u8], symbol: &str) -> u128 {
     let key =
         crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", signer, format!(":{}", symbol).as_bytes());
     match db.get("contractstate", &key) {
         Ok(Some(bytes)) => {
-            // Try to deserialize as u64 (balance value)
-            match bincode::decode_from_slice::<u64, _>(&bytes, bincode::config::standard()) {
-                Ok((balance, _)) => balance,
+            // Try to deserialize as i64 then convert to u128 (balance value stored as i64)
+            match bincode::decode_from_slice::<i64, _>(&bytes, bincode::config::standard()) {
+                Ok((balance, _)) => {
+                    let balance_positive = balance.max(0);
+                    // unavoidable: storage uses i64, we need u128
+                    u128::try_from(balance_positive).unwrap_or(0)
+                }
                 Err(_) => 0,
             }
         }

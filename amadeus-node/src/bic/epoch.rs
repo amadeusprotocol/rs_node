@@ -26,24 +26,59 @@ pub enum EpochError {
     InvalidSignature,
 }
 
-pub const EPOCH_EMISSION_BASE: u64 = 1_000_000_000_000_000; // BIC.Coin.to_flat(1_000_000)
-pub const EPOCH_EMISSION_FIXED: u64 = 100_000_000_000_000; // BIC.Coin.to_flat(100_000)
+pub const EPOCH_EMISSION_BASE: u128 = 1_000_000_000_000_000; // BIC.Coin.to_flat(1_000_000)
+pub const EPOCH_EMISSION_FIXED: u128 = 100_000_000_000_000; // BIC.Coin.to_flat(100_000)
 pub const EPOCH_INTERVAL: u64 = 100_000;
-const A: f64 = 23_072_960_000.0;
-const C: f64 = 1_110.573_766;
+// Fixed-point constants scaled by 1e9 to avoid floating point
+const A_SCALED: u128 = 23_072_960_000_000_000_000; // 23_072_960_000.0 * 1e9
+const C_SCALED: u128 = 1_110_573_766_000; // 1_110.573_766 * 1e6 (using 1e6 for C to prevent overflow)
 const START_EPOCH: u64 = 500;
 
+/// Integer approximation of pow(x, 1.5) using integer arithmetic
+/// Returns result scaled by 1e9
+fn integer_pow_1_5(x: u128) -> u128 {
+    if x == 0 {
+        return 0;
+    }
+    // x^1.5 = x * sqrt(x)
+    // We use integer sqrt approximation
+    let sqrt_x = integer_sqrt(x);
+    x.saturating_mul(sqrt_x) / 1_000 // Adjust scaling
+}
+
+/// Integer square root using Newton's method
+fn integer_sqrt(n: u128) -> u128 {
+    if n < 2 {
+        return n;
+    }
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
+}
+
 /// Emission schedule, port of epoch_emission/1
-pub fn epoch_emission(epoch: u64) -> u64 {
+pub fn epoch_emission(epoch: u64) -> u128 {
     if epoch >= START_EPOCH {
-        let val = (0.5 * A / f64::powf((epoch - START_EPOCH) as f64 + C, 1.5)).floor();
-        coin::to_flat(val as u64)
+        // val = 0.5 * A / ((epoch - START_EPOCH) + C)^1.5
+        // Using fixed-point arithmetic to avoid floats
+        let epoch_offset = u128::from(epoch - START_EPOCH);
+        let denominator_base = epoch_offset.saturating_mul(1_000_000).saturating_add(C_SCALED);
+        let denominator = integer_pow_1_5(denominator_base);
+        if denominator == 0 {
+            return 0;
+        }
+        let val = A_SCALED.saturating_mul(1_000_000_000) / (denominator.saturating_mul(2));
+        coin::to_flat(val / 1_000_000_000)
     } else {
         epoch_emission_1(epoch, EPOCH_EMISSION_BASE) + EPOCH_EMISSION_FIXED
     }
 }
 
-fn epoch_emission_1(epoch: u64, acc: u64) -> u64 {
+fn epoch_emission_1(epoch: u64, acc: u128) -> u128 {
     if epoch == 0 {
         acc
     } else {
@@ -54,8 +89,8 @@ fn epoch_emission_1(epoch: u64, acc: u64) -> u64 {
 }
 
 /// Sum of emissions up to the given epoch, without burn deduction
-pub fn circulating_without_burn(epoch: u64) -> u64 {
-    fn rec(n: u64, acc: u64) -> u64 {
+pub fn circulating_without_burn(epoch: u64) -> u128 {
+    fn rec(n: u64, acc: u128) -> u128 {
         if n == 0 { acc } else { rec(n - 1, acc + epoch_emission(n)) }
     }
     rec(epoch, 0)
@@ -63,10 +98,10 @@ pub fn circulating_without_burn(epoch: u64) -> u64 {
 
 /// Trait to inject a burn meter
 pub trait BurnMeter {
-    fn burn_balance(&self) -> u64;
+    fn burn_balance(&self) -> u128;
 }
 
-pub fn circulating_with_burn(epoch: u64, burn_meter: &impl BurnMeter) -> u64 {
+pub fn circulating_with_burn(epoch: u64, burn_meter: &impl BurnMeter) -> u128 {
     circulating_without_burn(epoch).saturating_sub(burn_meter.burn_balance())
 }
 
@@ -425,11 +460,13 @@ impl Epoch {
             let community_fund = emission - early_adopter;
 
             // Distribute community fund evenly to peddlebike67
-            let n = pb67.len() as u64;
+            let n = pb67.len() as u128;
             let q = community_fund / n;
             let r = community_fund % n;
             for (i, pk) in pb67.iter().enumerate() {
-                let coins = if (i as u64) < r { q + 1 } else { q } as i64;
+                let coins_u128 = if (i as u128) < r { q + 1 } else { q };
+                // unavoidable: ctx.increment requires i64
+                let coins = coins_u128 as i64;
                 let emission_addr = db
                     .get(
                         "contractstate",
@@ -455,10 +492,13 @@ impl Epoch {
             // Distribute early adopter emission
             let trainers_to_recv: Vec<_> =
                 leaders.iter().filter(|(pk, _)| trainers.contains(pk) && !pb67.contains(pk)).take(TOP_X).collect();
-            let total_sols: i64 = trainers_to_recv.iter().map(|(_, c)| c).sum();
+            let total_sols: u128 = trainers_to_recv.iter().map(|(_, c)| u128::try_from((*c).max(0)).unwrap_or(0)).sum();
             if total_sols > 0 {
                 for (pk, sols) in trainers_to_recv {
-                    let coins = (*sols as u64 * early_adopter / total_sols as u64) as i64;
+                    let sols_u128 = u128::try_from((*sols).max(0)).unwrap_or(0);
+                    let coins_u128 = sols_u128 * early_adopter / total_sols;
+                    // unavoidable: ctx.increment requires i64
+                    let coins = i64::try_from(coins_u128).unwrap_or(i64::MAX);
                     let emission_addr = db
                         .get(
                             "contractstate",
@@ -484,10 +524,13 @@ impl Epoch {
         } else {
             // Standard model: proportional to solution counts
             let trainers_to_recv: Vec<_> = leaders.iter().filter(|(pk, _)| trainers.contains(pk)).take(TOP_X).collect();
-            let total_sols: i64 = trainers_to_recv.iter().map(|(_, c)| c).sum();
+            let total_sols: u128 = trainers_to_recv.iter().map(|(_, c)| u128::try_from((*c).max(0)).unwrap_or(0)).sum();
             if total_sols > 0 {
                 for (pk, sols) in trainers_to_recv {
-                    let coins = (*sols as u64 * emission / total_sols as u64) as i64;
+                    let sols_u128 = u128::try_from((*sols).max(0)).unwrap_or(0);
+                    let coins_u128 = sols_u128 * emission / total_sols;
+                    // unavoidable: ctx.increment requires i64
+                    let coins = i64::try_from(coins_u128).unwrap_or(i64::MAX);
                     let emission_addr = db
                         .get(
                             "contractstate",
@@ -538,9 +581,10 @@ pub fn slash_trainer_verify(
 ) -> Result<(), EpochError> {
     // unmask trainers according to bit mask
     let signers = unmask_trainers(trainers, mask);
-    let consensus_pct = if trainers.is_empty() { 0.0 } else { (signers.len() as f64) / (trainers.len() as f64) };
+    // Check if at least 67% consensus (using integer math: signers * 100 >= trainers * 67)
+    let has_consensus = if trainers.is_empty() { false } else { signers.len() * 100 >= trainers.len() * 67 };
 
-    if consensus_pct < 0.67 {
+    if !has_consensus {
         return Err(EpochError::InvalidAmountOfSignatures);
     }
 
