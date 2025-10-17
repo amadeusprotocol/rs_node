@@ -224,13 +224,13 @@ async fn test_applying_entry_34076357() -> Result<(), Box<dyn std::error::Error>
 
     // Set up trainers for height 34076357
     let trainers_key = format!("bic:epoch:trainers:height:{:012}", 34076357).into_bytes();
-    if fabric.get_contractstate(&trainers_key)?.is_none() {
+    if fabric.db().get("contractstate", &trainers_key)?.is_none() {
         let trainers_term = eetf::Term::from(eetf::List {
             elements: vec![eetf::Term::from(eetf::Binary { bytes: config.trainer_pk.to_vec() })],
         });
         let mut trainers_encoded = Vec::new();
         trainers_term.encode(&mut trainers_encoded)?;
-        fabric.put_contractstate(&trainers_key, &trainers_encoded)?;
+        fabric.db().put("contractstate", &trainers_key, &trainers_encoded)?;
     }
 
     // NOTE: The test database at assets/rocksdb/34076356 should already contain the correct
@@ -478,13 +478,13 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
 
     // Set up trainers
     let trainers_key = format!("bic:epoch:trainers:height:{:012}", 34076357).into_bytes();
-    if fabric.get_contractstate(&trainers_key)?.is_none() {
+    if fabric.db().get("contractstate", &trainers_key)?.is_none() {
         let trainers_term = eetf::Term::from(eetf::List {
             elements: vec![eetf::Term::from(eetf::Binary { bytes: config.trainer_pk.to_vec() })],
         });
         let mut trainers_encoded = Vec::new();
         trainers_term.encode(&mut trainers_encoded)?;
-        fabric.put_contractstate(&trainers_key, &trainers_encoded)?;
+        fabric.db().put("contractstate", &trainers_key, &trainers_encoded)?;
     }
 
     // NOTE: The test database at assets/rocksdb/34076356 should already contain the correct
@@ -519,7 +519,7 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
 
     // Verify state after first application
     let balance_after_first =
-        fabric.get_contractstate(&balance_key1)?.ok_or("Balance not found after first application")?;
+        fabric.db().get("contractstate", &balance_key1)?.ok_or("Balance not found after first application")?;
     let balance_after_first_str = String::from_utf8_lossy(&balance_after_first);
     println!("  Balance after: {}", balance_after_first_str);
     assert_eq!(balance_after_first_str, "87359172968597", "Balance mismatch after first application");
@@ -531,12 +531,12 @@ async fn test_entry_34076357_rewind_and_reapply() -> Result<(), Box<dyn std::err
     println!("✓ Rewind successful");
 
     // Verify state restored after rewind
-    let balance_after_rewind = fabric.get_contractstate(&balance_key1)?.ok_or("Balance not found after rewind")?;
+    let balance_after_rewind = fabric.db().get("contractstate", &balance_key1)?.ok_or("Balance not found after rewind")?;
     let balance_after_rewind_str = String::from_utf8_lossy(&balance_after_rewind);
     println!("  Balance after rewind: {}", balance_after_rewind_str);
     assert_eq!(balance_after_rewind_str, "87359192968597", "Balance not restored after rewind");
 
-    let nonce_after_rewind = fabric.get_contractstate(&nonce_key)?.ok_or("Nonce not found after rewind")?;
+    let nonce_after_rewind = fabric.db().get("contractstate", &nonce_key)?.ok_or("Nonce not found after rewind")?;
     let nonce_after_rewind_str = String::from_utf8_lossy(&nonce_after_rewind);
     println!("  Nonce after rewind: {}", nonce_after_rewind_str);
     assert_eq!(nonce_after_rewind_str, "1760291514077609349", "Nonce not restored after rewind");
@@ -645,7 +645,7 @@ async fn check_local_bloom_page_0() -> Result<(), Box<dyn std::error::Error>> {
     let db = RocksDb::open("../assets/rocksdb/34076356".to_string()).await?;
     let fabric = Fabric::with_db(db);
 
-    let page0 = fabric.get_contractstate(b"bic:epoch:solbloom:0")?;
+    let page0 = fabric.db().get("contractstate", b"bic:epoch:solbloom:0")?;
 
     match page0 {
         Some(data) => {

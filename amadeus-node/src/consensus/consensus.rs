@@ -168,7 +168,7 @@ pub fn are_we_trainer_for_next_slot(config: &crate::config::Config, db: &RocksDb
 
 /// Falls back to genesis if no entries yet
 pub fn get_chain_tip_entry(fabric: &fabric::Fabric) -> Result<Entry, Error> {
-    match get_temporal_tip_hash(fabric)?.and_then(|h| get_entry_by_hash_local(fabric, &h)) {
+    match fabric.get_temporal_hash()?.and_then(|h| get_entry_by_hash_local(fabric, &h)) {
         Some(entry) => Ok(entry),
         None => Err(Error::Missing("temporal_tip")),
     }
@@ -190,10 +190,6 @@ fn get_entry_by_hash_local(fabric: &fabric::Fabric, hash: &[u8; 32]) -> Option<E
     fabric.get_entry_by_hash(hash)
 }
 
-fn get_temporal_tip_hash(fabric: &fabric::Fabric) -> Result<Option<[u8; 32]>, Error> {
-    Ok(fabric.get_temporal_hash()?)
-}
-
 fn get_rooted_tip_hash(fabric: &fabric::Fabric) -> Result<Option<[u8; 32]>, Error> {
     Ok(fabric.get_rooted_hash()?)
 }
@@ -211,63 +207,6 @@ fn score_mask_unit(mask: &[bool], total_trainers: usize) -> f64 {
 
 pub fn chain_epoch(fabric: &fabric::Fabric) -> u32 {
     get_chain_height(fabric).ok().map(|h| h / 100_000).unwrap_or(0)
-}
-
-pub fn chain_segment_vr_hash(fabric: &fabric::Fabric) -> Option<Vec<u8>> {
-    fabric.get_contractstate(b"bic:epoch:segment_vr_hash").ok()?
-}
-
-pub fn chain_diff_bits(fabric: &fabric::Fabric) -> u32 {
-    fabric
-        .get_contractstate(b"bic:epoch:diff_bits")
-        .ok()
-        .flatten()
-        .and_then(|b| if b.len() == 8 { Some(u64::from_be_bytes(b.try_into().ok()?) as u32) } else { None })
-        .unwrap_or(24)
-}
-
-pub fn chain_total_sols(fabric: &fabric::Fabric) -> u64 {
-    fabric
-        .get_contractstate(b"bic:epoch:total_sols")
-        .ok()
-        .flatten()
-        .and_then(|b| if b.len() == 8 { Some(u64::from_be_bytes(b.try_into().ok()?)) } else { None })
-        .unwrap_or(0)
-}
-
-pub fn chain_pop(fabric: &fabric::Fabric, pk: &[u8; 48]) -> Option<Vec<u8>> {
-    let key = crate::utils::misc::build_key(b"bic:epoch:pop:", pk);
-    fabric.get_contractstate(&key).ok()?
-}
-
-pub fn chain_nonce(fabric: &fabric::Fabric, pk: &[u8; 48]) -> Option<i64> {
-    let key = crate::utils::misc::build_key(b"bic:base:nonce:", pk);
-    fabric
-        .get_contractstate(&key)
-        .ok()
-        .flatten()
-        .and_then(|b| if b.len() == 8 { Some(i64::from_be_bytes(b.try_into().ok()?)) } else { None })
-}
-
-pub fn chain_balance(fabric: &fabric::Fabric, pk: &[u8; 48], symbol: &str) -> u128 {
-    let key = crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", pk, format!(":{}", symbol).as_bytes());
-    fabric
-        .get_contractstate(&key)
-        .ok()
-        .flatten()
-        .and_then(|b| {
-            if b.len() == 8 {
-                let balance_i64 = i64::from_be_bytes(b.try_into().ok()?);
-                Some(balance_i64.max(0) as u128)
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0)
-}
-
-pub fn chain_tip(fabric: &fabric::Fabric) -> Result<Option<[u8; 32]>, Error> {
-    get_temporal_tip_hash(fabric)
 }
 
 pub fn chain_muts_rev(fabric: &fabric::Fabric, hash: &[u8; 32]) -> Option<Vec<crate::consensus::kv::Mutation>> {
@@ -951,8 +890,10 @@ pub fn chain_rewind(db: &RocksDb, target_hash: &[u8; 32]) -> Result<bool, Error>
 
     // update chain tips
     db.put("sysconf", b"temporal_tip", &entry.hash)?;
-    // store temporal_height as u64 big-endian bytes
-    db.put("sysconf", b"temporal_height", &(entry.header.height as u64).to_be_bytes())?;
+    // store temporal_height as ETF term (matches Elixir term: true)
+    use crate::utils::safe_etf::encode_safe_deterministic;
+    let height_term = encode_safe_deterministic(&Term::from(eetf::FixInteger { value: entry.header.height as i32 }));
+    db.put("sysconf", b"temporal_height", &height_term)?;
 
     // update rooted tip if needed
     if let Ok(Some(rooted_hash)) = get_rooted_tip_hash(&fabric) {

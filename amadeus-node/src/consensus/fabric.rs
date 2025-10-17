@@ -438,7 +438,10 @@ impl Fabric {
     pub fn set_temporal(&self, entry: &Entry) -> Result<(), Error> {
         let txn = self.db.begin_transaction()?;
         txn.put(CF_SYSCONF, b"temporal_tip", &entry.hash)?;
-        txn.put(CF_SYSCONF, b"temporal_height", &(entry.header.height as u64).to_be_bytes())?;
+        // Store as ETF term to match Elixir's `term: true`
+        let height_term =
+            encode_safe_deterministic(&Term::from(eetf::FixInteger { value: entry.header.height as i32 }));
+        txn.put(CF_SYSCONF, b"temporal_height", &height_term)?;
         txn.commit()?;
         Ok(())
     }
@@ -522,23 +525,8 @@ impl Fabric {
     }
 
     pub fn trainers_for_height(&self, height: u32) -> Option<Vec<[u8; 48]>> {
-        // Delegate to existing consensus helper using Fabric's RocksDb handle
-        crate::consensus::trainers_for_height(self.db(), height)
-    }
-
-    // === Contractstate CF proxy methods ===
-    pub fn get_contractstate(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-        Ok(self.db.get("contractstate", key)?)
-    }
-
-    pub fn put_contractstate(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        self.db.put("contractstate", key, value)?;
-        Ok(())
-    }
-
-    pub fn delete_contractstate(&self, key: &[u8]) -> Result<(), Error> {
-        self.db.delete("contractstate", key)?;
-        Ok(())
+        // Delegate to bic::epoch module
+        crate::bic::epoch::trainers_for_height(self.db(), height)
     }
 
     // === Muts/Muts_rev CF proxy methods ===

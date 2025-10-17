@@ -1,6 +1,9 @@
 use crate::consensus::{DST_MOTION, DST_POP};
 use crate::utils::blake3;
 use crate::utils::bls12_381;
+use crate::utils::misc::TermExt;
+use crate::utils::rocksdb::RocksDb;
+use eetf::Term;
 
 use crate::bic::coin;
 use crate::bic::sol;
@@ -601,4 +604,38 @@ pub fn unmask_trainers(trainers: &[[u8; 48]], mask: &Vec<bool>) -> Vec<[u8; 48]>
         }
     }
     res
+}
+
+/// Return trainers for the given height, reading from contractstate CF
+/// Special case: heights in 3195570..=3195575 map to fixed key "000000319557"
+pub fn trainers_for_height(db: &RocksDb, height: u32) -> Option<Vec<[u8; 48]>> {
+    let cf = "contractstate";
+    let value: Option<Vec<u8>> = if (3_195_570..=3_195_575).contains(&height) {
+        match db.get(cf, b"bic:epoch:trainers:height:000000319557") {
+            Ok(v) => v,
+            Err(_) => return None,
+        }
+    } else {
+        let key_suffix = format!("{:012}", height);
+        match db.get_prev_or_first(cf, "bic:epoch:trainers:height:", &key_suffix) {
+            Ok(Some((_k, v))) => Some(v),
+            Ok(None) => None,
+            Err(_) => return None,
+        }
+    };
+
+    let bytes = value?;
+    let term = Term::decode(&bytes[..]).ok()?;
+    let list = term.get_list()?;
+    let mut out = Vec::with_capacity(list.len());
+    for t in list {
+        let pk = t.get_binary()?;
+        if pk.len() != 48 {
+            return None;
+        }
+        let mut arr = [0u8; 48];
+        arr.copy_from_slice(pk);
+        out.push(arr);
+    }
+    Some(out)
 }
