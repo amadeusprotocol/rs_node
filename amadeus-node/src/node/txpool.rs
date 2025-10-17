@@ -1,4 +1,3 @@
-use crate::bic::base;
 use crate::bic::coin;
 use crate::bic::sol;
 use crate::consensus::doms::tx::{TxU, pack, validate};
@@ -98,7 +97,7 @@ impl TxPool {
             .cloned()
             .unwrap_or_else(|| chain_balance(self.db.as_ref(), &txu.tx.signer));
 
-        let exec_cost = base::exec_cost(args.epoch, txu);
+        let exec_cost = txu.exec_cost(args.epoch);
         let fee = coin::to_cents(1);
 
         let new_balance = balance.saturating_sub(exec_cost).saturating_sub(fee);

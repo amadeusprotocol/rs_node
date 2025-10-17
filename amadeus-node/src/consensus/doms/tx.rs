@@ -92,6 +92,17 @@ impl TxU {
         self
     }
 
+    /// Compute execution cost from tx_encoded length in cents
+    pub fn exec_cost_from_len(&self) -> u64 {
+        let bytes = self.tx_encoded.len() + 32 + 96;
+        crate::bic::coin::to_cents((1 + bytes / 1024) as u64)
+    }
+
+    /// Compute execution cost in cents (epoch parameter is unused but kept for compatibility)
+    pub fn exec_cost(&self, _epoch: u32) -> u64 {
+        self.exec_cost_from_len()
+    }
+
     pub fn from_vanilla(tx_packed: &[u8]) -> Result<TxU, Error> {
         // decode outer map via VanillaSer
         let outer_val = vanilla_ser::decode_all(tx_packed)?;
@@ -439,8 +450,8 @@ pub fn chain_valid_txu(db: &crate::utils::rocksdb::RocksDb, txu: &TxU) -> bool {
     };
 
     // hasBalance = BIC.Base.exec_cost(txu) <= Consensus.chain_balance(txu.tx.signer)
-    let has_balance = crate::bic::base::exec_cost(crate::consensus::chain_epoch(db), txu)
-        <= crate::consensus::chain_balance(db, &txu.tx.signer);
+    let has_balance =
+        txu.exec_cost(crate::consensus::chain_epoch(db)) <= crate::consensus::chain_balance(db, &txu.tx.signer);
 
     // hasSol / epochSolValid
     let mut epoch_sol_valid = true;

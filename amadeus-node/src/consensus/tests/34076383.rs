@@ -129,8 +129,8 @@ async fn test_applying_entry_34076383() -> Result<(), Box<dyn std::error::Error>
     println!("✓ Entry applied successfully");
 
     // Retrieve mutations from fabric storage for analysis
-    let result_muts = crate::consensus::consensus::chain_muts(&fabric, &entry.hash)
-        .ok_or("No mutations found in database")?;
+    let result_muts =
+        crate::consensus::consensus::chain_muts(&fabric, &entry.hash).ok_or("No mutations found in database")?;
 
     println!("\n=== Mutations Analysis ===");
     println!("Rust generated {} mutations", result_muts.len());
@@ -225,12 +225,14 @@ async fn test_applying_entry_34076383() -> Result<(), Box<dyn std::error::Error>
     println!("\n=== Mutations Hash Verification ===");
 
     // Get mutations hash from stored attestation
-    let my_att = crate::consensus::consensus::my_attestation_by_entryhash(&db, &entry.hash)
-        .ok_or("No attestation found")?;
+    let my_att =
+        crate::consensus::consensus::my_attestation_by_entryhash(&db, &entry.hash).ok_or("No attestation found")?;
     let mutations_hash_b58 = bs58::encode(my_att.mutations_hash).into_string();
 
     println!("Expected hash: {}", EXPECTED_MUTATIONS_HASH);
     println!("Actual hash:   {}", mutations_hash_b58);
+
+    assert_eq!(mutations_hash_b58, EXPECTED_MUTATIONS_HASH, "Mutations hash mismatch");
 
     if mutations_hash_b58 == EXPECTED_MUTATIONS_HASH {
         println!("✓ Mutations hash matches expected value!");
