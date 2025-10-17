@@ -46,9 +46,8 @@ fn key_permission_admin(symbol: &str, pk: &[u8; 48]) -> Vec<u8> {
 }
 
 pub fn balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, pubkey: &[u8; 48], symbol: &str) -> u128 {
-    let balance_i64 = ctx.get_to_i64(db, &key_balance(pubkey, symbol)).unwrap_or(0).max(0);
-    // unavoidable: storage uses i64, we need u128
-    u128::try_from(balance_i64).unwrap_or(0)
+    let balance_i128 = ctx.get_to_i128(db, &key_balance(pubkey, symbol)).unwrap_or(0).max(0);
+    u128::try_from(balance_i128).unwrap_or(0)
 }
 
 pub fn burn_balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, symbol: &str) -> u128 {
@@ -57,35 +56,35 @@ pub fn burn_balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, symbol: &str) -> u128 
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum CoinError {
-    #[error("invalid receiver pk")]
+    #[error("invalid_receiver_pk")]
     InvalidReceiverPk,
-    #[error("invalid amount")]
+    #[error("invalid_amount")]
     InvalidAmount,
-    #[error("insufficient funds")]
+    #[error("insufficient_funds")]
     InsufficientFunds,
     #[error("paused")]
     Paused,
-    #[error("invalid symbol")]
+    #[error("invalid_symbol")]
     InvalidSymbol,
-    #[error("symbol too short")]
+    #[error("symbol_too_short")]
     SymbolTooShort,
-    #[error("symbol too long")]
+    #[error("symbol_too_long")]
     SymbolTooLong,
-    #[error("symbol reserved")]
+    #[error("symbol_reserved")]
     SymbolReserved,
-    #[error("symbol exists")]
+    #[error("symbol_exists")]
     SymbolExists,
-    #[error("symbol doesn't exist")]
+    #[error("symbol_doesnt_exist")]
     SymbolDoesntExist,
-    #[error("no permissions")]
+    #[error("no_permissions")]
     NoPermissions,
-    #[error("not mintable")]
+    #[error("not_mintable")]
     NotMintable,
-    #[error("invalid direction")]
+    #[error("invalid_direction")]
     InvalidDirection,
-    #[error("not pausable")]
+    #[error("not_pausable")]
     NotPausable,
-    #[error("unimplemented (requires KV/state)")]
+    #[error("unimplemented")]
     Unimplemented,
 }
 
@@ -278,10 +277,8 @@ pub fn call(
                 return Err(CoinError::InsufficientFunds);
             }
             // apply
-            // unavoidable: ctx.increment requires i64, amount is u128
-            let amt_i64 = i64::try_from(amount).unwrap_or(i64::MAX);
-            ctx.increment(db, &key_balance(&env.account_caller, &symbol), -amt_i64);
-            ctx.increment(db, &key_balance(&receiver, &symbol), amt_i64);
+            ctx.increment(db, &key_balance(&env.account_caller, &symbol), -(amount as i128));
+            ctx.increment(db, &key_balance(&receiver, &symbol), amount as i128);
             Ok(())
         }
         CoinCall::CreateAndMint { symbol, amount, mintable, pausable } => {
@@ -292,10 +289,8 @@ pub fn call(
             if amount == 0 {
                 return Err(CoinError::InvalidAmount);
             }
-            // unavoidable: ctx.increment requires i64, amount is u128
-            let amt_i64 = i64::try_from(amount).unwrap_or(i64::MAX);
-            ctx.increment(db, &key_balance(&env.account_caller, &symbol), amt_i64);
-            ctx.increment(db, &key_total_supply(&symbol), amt_i64);
+            ctx.increment(db, &key_balance(&env.account_caller, &symbol), amount as i128);
+            ctx.increment(db, &key_total_supply(&symbol), amount as i128);
             // permissions: mark caller as admin
             ctx.put(db, &key_permission_admin(&symbol, &env.account_caller), b"1");
             if mintable {
@@ -325,10 +320,8 @@ pub fn call(
             if amount == 0 {
                 return Err(CoinError::InvalidAmount);
             }
-            // unavoidable: ctx.increment requires i64, amount is u128
-            let amt_i64 = i64::try_from(amount).unwrap_or(i64::MAX);
-            ctx.increment(db, &key_balance(&env.account_caller, &symbol), amt_i64);
-            ctx.increment(db, &key_total_supply(&symbol), amt_i64);
+            ctx.increment(db, &key_balance(&env.account_caller, &symbol), amount as i128);
+            ctx.increment(db, &key_total_supply(&symbol), amount as i128);
             Ok(())
         }
         CoinCall::Pause { symbol, direction } => {

@@ -104,12 +104,13 @@ impl ApplyCtx {
         }
     }
 
-    /// Increment a value by delta
-    pub fn increment(&mut self, db: &RocksDb, key: &[u8], delta: i64) -> i64 {
-        // Get current value from RocksDB
-        let cur = db.get("contractstate", key).unwrap_or(None).and_then(|v| ascii_i64(&v)).unwrap_or(0);
+    /// Increment a value by delta (i128 version for arbitrary-size integers)
+    /// Uses ASCII string encoding to match Elixir's :erlang.integer_to_binary
+    pub fn increment(&mut self, db: &RocksDb, key: &[u8], delta: i128) -> i128 {
+        // Get current value from RocksDB (try ASCII string format)
+        let cur = db.get("contractstate", key).unwrap_or(None).and_then(|v| ascii_i128(&v)).unwrap_or(0);
         let newv = cur.saturating_add(delta);
-        let new_bytes = i64_ascii(newv);
+        let new_bytes = i128_ascii(newv);
         let old_bytes = db.get("contractstate", key).unwrap_or(None);
 
         // Store updated value in RocksDB
@@ -128,6 +129,12 @@ impl ApplyCtx {
             None => rev.push_back(Mutation { op: Op::Delete, key: key.to_vec(), value: None }),
         }
         newv
+    }
+
+    /// Legacy increment for i64 (kept for backward compatibility)
+    pub fn increment_i64(&mut self, db: &RocksDb, key: &[u8], delta: i64) -> i64 {
+        let result = self.increment(db, key, i128::from(delta));
+        i64::try_from(result).unwrap_or_else(|_| if result > 0 { i64::MAX } else { i64::MIN })
     }
 
     /// Delete a key
@@ -151,9 +158,14 @@ impl ApplyCtx {
         db.get("contractstate", key).unwrap_or(None)
     }
 
-    /// Get a value as i64
+    /// Get a value as i128
+    pub fn get_to_i128(&mut self, db: &RocksDb, key: &[u8]) -> Option<i128> {
+        self.get(db, key).and_then(|v| ascii_i128(&v))
+    }
+
+    /// Legacy get as i64 (kept for backward compatibility)
     pub fn get_to_i64(&mut self, db: &RocksDb, key: &[u8]) -> Option<i64> {
-        self.get(db, key).and_then(|v| ascii_i64(&v))
+        self.get_to_i128(db, key).and_then(|v| i64::try_from(v).ok())
     }
 
     /// Check if a key exists
@@ -249,14 +261,23 @@ impl ApplyCtx {
     }
 }
 
-// Helper functions for i64 conversion
-fn ascii_i64(bytes: &[u8]) -> Option<i64> {
+// Helper functions for i128 conversion (matching Elixir's :erlang.integer_to_binary)
+fn ascii_i128(bytes: &[u8]) -> Option<i128> {
     let s = std::str::from_utf8(bytes).ok()?;
-    s.parse::<i64>().ok()
+    s.parse::<i128>().ok()
+}
+
+fn i128_ascii(n: i128) -> Vec<u8> {
+    n.to_string().into_bytes()
+}
+
+// Legacy i64 helpers (kept for backward compatibility)
+fn ascii_i64(bytes: &[u8]) -> Option<i64> {
+    ascii_i128(bytes).and_then(|v| i64::try_from(v).ok())
 }
 
 fn i64_ascii(n: i64) -> Vec<u8> {
-    n.to_string().into_bytes()
+    i128_ascii(i128::from(n))
 }
 
 // Static utility function - doesn't need context

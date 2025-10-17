@@ -65,7 +65,7 @@ pub fn epoch_emission(epoch: u64) -> u128 {
     if epoch >= START_EPOCH {
         // val = 0.5 * A / ((epoch - START_EPOCH) + C)^1.5
         // Using fixed-point arithmetic to avoid floats
-        let epoch_offset = u128::from(epoch - START_EPOCH);
+        let epoch_offset = (epoch - START_EPOCH) as u128;
         let denominator_base = epoch_offset.saturating_mul(1_000_000).saturating_add(C_SCALED);
         let denominator = integer_pow_1_5(denominator_base);
         if denominator == 0 {
@@ -464,9 +464,7 @@ impl Epoch {
             let q = community_fund / n;
             let r = community_fund % n;
             for (i, pk) in pb67.iter().enumerate() {
-                let coins_u128 = if (i as u128) < r { q + 1 } else { q };
-                // unavoidable: ctx.increment requires i64
-                let coins = coins_u128 as i64;
+                let coins = if (i as u128) < r { q + 1 } else { q } as i128;
                 let emission_addr = db
                     .get(
                         "contractstate",
@@ -492,13 +490,10 @@ impl Epoch {
             // Distribute early adopter emission
             let trainers_to_recv: Vec<_> =
                 leaders.iter().filter(|(pk, _)| trainers.contains(pk) && !pb67.contains(pk)).take(TOP_X).collect();
-            let total_sols: u128 = trainers_to_recv.iter().map(|(_, c)| u128::try_from((*c).max(0)).unwrap_or(0)).sum();
+            let total_sols: u128 = trainers_to_recv.iter().map(|(_, c)| (*c).max(0) as u128).sum();
             if total_sols > 0 {
                 for (pk, sols) in trainers_to_recv {
-                    let sols_u128 = u128::try_from((*sols).max(0)).unwrap_or(0);
-                    let coins_u128 = sols_u128 * early_adopter / total_sols;
-                    // unavoidable: ctx.increment requires i64
-                    let coins = i64::try_from(coins_u128).unwrap_or(i64::MAX);
+                    let coins = ((*sols).max(0) as u128 * early_adopter / total_sols) as i128;
                     let emission_addr = db
                         .get(
                             "contractstate",
@@ -524,13 +519,10 @@ impl Epoch {
         } else {
             // Standard model: proportional to solution counts
             let trainers_to_recv: Vec<_> = leaders.iter().filter(|(pk, _)| trainers.contains(pk)).take(TOP_X).collect();
-            let total_sols: u128 = trainers_to_recv.iter().map(|(_, c)| u128::try_from((*c).max(0)).unwrap_or(0)).sum();
+            let total_sols: u128 = trainers_to_recv.iter().map(|(_, c)| (*c).max(0) as u128).sum();
             if total_sols > 0 {
                 for (pk, sols) in trainers_to_recv {
-                    let sols_u128 = u128::try_from((*sols).max(0)).unwrap_or(0);
-                    let coins_u128 = sols_u128 * emission / total_sols;
-                    // unavoidable: ctx.increment requires i64
-                    let coins = i64::try_from(coins_u128).unwrap_or(i64::MAX);
+                    let coins = ((*sols).max(0) as u128 * emission / total_sols) as i128;
                     let emission_addr = db
                         .get(
                             "contractstate",

@@ -108,28 +108,10 @@ pub fn chain_balance_symbol(db: &RocksDb, signer: &[u8], symbol: &str) -> u128 {
         Ok(Some(bytes)) => {
             // Try to deserialize as i64 then convert to u128 (balance value stored as i64)
             match bincode::decode_from_slice::<i64, _>(&bytes, bincode::config::standard()) {
-                Ok((balance, _)) => {
-                    let balance_positive = balance.max(0);
-                    // unavoidable: storage uses i64, we need u128
-                    u128::try_from(balance_positive).unwrap_or(0)
-                }
+                Ok((balance, _)) => balance.max(0) as u128,
                 Err(_) => 0,
             }
         }
         _ => 0, // default to 0 if no balance found
     }
-}
-
-/// Get current segment VRF hash for validation
-/// TODO: Implement proper segment VRF hash retrieval
-pub fn chain_segment_vr_hash() -> [u8; 32] {
-    // Stub implementation - returns zeros for now
-    [0u8; 32]
-}
-
-/// Get current difficulty bits
-/// TODO: Implement proper difficulty bits retrieval
-pub fn chain_diff_bits() -> u32 {
-    // Stub implementation - returns default difficulty
-    30
 }

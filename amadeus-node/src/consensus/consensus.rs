@@ -143,11 +143,7 @@ pub fn get_trainer_for_slot(db: &RocksDb, height: u32, slot: u32) -> Option<[u8;
     if trainers.is_empty() {
         return None;
     }
-    let slot_u64 = u64::from(slot);
-    let trainers_len = u64::try_from(trainers.len()).unwrap_or(1);
-    let idx_u64 = slot_u64.rem_euclid(trainers_len);
-    // unavoidable: array indexing requires usize
-    let idx = usize::try_from(idx_u64).unwrap_or(0);
+    let idx = (slot as u64).rem_euclid(trainers.len() as u64) as usize;
     trainers.get(idx).copied()
 }
 
@@ -262,8 +258,7 @@ pub fn chain_balance(fabric: &fabric::Fabric, pk: &[u8; 48], symbol: &str) -> u1
         .and_then(|b| {
             if b.len() == 8 {
                 let balance_i64 = i64::from_be_bytes(b.try_into().ok()?);
-                // unavoidable: storage uses i64, we need u128
-                Some(u128::try_from(balance_i64.max(0)).unwrap_or(0))
+                Some(balance_i64.max(0) as u128)
             } else {
                 None
             }
@@ -372,8 +367,8 @@ fn execute_transaction(
     ctx.reset();
 
     let call_env = crate::bic::epoch::CallEnv {
-        entry_epoch: u64::from(next_entry.header.height) / 100_000,
-        entry_height: u64::from(next_entry.header.height),
+        entry_epoch: next_entry.header.height as u64 / 100_000,
+        entry_height: next_entry.header.height as u64,
         entry_signer: next_entry.header.signer,
         entry_vr: next_entry.header.vr.to_vec(),
         tx_hash: txu.hash.to_vec(),
@@ -455,7 +450,7 @@ fn execute_wasm_call(
     // Handle attached tokens BEFORE WASM execution (regular mutations)
     if !env.attached_symbol.is_empty() && !env.attached_amount.is_empty() {
         let amount_str = String::from_utf8_lossy(&env.attached_amount);
-        let amount = amount_str.parse::<i64>().unwrap_or(0);
+        let amount = amount_str.parse::<i128>().unwrap_or(0);
         if amount > 0 {
             let symbol_suffix = format!(":{}", String::from_utf8_lossy(&env.attached_symbol));
             let signer_key = crate::utils::misc::build_key_with_suffix(
@@ -481,7 +476,7 @@ fn execute_wasm_call(
                     ctx.save_to_gas_and_restore(vec![], vec![]); // clear and prepare gas context
 
                     // Charge gas (gas mutations)
-                    let exec_used = (result.exec_used * 100) as i64;
+                    let exec_used = (result.exec_used * 100) as i128;
                     let signer_key =
                         crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &env.tx_signer, b":AMA");
                     ctx.use_gas_context(true);
@@ -527,8 +522,7 @@ fn parse_epoch_call(function: &str, args: &[Vec<u8>]) -> Result<crate::bic::epoc
         }
         "slash_trainer" => {
             let epoch_bytes = args.first().ok_or("missing epoch")?;
-            let epoch_u32 = u32::from_le_bytes(epoch_bytes.get(..4).ok_or("invalid epoch")?.try_into().unwrap());
-            let epoch = u64::from(epoch_u32);
+            let epoch = u32::from_le_bytes(epoch_bytes.get(..4).ok_or("invalid epoch")?.try_into().unwrap()) as u64;
             let malicious_pk = args.get(1).ok_or("missing pk")?.as_slice().try_into().map_err(|_| "invalid pk")?;
             let signature = args.get(2).ok_or("missing signature")?.clone();
             let mask = crate::utils::misc::bitvec_to_bools(args.get(3).ok_or("missing mask")?.clone());
@@ -559,17 +553,13 @@ fn call_txs_pre(ctx: &mut crate::consensus::kv::ApplyCtx, db: &RocksDb, next_ent
 
         // Calculate and deduct exec cost using proper unit conversion
         let bytes = txu.tx_encoded.len() + 32 + 96;
-        let exec_cost_u128 = if epoch >= 295 {
+        let exec_cost = if epoch >= 295 {
             // New formula (epoch 295+): convert from AMA units to flat coins
-            let bytes_u128 = u128::try_from(bytes).unwrap_or(0);
-            crate::bic::coin::to_cents(1 + bytes_u128 / 1024)
+            crate::bic::coin::to_cents(1 + bytes as u128 / 1024) as i128
         } else {
             // Old formula (epoch < 295)
-            let bytes_u128 = u128::try_from(bytes).unwrap_or(0);
-            crate::bic::coin::to_cents(3 + bytes_u128 / 256 * 3)
+            crate::bic::coin::to_cents(3 + bytes as u128 / 256 * 3) as i128
         };
-        // unavoidable: ctx.increment requires i64
-        let exec_cost = i64::try_from(exec_cost_u128).unwrap_or(i64::MAX);
 
         let signer_balance_key =
             crate::utils::misc::build_key_with_suffix(b"bic:coin:balance:", &txu.tx.signer, b":AMA");
@@ -597,8 +587,8 @@ fn call_exit(ctx: &mut crate::consensus::kv::ApplyCtx, db: &RocksDb, next_entry:
     // Epoch transition every 100k blocks
     if next_entry.header.height % 100_000 == 99_999 {
         let env = crate::bic::epoch::CallEnv {
-            entry_epoch: u64::from(next_entry.header.height) / 100_000,
-            entry_height: u64::from(next_entry.header.height),
+            entry_epoch: next_entry.header.height as u64 / 100_000,
+            entry_height: next_entry.header.height as u64,
             entry_signer: next_entry.header.signer,
             entry_vr: next_entry.header.vr.to_vec(),
             tx_hash: vec![],
@@ -846,13 +836,10 @@ pub fn apply_entry(
             // find position in entry binary for indexing
             let entry_bin = next_entry.pack()?;
             if let Some(pos) = entry_bin.windows(tx_packed.len()).position(|w| w == tx_packed) {
-                // unavoidable: position is usize, need u32 for storage
-                let pos_u32 = u32::try_from(pos).unwrap_or(u32::MAX);
-                let size_u32 = u32::try_from(tx_packed.len()).unwrap_or(u32::MAX);
                 let _tx_meta = HashMap::from([
                     ("entry_hash".to_string(), next_entry.hash.to_vec()),
-                    ("index_start".to_string(), pos_u32.to_be_bytes().to_vec()),
-                    ("index_size".to_string(), size_u32.to_be_bytes().to_vec()),
+                    ("index_start".to_string(), (pos as u32).to_be_bytes().to_vec()),
+                    ("index_size".to_string(), (tx_packed.len() as u32).to_be_bytes().to_vec()),
                 ]);
                 // TODO: store tx_meta properly
             }
@@ -965,8 +952,7 @@ pub fn chain_rewind(db: &RocksDb, target_hash: &[u8; 32]) -> Result<bool, Error>
     // update chain tips
     db.put("sysconf", b"temporal_tip", &entry.hash)?;
     // store temporal_height as u64 big-endian bytes
-    let height_u64 = u64::from(entry.header.height);
-    db.put("sysconf", b"temporal_height", &height_u64.to_be_bytes())?;
+    db.put("sysconf", b"temporal_height", &(entry.header.height as u64).to_be_bytes())?;
 
     // update rooted tip if needed
     if let Ok(Some(rooted_hash)) = get_rooted_tip_hash(&fabric) {
@@ -1068,8 +1054,7 @@ pub fn best_entry_for_height(fabric: &fabric::Fabric, height: u32) -> Result<Vec
     let rooted_tip = get_rooted_tip_hash(fabric)?.unwrap_or([0u8; 32]);
 
     // get entries by height
-    let height_u64 = u64::from(height);
-    let entry_bins = fabric.entries_by_height(height_u64)?;
+    let entry_bins = fabric.entries_by_height(height as u64)?;
     let mut entries = Vec::new();
 
     for entry_bin in entry_bins {
@@ -1245,9 +1230,7 @@ pub fn validate_next_entry(current_entry: &Entry, next_entry: &Entry) -> Result<
     let neh = &next_entry.header;
 
     // validate slot consistency
-    // unavoidable: slot is u32, prev_slot is i32
-    let ceh_slot_i32 = i32::try_from(ceh.slot).unwrap_or(i32::MAX);
-    if ceh_slot_i32 != neh.prev_slot {
+    if ceh.slot as i32 != neh.prev_slot {
         return Err(Error::WrongType("invalid_slot"));
     }
 
@@ -1319,10 +1302,7 @@ fn is_entry_in_slot(db: &RocksDb, entry: &Entry, cur_slot: u32) -> bool {
     let slot_trainer = get_trainer_for_slot(db, entry.header.height, next_slot);
 
     // check incremental slot
-    let next_slot_i64 = i64::from(next_slot);
-    let cur_slot_i64 = i64::from(cur_slot);
-    let slot_delta = next_slot_i64 - cur_slot_i64;
-    if slot_delta != 1 {
+    if (next_slot as i64) - (cur_slot as i64) != 1 {
         return false;
     }
 
@@ -1359,9 +1339,8 @@ pub async fn proc_entries(
         let next_height = cur_entry.header.height + 1;
 
         // filter and sort entries using functional pipeline matching Elixir logic
-        let next_height_u64 = u64::from(next_height);
         let mut next_entries: Vec<Entry> = fabric
-            .entries_by_height(next_height_u64)?
+            .entries_by_height(next_height as u64)?
             .into_iter()
             .filter_map(|entry_bin| {
                 Entry::unpack(&entry_bin)

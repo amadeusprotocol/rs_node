@@ -1,7 +1,7 @@
 use crate::bic::coin;
 use crate::bic::sol;
 use crate::consensus::doms::tx::{TxU, pack, validate};
-use crate::consensus::{chain_balance, chain_diff_bits, chain_epoch, chain_nonce, chain_segment_vr_hash};
+use crate::consensus::{chain_balance, chain_epoch, chain_nonce, fabric};
 use crate::utils::rocksdb::RocksDb;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -128,9 +128,12 @@ impl TxPool {
     }
 
     pub fn validate_tx_batch(&self, txs_packed: &[Vec<u8>]) -> Vec<Vec<u8>> {
+        let fabric = fabric::Fabric::with_db(self.db.as_ref().clone());
         let chain_epoch = chain_epoch(self.db.as_ref());
-        let segment_vr_hash = chain_segment_vr_hash();
-        let diff_bits = chain_diff_bits();
+        let segment_vr_hash = crate::consensus::consensus::chain_segment_vr_hash(&fabric)
+            .and_then(|v| v.try_into().ok())
+            .unwrap_or([0u8; 32]);
+        let diff_bits = crate::consensus::consensus::chain_diff_bits(&fabric);
 
         let mut args =
             ValidateTxArgs { epoch: chain_epoch, segment_vr_hash, diff_bits, batch_state: BatchState::default() };
@@ -151,9 +154,12 @@ impl TxPool {
     }
 
     pub async fn grab_next_valid(&self, amt: usize) -> Vec<Vec<u8>> {
+        let fabric = fabric::Fabric::with_db(self.db.as_ref().clone());
         let chain_epoch = chain_epoch(self.db.as_ref());
-        let segment_vr_hash = chain_segment_vr_hash();
-        let diff_bits = chain_diff_bits();
+        let segment_vr_hash = crate::consensus::consensus::chain_segment_vr_hash(&fabric)
+            .and_then(|v| v.try_into().ok())
+            .unwrap_or([0u8; 32]);
+        let diff_bits = crate::consensus::consensus::chain_diff_bits(&fabric);
 
         let mut args =
             ValidateTxArgs { epoch: chain_epoch, segment_vr_hash, diff_bits, batch_state: BatchState::default() };
@@ -219,7 +225,3 @@ impl TxPool {
         }
     }
 }
-
-// TODO: Need to implement proper segment_vr_hash and diff_bits accessors
-// TODO: Need to implement broadcast functionality
-// TODO: Need to implement proper TX packing/unpacking

@@ -148,7 +148,7 @@ mod host_functions {
         match context.read_bytes_with_store(&store, key_ptr as u32, key_len as u32) {
             Ok(key) => {
                 let mut kv_ctx = context.kv_ctx.lock().unwrap();
-                kv_ctx.increment(&context.db, &key, delta)
+                kv_ctx.increment_i64(&context.db, &key, delta)
             }
             Err(_) => 0,
         }
@@ -367,7 +367,7 @@ mod host_functions {
             context.read_string_with_store(&store, amount_ptr as u32, amount_len as u32).unwrap_or_default();
 
         if !symbol.is_empty() && !amount_str.is_empty() {
-            if let Ok(amount) = amount_str.parse::<i64>() {
+            if let Ok(amount) = amount_str.parse::<i128>() {
                 if amount > 0 && contract.len() == 48 {
                     let mut contract_pk = [0u8; 48];
                     contract_pk.copy_from_slice(&contract);
