@@ -126,7 +126,7 @@ mod tests {
         assert_eq!(muts_rev.len(), exp_muts_rev.len(), "muts_rev count");
 
         for (i, (r, e)) in muts.iter().zip(exp_muts.iter()).enumerate() {
-            assert_eq!(r, e);
+            assert_eq!(r, e, "muts[{}] mismatch", i);
         }
 
         // verify mutations hash

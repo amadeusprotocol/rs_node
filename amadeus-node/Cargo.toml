@@ -37,6 +37,7 @@ scc = "3.3.1"
 strum_macros = "0.27.2"
 aes-gcm = "0.10"
 sysinfo = { version = "0.37.2", optional = true }
+bitvec = "1.0.1"
 
 [features]
 default = []

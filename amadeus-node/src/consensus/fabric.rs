@@ -1,8 +1,9 @@
 use crate::consensus::doms::attestation::Attestation;
 use crate::consensus::doms::entry::Entry;
-use crate::utils::misc::{TermExt, bitvec_to_bools, bools_to_bitvec};
+use crate::utils::misc::{TermExt, bin_to_bitvec, bitvec_to_bin};
 use crate::utils::rocksdb::{self, RocksDb};
 use crate::utils::safe_etf::encode_safe_deterministic;
+use bitvec::prelude::*;
 use eetf::{Atom, BigInteger, Binary, Term};
 use std::collections::HashMap;
 use tracing::{Instrument, debug, info};
@@ -88,7 +89,7 @@ async fn init_kvdb(base: &str) -> Result<RocksDb, Error> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredConsensus {
-    pub mask: Vec<bool>,
+    pub mask: BitVec<u8, Msb0>,
     pub agg_sig: [u8; 96],
 }
 
@@ -98,7 +99,7 @@ fn pack_consensus_map(map: &HashMap<[u8; 32], StoredConsensus>) -> Result<Vec<u8
     for (mut_hash, v) in map.iter() {
         let key = Term::from(Binary { bytes: mut_hash.to_vec() });
         // pack mask into bytes (bitstring, MSB first)
-        let mask_bytes = bools_to_bitvec(&v.mask);
+        let mask_bytes = bitvec_to_bin(&v.mask);
         let mut inner = HashMap::new();
         inner.insert(Term::Atom(Atom::from("mask")), Term::from(Binary { bytes: mask_bytes }));
         inner.insert(Term::Atom(Atom::from("aggsig")), Term::from(Binary { bytes: v.agg_sig.to_vec() }));
@@ -121,7 +122,7 @@ fn unpack_consensus_map(bin: &[u8]) -> Result<HashMap<[u8; 32], StoredConsensus>
 
         // value: map with keys mask (bitstring), agg_sig (binary)
         let inner = TermExt::get_term_map(&v).ok_or(Error::BadEtf("consensus_inner"))?;
-        let mask = inner.get_binary("mask").map(bitvec_to_bools).ok_or(Error::BadEtf("mask"))?;
+        let mask = inner.get_binary("mask").map(bin_to_bitvec).ok_or(Error::BadEtf("mask"))?;
         let agg_sig = inner.get_binary("aggsig").ok_or(Error::BadEtf("aggsig"))?;
 
         out.insert(mh, StoredConsensus { mask, agg_sig });
@@ -362,7 +363,7 @@ impl Fabric {
         &self,
         entry_hash: [u8; 32],
         mutations_hash: [u8; 32],
-        consensus_mask: Vec<bool>,
+        consensus_mask: BitVec<u8, Msb0>,
         consensus_agg_sig: [u8; 96],
         score: f64,
     ) -> Result<(), Error> {
@@ -376,8 +377,8 @@ impl Fabric {
         };
 
         if let Some(existing) = map.get(&mutations_hash) {
-            let old_cnt = existing.mask.iter().filter(|&&b| b).count();
-            let new_cnt = consensus_mask.iter().filter(|&&b| b).count();
+            let old_cnt = existing.mask.iter().filter(|b| **b).count();
+            let new_cnt = consensus_mask.iter().filter(|b| **b).count();
             if new_cnt <= old_cnt {
                 return Ok(());
             }

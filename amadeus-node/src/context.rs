@@ -1,3 +1,4 @@
+use bitvec::prelude::*;
 use crate::node::anr::{Anr, NodeAnrs};
 use crate::node::peers::{HandshakeStatus, PeersSummary};
 use crate::node::protocol::*;
@@ -709,7 +710,7 @@ impl Context {
                         if let Some(entry) = self.fabric.get_entry_by_hash(&consensus.entry_hash) {
                             if let Some(trainers) = self.fabric.trainers_for_height(entry.header.height) {
                                 // Create full mask: all trainers signed
-                                vec![true; trainers.len()]
+                                bitvec![u8, Msb0; 1; trainers.len()]
                             } else {
                                 warn!("No trainers found for height {}, skipping consensus", entry.header.height);
                                 return Ok(());

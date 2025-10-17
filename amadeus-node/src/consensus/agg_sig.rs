@@ -1,3 +1,4 @@
+use bitvec::prelude::*;
 use crate::utils::bls12_381::{Error, aggregate_signatures};
 
 // domain separation tags (DST)
@@ -17,7 +18,7 @@ pub const DST_ANR_CHALLENGE: &[u8] = b"AMADEUS_SIG_BLS12381G2_XMD:SHA-256_SSWU_R
 /// - `agg_sig` is the aggregated signature (compressed G2, 96 bytes in min_pk scheme).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AggSig {
-    pub mask: Vec<bool>,
+    pub mask: BitVec<u8, Msb0>,
     pub agg_sig: [u8; 96],
 }
 
@@ -30,10 +31,10 @@ impl AggSig {
         TPk: AsRef<[u8]>,
     {
         let len = trainers.len();
-        let mut mask = vec![false; len];
+        let mut mask = bitvec![u8, Msb0; 0; len];
         let index = index_of(trainers, pk).ok_or(Error::InvalidPoint)?;
 
-        mask[index] = true;
+        mask.set(index, true);
         let agg_sig = copy_sig(signature)?;
 
         Ok(Self { mask, agg_sig })
@@ -47,10 +48,10 @@ impl AggSig {
         TPk: AsRef<[u8]>,
     {
         let index = index_of(trainers, pk).ok_or(Error::InvalidPoint)?;
-        if self.mask.get(index).copied().unwrap_or(false) {
+        if self.mask.get(index).map(|b| *b).unwrap_or(false) {
             return Ok(());
         }
-        self.mask[index] = true;
+        self.mask.set(index, true);
 
         let agg = aggregate_signatures([self.agg_sig.as_slice(), signature])?;
         self.agg_sig = agg;
@@ -59,7 +60,7 @@ impl AggSig {
 
     /// Return indices of trainers which are set in the mask.
     pub fn signed_indices(&self) -> Vec<usize> {
-        self.mask.iter().enumerate().filter_map(|(i, &b)| if b { Some(i) } else { None }).collect()
+        self.mask.iter().enumerate().filter_map(|(i, b)| if *b { Some(i) } else { None }).collect()
     }
 
     /// Return the subset of trainers whose bits are set in the mask.
@@ -71,13 +72,13 @@ impl AggSig {
         self.mask
             .iter()
             .zip(trainers.iter())
-            .filter_map(|(&bit, pk)| if bit { Some(pk.as_ref().to_vec()) } else { None })
+            .filter_map(|(bit, pk)| if *bit { Some(pk.as_ref().to_vec()) } else { None })
             .collect()
     }
 
     /// Compute a score using a provided weight function over signed trainers.
     /// The result mirrors the Elixir behavior: sum(weights_of_signed) / trainers.len()
-    pub fn score_by<TPk, F>(&self, trainers: &[TPk], weight_fn: F) -> f64
+    pub fn score_by<TPk, F>(&self, trainers: &[TPk], mut weight_fn: F) -> f64
     where
         TPk: AsRef<[u8]>,
         F: FnMut(&[u8]) -> f64,
@@ -90,8 +91,8 @@ impl AggSig {
             .mask
             .iter()
             .zip(trainers.iter())
-            .filter_map(|(&bit, pk)| if bit { Some(pk.as_ref()) } else { None })
-            .map(weight_fn)
+            .filter_map(|(bit, pk)| if *bit { Some(pk.as_ref()) } else { None })
+            .map(|pk| weight_fn(pk))
             .sum();
         sum / (total as f64)
     }

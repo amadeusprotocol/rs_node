@@ -4,6 +4,7 @@ use crate::utils::bls12_381;
 use crate::utils::misc::TermExt;
 use crate::utils::rocksdb::RocksDb;
 use eetf::Term;
+use bitvec::prelude::*;
 
 use crate::bic::coin;
 use crate::bic::sol;
@@ -145,7 +146,7 @@ pub enum EpochCall {
         epoch: u64,
         malicious_pk: [u8; 48],
         signature: Vec<u8>,
-        mask: Vec<bool>,
+        mask: BitVec<u8, Msb0>,
         // note: in Elixir, trainers are pulled from KV; here we accept them optionally
         trainers: Option<Vec<[u8; 48]>>,
     },
@@ -376,7 +377,7 @@ impl Epoch {
         epoch: u64,
         malicious_pk: &[u8; 48],
         signature: &[u8],
-        mask: &Vec<bool>,
+        mask: &BitVec<u8, Msb0>,
         trainers_opt: Option<Vec<[u8; 48]>>,
     ) -> Result<(), EpochError> {
         let cur_epoch = env.entry_epoch;
@@ -715,7 +716,7 @@ pub fn slash_trainer_verify(
     cur_epoch: u64,
     malicious_pk: &[u8; 48],
     trainers: &[[u8; 48]],
-    mask: &Vec<bool>,
+    mask: &BitVec<u8, Msb0>,
     signature: &[u8],
 ) -> Result<(), EpochError> {
     // unmask trainers according to bit mask
@@ -740,14 +741,8 @@ pub fn slash_trainer_verify(
 }
 
 /// Return the subset of trainers whose corresponding bits are set in the bitmask
-pub fn unmask_trainers(trainers: &[[u8; 48]], mask: &Vec<bool>) -> Vec<[u8; 48]> {
-    let mut res = Vec::new();
-    for (i, trainer) in trainers.iter().enumerate() {
-        if Some(true) == mask.get(i).copied() {
-            res.push(*trainer);
-        }
-    }
-    res
+pub fn unmask_trainers(trainers: &[[u8; 48]], mask: &BitVec<u8, Msb0>) -> Vec<[u8; 48]> {
+    mask.iter().zip(trainers.iter()).filter_map(|(bit, pk)| if *bit { Some(*pk) } else { None }).collect()
 }
 
 /// Return trainers for the given height, reading from contractstate CF

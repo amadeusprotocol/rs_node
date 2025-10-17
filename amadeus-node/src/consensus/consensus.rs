@@ -6,9 +6,10 @@ use crate::consensus::fabric;
 use crate::consensus::fabric::Fabric;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381 as bls;
-use crate::utils::misc::{TermExt, bitvec_to_bools, bools_to_bitvec, get_unix_millis_now};
+use crate::utils::misc::{TermExt, bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
 use crate::utils::rocksdb::RocksDb;
 use crate::utils::safe_etf::encode_safe_deterministic;
+use bitvec::prelude::*;
 use eetf::{Atom, Binary, FixInteger, Term};
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
@@ -51,7 +52,7 @@ const CF_SYSCONF: &str = "sysconf";
 pub struct Consensus {
     pub entry_hash: [u8; 32],
     pub mutations_hash: [u8; 32],
-    pub mask: Option<Vec<bool>>,
+    pub mask: Option<BitVec<u8, Msb0>>,
     pub agg_sig: [u8; 96],
     pub score: Option<f64>,
 }
@@ -63,8 +64,7 @@ impl Consensus {
         let entry_hash = map.get_binary("entry_hash").ok_or(Error::Missing("entry_hash"))?;
         let mutations_hash = map.get_binary("mutations_hash").ok_or(Error::Missing("mutations_hash"))?;
         // Empty mask binary (0 bytes) means None (all trainers signed), not Some(empty vec)
-        let mask =
-            map.get_binary::<Vec<u8>>("mask").map(|bytes| bitvec_to_bools(bytes)).filter(|mask| !mask.is_empty());
+        let mask = map.get_binary::<Vec<u8>>("mask").map(|bytes| bin_to_bitvec(bytes)).filter(|mask| !mask.is_empty());
         let agg_sig = map.get_binary("aggsig").ok_or(Error::Missing("aggsig"))?;
         Ok(Self { entry_hash, mutations_hash, mask, agg_sig, score: None })
     }
@@ -75,7 +75,7 @@ impl Consensus {
         m.insert(Term::Atom(Atom::from("entry_hash")), Term::from(Binary { bytes: self.entry_hash.to_vec() }));
         m.insert(Term::Atom(Atom::from("mutations_hash")), Term::from(Binary { bytes: self.mutations_hash.to_vec() }));
         if let Some(mask) = &self.mask {
-            m.insert(Term::Atom(Atom::from("mask")), Term::from(Binary { bytes: bools_to_bitvec(mask) }));
+            m.insert(Term::Atom(Atom::from("mask")), Term::from(Binary { bytes: bitvec_to_bin(mask) }));
         }
         m.insert(Term::Atom(Atom::from("aggsig")), Term::from(Binary { bytes: self.agg_sig.to_vec() }));
         let term = Term::from(eetf::Map { map: m });
@@ -129,8 +129,8 @@ impl Consensus {
     }
 }
 
-fn unmask_trainers(mask: &[bool], trainers: &[[u8; 48]]) -> Vec<[u8; 48]> {
-    mask.iter().zip(trainers.iter()).filter_map(|(&bit, pk)| if bit { Some(*pk) } else { None }).collect()
+fn unmask_trainers(mask: &BitVec<u8, Msb0>, trainers: &[[u8; 48]]) -> Vec<[u8; 48]> {
+    mask.iter().zip(trainers.iter()).filter_map(|(bit, pk)| if *bit { Some(*pk) } else { None }).collect()
 }
 
 pub fn chain_muts_rev(fabric: &fabric::Fabric, hash: &[u8; 32]) -> Option<Vec<crate::consensus::kv::Mutation>> {
@@ -341,7 +341,7 @@ fn parse_epoch_call(function: &str, args: &[Vec<u8>]) -> Result<crate::bic::epoc
             let epoch = u32::from_le_bytes(epoch_bytes.get(..4).ok_or("invalid epoch")?.try_into().unwrap()) as u64;
             let malicious_pk = args.get(1).ok_or("missing pk")?.as_slice().try_into().map_err(|_| "invalid pk")?;
             let signature = args.get(2).ok_or("missing signature")?.clone();
-            let mask = crate::utils::misc::bitvec_to_bools(args.get(3).ok_or("missing mask")?.clone());
+            let mask = crate::utils::misc::bin_to_bitvec(args.get(3).ok_or("missing mask")?.clone());
             Ok(EpochCall::SlashTrainer { epoch, malicious_pk, signature, mask, trainers: None })
         }
         _ => Err(format!("unknown function: {}", function)),

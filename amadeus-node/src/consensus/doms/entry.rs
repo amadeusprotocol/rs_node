@@ -7,9 +7,10 @@ use crate::consensus::fabric;
 use crate::node::protocol;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381;
-use crate::utils::misc::{TermExt, TermMap, bitvec_to_bools, bools_to_bitvec, get_unix_millis_now};
+use crate::utils::misc::{TermExt, TermMap, bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
 use crate::utils::safe_etf::{encode_safe, encode_safe_deterministic};
 use crate::utils::{archiver, blake3};
+use bitvec::prelude::*;
 use eetf::{Atom, Binary, FixInteger, Map, Term};
 use std::collections::HashMap;
 use std::fmt;
@@ -50,12 +51,12 @@ pub enum Error {
     RocksDb(#[from] crate::utils::rocksdb::Error),
 }
 
-/// Shared summary of an entry’s tip.
+/// Shared summary of an entry's tip
 #[derive(Debug, Clone)]
 pub struct EntrySummary {
     pub header: EntryHeader,
     pub signature: [u8; 96],
-    pub mask: Option<Vec<bool>>,
+    pub mask: Option<BitVec<u8, Msb0>>,
 }
 
 impl From<Entry> for EntrySummary {
@@ -73,7 +74,7 @@ impl EntrySummary {
         }
         let header_bin: Vec<u8> = map.get_binary("header").ok_or(Error::BadEtf("header"))?;
         let signature = map.get_binary("signature").ok_or(Error::BadEtf("signature"))?;
-        let mask = map.get_binary("mask").map(bitvec_to_bools);
+        let mask = map.get_binary("mask").map(bin_to_bitvec);
         let header = EntryHeader::from_etf_bin(&header_bin).map_err(|_| Error::BadEtf("header"))?;
         Ok(Self { header, signature, mask })
     }
@@ -84,7 +85,7 @@ impl EntrySummary {
         m.insert(Term::Atom(Atom::from("header")), Term::from(Binary { bytes: self.header.to_etf_bin()? }));
         m.insert(Term::Atom(Atom::from("signature")), Term::from(Binary { bytes: self.signature.to_vec() }));
         if let Some(mask) = &self.mask {
-            m.insert(Term::Atom(Atom::from("mask")), Term::from(Binary { bytes: bools_to_bitvec(mask) }));
+            m.insert(Term::Atom(Atom::from("mask")), Term::from(Binary { bytes: bitvec_to_bin(mask) }));
         }
         Ok(Term::from(Map { map: m }))
     }
@@ -172,8 +173,8 @@ pub struct Entry {
     pub hash: [u8; 32],
     pub header: EntryHeader,
     pub signature: [u8; 96],
-    pub mask: Option<Vec<bool>>, // vec<bool> in rust is special - its a packed vec<u8>
-    pub txs: Vec<Vec<u8>>,       // list of tx binaries that can be empty
+    pub mask: Option<BitVec<u8, Msb0>>,
+    pub txs: Vec<Vec<u8>>, // list of tx binaries that can be empty
 }
 
 impl Entry {
@@ -194,7 +195,7 @@ impl Entry {
 
         // Handle optional mask
         if let Some(mask) = &self.mask {
-            let mask_bytes = bools_to_bitvec(mask);
+            let mask_bytes = bitvec_to_bin(mask);
             map.insert(Term::Atom(Atom::from("mask")), Term::from(Binary { bytes: mask_bytes }));
         }
 
@@ -211,7 +212,7 @@ impl Entry {
         let hash = map.get_binary("hash").ok_or(Error::BadEtf("hash"))?;
         let header_bin: Vec<u8> = map.get_binary("header").ok_or(Error::BadEtf("header"))?;
         let signature = map.get_binary("signature").ok_or(Error::BadEtf("signature"))?;
-        let mask = map.get_binary("mask").map(bitvec_to_bools);
+        let mask = map.get_binary("mask").map(bin_to_bitvec);
         let txs: Vec<Vec<u8>> =
             map.get_list("txs").unwrap_or_default().iter().filter_map(TermExt::get_binary).map(Into::into).collect();
 

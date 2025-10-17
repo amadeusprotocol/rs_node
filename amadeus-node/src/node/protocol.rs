@@ -934,6 +934,7 @@ impl SpecialBusinessReply {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bitvec::prelude::{bitvec, Msb0};
     use crate::config::Config;
     use crate::consensus::doms::entry::{EntryHeader, EntrySummary};
     use crate::utils::bls12_381::sign as bls_sign;
@@ -1280,7 +1281,7 @@ mod tests {
         let consensus1 = Consensus {
             entry_hash: [10; 32],
             mutations_hash: [11; 32],
-            mask: Some(vec![true, false, true]),
+            mask: Some(bitvec![u8, Msb0; 1, 0, 1]),
             agg_sig: [12; 96],
             score: Some(0.95),
         };

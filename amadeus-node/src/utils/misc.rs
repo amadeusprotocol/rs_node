@@ -1,3 +1,4 @@
+use bitvec::prelude::*;
 use eetf::convert::TryAsRef;
 use eetf::{Atom, Binary, List, Term};
 use num_traits::ToPrimitive;
@@ -235,34 +236,20 @@ impl TermMap {
     }
 }
 
-pub fn bools_to_bitvec(mask: &[bool]) -> Vec<u8> {
-    let mut out = vec![0u8; mask.len().div_ceil(8)];
-    for (i, &b) in mask.iter().enumerate() {
-        if b {
-            out[i / 8] |= 1 << (7 - (i % 8));
-        }
-    }
-    out
+pub fn bitvec_to_bin(mask: &BitVec<u8, Msb0>) -> Vec<u8> {
+    mask.as_raw_slice().to_vec()
 }
 
-pub fn bitvec_to_bools(bytes: Vec<u8>) -> Vec<bool> {
-    let mut out = Vec::with_capacity(bytes.len() * 8);
-    for b in bytes {
-        // TODO: double-check if this is MSB-first or LSB-first
-        for i in (0..8).rev() {
-            // MSB -> LSB; use 0..8 for LSB-first
-            out.push(((b >> i) & 1) != 0);
-        }
-    }
-    out
+pub fn bin_to_bitvec(bytes: Vec<u8>) -> BitVec<u8, Msb0> {
+    BitVec::from_vec(bytes)
 }
 
 /// Calculate percentage of true bits in a mask relative to total count
-pub fn get_bits_percentage(mask: &[bool], total_count: usize) -> f64 {
+pub fn get_bits_percentage(mask: &BitVec<u8, Msb0>, total_count: usize) -> f64 {
     if total_count == 0 {
         return 0.0;
     }
-    let true_bits = mask.iter().filter(|&&b| b).count();
+    let true_bits = mask.count_ones();
     (true_bits as f64) / (total_count as f64)
 }
 // fn bitvec_to_bools(bytes: &[u8]) -> Vec<bool> {
@@ -376,13 +363,14 @@ mod tests {
 
     #[test]
     fn bitvec_roundtrip_prefix() {
-        let mask = vec![true, false, true, true, false, false, false, true, true];
-        let bytes = bools_to_bitvec(&mask);
+        let mut mask = BitVec::<u8, Msb0>::new();
+        mask.extend([true, false, true, true, false, false, false, true, true]);
+        let bytes = bitvec_to_bin(&mask);
         assert_eq!(bytes.len(), 2);
-        let bools = bitvec_to_bools(bytes.clone());
+        let bools = bin_to_bitvec(bytes.clone());
         assert_eq!(&bools[..mask.len()], &mask[..]);
-        for b in &bools[mask.len()..8 * bytes.len()] {
-            assert!(!*b);
+        for i in mask.len()..8 * bytes.len() {
+            assert!(!bools[i]);
         }
     }
 
