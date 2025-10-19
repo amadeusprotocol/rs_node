@@ -1,6 +1,6 @@
-use crate::consensus::kv;
-use crate::utils::bls12_381;
-use crate::utils::rocksdb::RocksDb;
+use crate::kv;
+use amadeus_utils::bls12_381;
+use amadeus_utils::rocksdb::RocksDb;
 
 pub const DECIMALS: u32 = 9;
 pub const BURN_ADDRESS: [u8; 48] = [0u8; 48];
@@ -27,22 +27,22 @@ pub fn burn_address() -> [u8; 48] {
 }
 
 fn key_balance(pk: &[u8; 48], symbol: &str) -> Vec<u8> {
-    crate::utils::misc::bcat(&[b"bic:coin:balance:", pk, b":", symbol.as_bytes()])
+    amadeus_utils::misc::bcat(&[b"bic:coin:balance:", pk, b":", symbol.as_bytes()])
 }
 fn key_total_supply(symbol: &str) -> Vec<u8> {
-    crate::utils::misc::bcat(&[b"bic:coin:totalSupply:", symbol.as_bytes()])
+    amadeus_utils::misc::bcat(&[b"bic:coin:totalSupply:", symbol.as_bytes()])
 }
 fn key_pausable(symbol: &str) -> Vec<u8> {
-    crate::utils::misc::bcat(&[b"bic:coin:pausable:", symbol.as_bytes()])
+    amadeus_utils::misc::bcat(&[b"bic:coin:pausable:", symbol.as_bytes()])
 }
 fn key_paused(symbol: &str) -> Vec<u8> {
-    crate::utils::misc::bcat(&[b"bic:coin:paused:", symbol.as_bytes()])
+    amadeus_utils::misc::bcat(&[b"bic:coin:paused:", symbol.as_bytes()])
 }
 fn key_mintable(symbol: &str) -> Vec<u8> {
-    crate::utils::misc::bcat(&[b"bic:coin:mintable:", symbol.as_bytes()])
+    amadeus_utils::misc::bcat(&[b"bic:coin:mintable:", symbol.as_bytes()])
 }
 fn key_permission(symbol: &str) -> Vec<u8> {
-    crate::utils::misc::bcat(&[b"bic:coin:permission:", symbol.as_bytes()])
+    amadeus_utils::misc::bcat(&[b"bic:coin:permission:", symbol.as_bytes()])
 }
 
 pub fn balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, pubkey: &[u8; 48], symbol: &str) -> i128 {
@@ -140,7 +140,7 @@ fn parse_bool_str(bytes: &[u8]) -> Option<bool> {
 
 /// Encode a list of public keys as ETF term (matching Elixir's term storage)
 fn encode_pk_list(pks: &[[u8; 48]]) -> Vec<u8> {
-    use crate::utils::safe_etf::encode_safe;
+    use amadeus_utils::safe_etf::encode_safe;
     use eetf::{Binary, List, Term};
     let elements: Vec<Term> = pks.iter().map(|pk| Term::Binary(Binary { bytes: pk.to_vec() })).collect();
     let list = Term::List(List { elements });

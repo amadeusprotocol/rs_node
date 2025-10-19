@@ -90,6 +90,56 @@ name = "amadeus-node"
 version = "1.1.9"
 dependencies = [
  "aes-gcm",
+ "amadeus-runtime",
+ "amadeus-utils",
+ "async-trait",
+ "bincode",
+ "bitvec",
+ "bs58",
+ "eetf",
+ "flate2",
+ "hex",
+ "num-bigint",
+ "num-traits",
+ "rand 0.9.2",
+ "scc",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "sha2",
+ "strum_macros",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "amadeus-runtime"
+version = "1.1.9"
+dependencies = [
+ "amadeus-utils",
+ "async-trait",
+ "bitvec",
+ "blake3",
+ "bs58",
+ "eetf",
+ "hex",
+ "num-bigint",
+ "num-traits",
+ "once_cell",
+ "rand 0.9.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "wasmer",
+]
+
+[[package]]
+name = "amadeus-utils"
+version = "1.1.9"
+dependencies = [
  "async-trait",
  "bincode",
  "bitvec",
@@ -107,17 +157,13 @@ dependencies = [
  "rand 0.9.2",
  "reed-solomon-simd",
  "rust-rocksdb",
- "scc",
  "serde",
  "serde_json",
- "serde_with",
  "sha2",
- "strum_macros",
  "sysinfo",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
- "wasmer",
 ]
 
 [[package]]

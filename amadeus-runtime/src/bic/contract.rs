@@ -1,4 +1,4 @@
-use crate::consensus::kv;
+use crate::kv;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -26,11 +26,11 @@ pub fn validate(wasm: &[u8]) -> Result<(), ContractError> {
 }
 
 fn key_bytecode(account: &[u8; 48]) -> Vec<u8> {
-    crate::utils::misc::bcat(&[b"bic:contract:account:", account, b":bytecode"])
+    amadeus_utils::misc::bcat(&[b"bic:contract:account:", account, b":bytecode"])
 }
 
 /// Read stored bytecode for a given account public key
-pub fn bytecode(ctx: &mut kv::ApplyCtx, db: &crate::utils::rocksdb::RocksDb, account: &[u8; 48]) -> Option<Vec<u8>> {
+pub fn bytecode(ctx: &mut kv::ApplyCtx, db: &amadeus_utils::rocksdb::RocksDb, account: &[u8; 48]) -> Option<Vec<u8>> {
     ctx.get(db, &key_bytecode(account))
 }
 
@@ -42,7 +42,7 @@ pub struct CallEnv {
 /// Dispatch contract module calls (currently only "deploy")
 pub fn call(
     ctx: &mut kv::ApplyCtx,
-    db: &crate::utils::rocksdb::RocksDb,
+    db: &amadeus_utils::rocksdb::RocksDb,
     function: &str,
     env: &CallEnv,
     args: &[Vec<u8>],
@@ -75,7 +75,7 @@ pub fn call(
 //             let test_db_path = "target/test_bic_contract_db";
 //             std::fs::create_dir_all(test_db_path).unwrap();
 //             tokio::runtime::Runtime::new().unwrap().block_on(async {
-//                 let _ = crate::utils::rocksdb::init("target/test_bic_contract").await;
+//                 let _ = amadeus_utils::rocksdb::init("target/test_bic_contract").await;
 //             });
 //         });
 //     }

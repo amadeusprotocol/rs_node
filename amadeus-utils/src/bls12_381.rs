@@ -211,6 +211,7 @@ pub fn validate_public_key(public_key: &[u8]) -> Result<(), Error> {
 mod tests {
     use super::*;
 
+    #[allow(dead_code)]
     fn seed32(b: u8) -> [u8; 32] {
         [b; 32]
     }

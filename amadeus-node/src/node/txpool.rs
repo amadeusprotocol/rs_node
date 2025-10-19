@@ -1,5 +1,5 @@
-use crate::bic::{self, coin, sol};
-use crate::consensus::chain_epoch;
+use crate::bic::{coin, sol};
+use crate::consensus::{self, chain_epoch};
 use crate::consensus::doms::tx::{TxU, pack, validate};
 use crate::utils::rocksdb::RocksDb;
 use std::collections::HashMap;
@@ -81,7 +81,7 @@ impl TxPool {
             .chain_nonces
             .get(&signer_vec)
             .cloned()
-            .unwrap_or_else(|| bic::chain_nonce(self.db.as_ref(), &txu.tx.signer).unwrap_or(0));
+            .unwrap_or_else(|| consensus::chain_nonce(self.db.as_ref(), &txu.tx.signer).unwrap_or(0));
 
         if chain_nonce != 0 && txu.tx.nonce <= chain_nonce {
             return Err(TxPoolError::InvalidNonce { nonce: txu.tx.nonce, hash: txu.hash });
@@ -94,7 +94,7 @@ impl TxPool {
             .balances
             .get(&signer_vec)
             .cloned()
-            .unwrap_or_else(|| bic::chain_balance(self.db.as_ref(), &txu.tx.signer));
+            .unwrap_or_else(|| consensus::chain_balance(self.db.as_ref(), &txu.tx.signer));
 
         let exec_cost = txu.exec_cost(args.epoch) as i128;
         let fee = coin::to_cents(1) as i128;
@@ -129,8 +129,8 @@ impl TxPool {
     pub fn validate_tx_batch(&self, txs_packed: &[Vec<u8>]) -> Vec<Vec<u8>> {
         let chain_epoch = chain_epoch(self.db.as_ref());
         let segment_vr_hash =
-            bic::chain_segment_vr_hash(self.db.as_ref()).and_then(|v| v.try_into().ok()).unwrap_or([0u8; 32]);
-        let diff_bits = bic::chain_diff_bits(self.db.as_ref());
+            consensus::chain_segment_vr_hash(self.db.as_ref()).and_then(|v| v.try_into().ok()).unwrap_or([0u8; 32]);
+        let diff_bits = consensus::chain_diff_bits(self.db.as_ref());
 
         let mut args =
             ValidateTxArgs { epoch: chain_epoch, segment_vr_hash, diff_bits, batch_state: BatchState::default() };
@@ -153,8 +153,8 @@ impl TxPool {
     pub async fn grab_next_valid(&self, amt: usize) -> Vec<Vec<u8>> {
         let chain_epoch = chain_epoch(self.db.as_ref());
         let segment_vr_hash =
-            bic::chain_segment_vr_hash(self.db.as_ref()).and_then(|v| v.try_into().ok()).unwrap_or([0u8; 32]);
-        let diff_bits = bic::chain_diff_bits(self.db.as_ref());
+            consensus::chain_segment_vr_hash(self.db.as_ref()).and_then(|v| v.try_into().ok()).unwrap_or([0u8; 32]);
+        let diff_bits = consensus::chain_diff_bits(self.db.as_ref());
 
         let mut args =
             ValidateTxArgs { epoch: chain_epoch, segment_vr_hash, diff_bits, batch_state: BatchState::default() };

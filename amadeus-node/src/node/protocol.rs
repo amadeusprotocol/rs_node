@@ -138,7 +138,7 @@ pub fn parse_etf_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
         Entry::TYPENAME => Box::new(Entry::from_etf_map_validated(map)?),
         EventTip::TYPENAME => Box::new(EventTip::from_etf_map_validated(map)?),
         EventAttestation::TYPENAME => Box::new(EventAttestation::from_etf_map_validated(map)?),
-        Solution::TYPENAME => Box::new(Solution::from_etf_map_validated(map)?),
+        crate::bic::sol::Solution::TYPENAME => Box::new(crate::bic::sol_protocol::SolutionProto::from_etf_map_validated(map)?),
         EventTx::TYPENAME => Box::new(EventTx::from_etf_map_validated(map)?),
         GetPeerAnrs::TYPENAME => Box::new(GetPeerAnrs::from_etf_map_validated(map)?),
         GetPeerAnrsReply::TYPENAME => Box::new(GetPeerAnrsReply::from_etf_map_validated(map)?),

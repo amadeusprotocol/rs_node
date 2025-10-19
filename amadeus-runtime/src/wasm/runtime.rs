@@ -1,5 +1,5 @@
 use crate::bic::epoch::CallEnv;
-use crate::consensus::kv;
+use crate::kv;
 use crate::wasm::opcodes::{RpcMessage, RpcResponse};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -8,7 +8,7 @@ use wasmer::{Function, FunctionEnv, FunctionEnvMut, Instance, Memory, Module, St
 /// WASM Runtime context shared between host and WASM
 pub struct WasmContext {
     pub env: CallEnv,
-    pub db: crate::utils::rocksdb::RocksDb,
+    pub db: amadeus_utils::rocksdb::RocksDb,
     pub kv_ctx: Arc<Mutex<kv::ApplyCtx>>,
     pub logs: Arc<Mutex<Vec<String>>>,
     pub exec_used: Arc<Mutex<u64>>,
@@ -20,7 +20,7 @@ pub struct WasmContext {
 }
 
 impl WasmContext {
-    pub fn new(env: CallEnv, db: crate::utils::rocksdb::RocksDb, kv_ctx: kv::ApplyCtx) -> Self {
+    pub fn new(env: CallEnv, db: amadeus_utils::rocksdb::RocksDb, kv_ctx: kv::ApplyCtx) -> Self {
         Self {
             env,
             db,
@@ -371,14 +371,14 @@ mod host_functions {
                 if amount > 0 && contract.len() == 48 {
                     let mut contract_pk = [0u8; 48];
                     contract_pk.copy_from_slice(&contract);
-                    let caller_key = crate::utils::misc::bcat(&[
+                    let caller_key = amadeus_utils::misc::bcat(&[
                         b"bic:coin:balance:",
                         &context.env.account_caller,
                         b":",
                         symbol.as_bytes(),
                     ]);
                     let contract_key =
-                        crate::utils::misc::bcat(&[b"bic:coin:balance:", &contract_pk, b":", symbol.as_bytes()]);
+                        amadeus_utils::misc::bcat(&[b"bic:coin:balance:", &contract_pk, b":", symbol.as_bytes()]);
                     let mut kv_ctx = context.kv_ctx.lock().unwrap();
                     kv_ctx.increment(&context.db, &caller_key, -amount);
                     kv_ctx.increment(&context.db, &contract_key, amount);
@@ -447,7 +447,7 @@ mod host_functions {
 
         match context.read_bytes_with_store(&store, data_ptr as u32, data_len as u32) {
             Ok(data) => {
-                let hash = crate::utils::blake3::hash(&data);
+                let hash = amadeus_utils::blake3::hash(&data);
                 match context.write_bytes_with_store(&store, out_ptr as u32, &hash) {
                     Ok(_) => hash.len() as i32,
                     Err(_) => -1,
@@ -476,7 +476,7 @@ mod host_functions {
                 if account.len() == 48 {
                     let mut account_array = [0u8; 48];
                     account_array.copy_from_slice(&account);
-                    crate::consensus::chain_balance_symbol(&context.db, &account_array, &symbol) as i64
+                    crate::bic::chain_balance_symbol(&context.db, &account_array, symbol.as_bytes()) as i64
                 } else {
                     0
                 }
@@ -489,7 +489,7 @@ mod host_functions {
 /// Execute WASM bytecode with given function and arguments
 pub fn execute(
     env: &CallEnv,
-    db: &crate::utils::rocksdb::RocksDb,
+    db: &amadeus_utils::rocksdb::RocksDb,
     kv_ctx: kv::ApplyCtx,
     bytecode: &[u8],
     function: &str,

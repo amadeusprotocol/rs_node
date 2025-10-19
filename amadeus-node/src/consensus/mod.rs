@@ -16,10 +16,27 @@ use eetf::Term;
 
 // Re-export from bic module for backward compatibility
 pub use crate::bic::epoch::trainers_for_height;
-pub use crate::bic::{
-    chain_balance, chain_balance_symbol, chain_diff_bits, chain_nonce, chain_pop, chain_segment_vr_hash,
-    chain_total_sols,
-};
+pub use crate::bic::{chain_balance_symbol, chain_pop, chain_total_sols};
+
+// Wrapper functions to match expected signatures in amadeus-node
+pub fn chain_balance(db: &RocksDb, pk: &[u8; 48]) -> i128 {
+    crate::bic::chain_balance(db, pk, "AMA")
+}
+
+pub fn chain_nonce(db: &RocksDb, pk: &[u8; 48]) -> Option<i128> {
+    let nonce = crate::bic::chain_nonce(db, pk);
+    if nonce == 0 { None } else { Some(nonce) }
+}
+
+pub fn chain_segment_vr_hash(db: &RocksDb) -> Option<[u8; 32]> {
+    let hash_vec = crate::bic::chain_segment_vr_hash(db);
+    hash_vec.try_into().ok()
+}
+
+pub fn chain_diff_bits(db: &RocksDb) -> u32 {
+    let bits_vec = crate::bic::chain_diff_bits(db);
+    bits_vec.get(..4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes).unwrap_or(24)
+}
 
 /// Chain epoch accessor (Elixir: Consensus.chain_epoch/0)
 /// Returns current epoch calculated as height / 100_000

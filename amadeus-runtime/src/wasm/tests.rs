@@ -1,9 +1,10 @@
 use crate::bic::epoch::CallEnv;
-use crate::consensus::kv;
-use crate::utils::rocksdb;
+use crate::kv;
+use amadeus_utils::rocksdb;
 use crate::wasm::runtime;
 use std::sync::Once;
 
+#[allow(dead_code)]
 static INIT: Once = Once::new();
 const TEST_DB: &str = "target/test_wasm";
 const CONTRACTS_DIR: &str = "../assets/contracts"; // because core is in the workspace

@@ -1,8 +1,8 @@
-use crate::consensus::{DST_MOTION, DST_POP};
-use crate::utils::blake3;
-use crate::utils::bls12_381;
-use crate::utils::misc::TermExt;
-use crate::utils::rocksdb::RocksDb;
+use amadeus_utils::constants::{DST_MOTION, DST_POP};
+use amadeus_utils::blake3;
+use amadeus_utils::bls12_381;
+use amadeus_utils::misc::TermExt;
+use amadeus_utils::rocksdb::RocksDb;
 use bitvec::prelude::*;
 use eetf::Term;
 
@@ -275,10 +275,10 @@ impl Epoch {
     /// Dispatch a call with db access
     pub fn call(
         &self,
-        ctx: &mut crate::consensus::kv::ApplyCtx,
+        ctx: &mut crate::kv::ApplyCtx,
         op: EpochCall,
         env: &CallEnv,
-        db: &crate::utils::rocksdb::RocksDb,
+        db: &amadeus_utils::rocksdb::RocksDb,
     ) -> Result<(), EpochError> {
         match op {
             EpochCall::SubmitSol { sol } => self.submit_sol(ctx, env, db, &sol),
@@ -291,9 +291,9 @@ impl Epoch {
 
     fn submit_sol(
         &self,
-        ctx: &mut crate::consensus::kv::ApplyCtx,
+        ctx: &mut crate::kv::ApplyCtx,
         env: &CallEnv,
-        db: &crate::utils::rocksdb::RocksDb,
+        db: &amadeus_utils::rocksdb::RocksDb,
         sol_bytes: &[u8],
     ) -> Result<(), EpochError> {
         let hash = blake3::hash(sol_bytes);
@@ -331,7 +331,7 @@ impl Epoch {
         // So we trust that if we got here, the solution is valid
 
         // Check if POP already exists for this public key (key uses raw binary pk)
-        let pop_key = crate::utils::misc::bcat(&[b"bic:epoch:pop:", &pk]);
+        let pop_key = amadeus_utils::misc::bcat(&[b"bic:epoch:pop:", &pk]);
         let pop_exists = db.get("contractstate", &pop_key).ok().flatten().is_some();
 
         if !pop_exists {
@@ -344,7 +344,7 @@ impl Epoch {
         }
 
         // Increment solution count for this address (key uses raw binary pk, matching Elixir implementation)
-        let count_key = crate::utils::misc::bcat(&[b"bic:epoch:solutions_count:", &pk]);
+        let count_key = amadeus_utils::misc::bcat(&[b"bic:epoch:solutions_count:", &pk]);
         ctx.increment(db, &count_key, 1);
 
         Ok(())
@@ -352,9 +352,9 @@ impl Epoch {
 
     fn set_emission_address(
         &self,
-        ctx: &mut crate::consensus::kv::ApplyCtx,
+        ctx: &mut crate::kv::ApplyCtx,
         env: &CallEnv,
-        db: &crate::utils::rocksdb::RocksDb,
+        db: &amadeus_utils::rocksdb::RocksDb,
         address: &[u8; 48],
     ) -> Result<(), EpochError> {
         if address.len() != 48 {
@@ -362,7 +362,7 @@ impl Epoch {
         }
 
         // Key uses raw binary account_caller (matching Elixir implementation)
-        let key = crate::utils::misc::bcat(&[b"bic:epoch:emission_address:", &env.account_caller]);
+        let key = amadeus_utils::misc::bcat(&[b"bic:epoch:emission_address:", &env.account_caller]);
         ctx.put(db, &key, address);
 
         Ok(())
@@ -371,9 +371,9 @@ impl Epoch {
     #[allow(clippy::too_many_arguments)]
     fn slash_trainer(
         &self,
-        ctx: &mut crate::consensus::kv::ApplyCtx,
+        ctx: &mut crate::kv::ApplyCtx,
         env: &CallEnv,
-        db: &crate::utils::rocksdb::RocksDb,
+        db: &amadeus_utils::rocksdb::RocksDb,
         epoch: u64,
         malicious_pk: &[u8; 48],
         signature: &[u8],
@@ -499,8 +499,8 @@ impl Epoch {
     /// Epoch transition: distribute emissions, select validators, clear bloom filters
     pub fn next(
         &self,
-        ctx: &mut crate::consensus::kv::ApplyCtx,
-        db: &crate::utils::rocksdb::RocksDb,
+        ctx: &mut crate::kv::ApplyCtx,
+        db: &amadeus_utils::rocksdb::RocksDb,
         env: &CallEnv,
     ) -> Result<(), EpochError> {
         let epoch_cur = env.entry_epoch;
@@ -615,7 +615,7 @@ impl Epoch {
             let r = community_fund % n;
             for (i, pk) in pb67.iter().enumerate() {
                 let coins = if (i as u128) < r { q + 1 } else { q } as i128;
-                let emission_key = crate::utils::misc::bcat(&[b"bic:epoch:emission_address:", pk]);
+                let emission_key = amadeus_utils::misc::bcat(&[b"bic:epoch:emission_address:", pk]);
                 let emission_addr = db
                     .get("contractstate", &emission_key)
                     .ok()
@@ -630,7 +630,7 @@ impl Epoch {
                         }
                     })
                     .unwrap_or(*pk);
-                let balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &emission_addr, b":AMA"]);
+                let balance_key = amadeus_utils::misc::bcat(&[b"bic:coin:balance:", &emission_addr, b":AMA"]);
                 ctx.increment(db, &balance_key, coins);
             }
 
@@ -641,7 +641,7 @@ impl Epoch {
             if total_sols > 0 {
                 for (pk, sols) in trainers_to_recv {
                     let coins = ((*sols).max(0) as u128 * early_adopter / total_sols) as i128;
-                    let emission_key = crate::utils::misc::bcat(&[b"bic:epoch:emission_address:", pk]);
+                    let emission_key = amadeus_utils::misc::bcat(&[b"bic:epoch:emission_address:", pk]);
                     let emission_addr = db
                         .get("contractstate", &emission_key)
                         .ok()
@@ -656,7 +656,7 @@ impl Epoch {
                             }
                         })
                         .unwrap_or(*pk);
-                    let balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &emission_addr, b":AMA"]);
+                    let balance_key = amadeus_utils::misc::bcat(&[b"bic:coin:balance:", &emission_addr, b":AMA"]);
                     ctx.increment(db, &balance_key, coins);
                 }
             }
@@ -667,7 +667,7 @@ impl Epoch {
             if total_sols > 0 {
                 for (pk, sols) in trainers_to_recv {
                     let coins = ((*sols).max(0) as u128 * emission / total_sols) as i128;
-                    let emission_key = crate::utils::misc::bcat(&[b"bic:epoch:emission_address:", pk]);
+                    let emission_key = amadeus_utils::misc::bcat(&[b"bic:epoch:emission_address:", pk]);
                     let emission_addr = db
                         .get("contractstate", &emission_key)
                         .ok()
@@ -682,7 +682,7 @@ impl Epoch {
                             }
                         })
                         .unwrap_or(*pk);
-                    let balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &emission_addr, b":AMA"]);
+                    let balance_key = amadeus_utils::misc::bcat(&[b"bic:coin:balance:", &emission_addr, b":AMA"]);
                     ctx.increment(db, &balance_key, coins);
                 }
             }

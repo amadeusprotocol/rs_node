@@ -708,3 +708,26 @@ pub mod snapshot {
         }
     }
 }
+
+// Implement Database trait for RocksDb
+impl crate::database::Database for RocksDb {
+    fn get(&self, column_family: &str, key: &[u8]) -> Result<Option<Vec<u8>>, crate::database::DatabaseError> {
+        self.get(column_family, key).map_err(|e| crate::database::DatabaseError::Generic(e.to_string()))
+    }
+
+    fn put(&self, column_family: &str, key: &[u8], value: &[u8]) -> Result<(), crate::database::DatabaseError> {
+        self.put(column_family, key, value).map_err(|e| crate::database::DatabaseError::Generic(e.to_string()))
+    }
+
+    fn delete(&self, column_family: &str, key: &[u8]) -> Result<(), crate::database::DatabaseError> {
+        self.delete(column_family, key).map_err(|e| crate::database::DatabaseError::Generic(e.to_string()))
+    }
+
+    fn iter_prefix(
+        &self,
+        column_family: &str,
+        prefix: &[u8],
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, crate::database::DatabaseError> {
+        self.iter_prefix(column_family, prefix).map_err(|e| crate::database::DatabaseError::Generic(e.to_string()))
+    }
+}

@@ -432,6 +432,7 @@ pub fn apply_entry(
     let Some(curr_h) = fabric.get_temporal_height().ok().flatten() else {
         return Err(Error::Missing("temporal_height"));
     };
+
     if next_entry.header.height != curr_h + 1 {
         return Err(Error::WrongType("invalid_height"));
     }
