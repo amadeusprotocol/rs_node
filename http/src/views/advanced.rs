@@ -2236,14 +2236,14 @@ pub fn page(snapshot: &MetricsSnapshot, peers_summary: &Option<PeersSummary>, ct
             const tasksElement = document.getElementById('tasks-count');
             const errorsElement = document.getElementById('errors-count');
 
-            if (onlineElement && peers.online !== undefined) {{
-                onlineElement.textContent = peers.online.toLocaleString();
+            if (onlineElement) {{
+                onlineElement.textContent = (peers.online !== undefined ? peers.online : 0).toLocaleString();
             }}
-            if (trainersElement && peers.trainers !== undefined) {{
-                trainersElement.textContent = peers.trainers.toLocaleString();
+            if (trainersElement) {{
+                trainersElement.textContent = (peers.trainers !== undefined ? peers.trainers : 0).toLocaleString();
             }}
-            if (connectingElement && peers.connecting !== undefined) {{
-                connectingElement.textContent = peers.connecting.toLocaleString();
+            if (connectingElement) {{
+                connectingElement.textContent = (peers.connecting !== undefined ? peers.connecting : 0).toLocaleString();
             }}
             if (tasksElement && metrics.tasks !== undefined) {{
                 tasksElement.textContent = metrics.tasks.toLocaleString();
