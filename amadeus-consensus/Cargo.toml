@@ -1,0 +1,31 @@
+[package]
+name = "amadeus-consensus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Consensus library for Amadeus blockchain including WASM execution, BIC contracts, and state management"
+
+[lib]
+doctest = false
+
+[dependencies]
+rustler = "0.36.1"
+rand = "0.9.1"
+sha2 = "0.10.8"
+blake3 = "1.8.2"
+atoi = "2"
+
+[dependencies.rust-rocksdb]
+git = "https://github.com/vans163/rust-rocksdb"
+rev = "b3e3f248ecc1b47be3e77aa99e5aa60129e606b8"
+default-features = false
+features = ["zstd", "zstd-static-linking-only", "multi-threaded-cf"] #"jemalloc", "malloc-usable-size",
+
+[dependencies.rust-librocksdb-sys]
+git = "https://github.com/vans163/rust-rocksdb"
+rev = "b3e3f248ecc1b47be3e77aa99e5aa60129e606b8"
+
+[patch.crates-io]
+rust-rocksdb = { git = "https://github.com/vans163/rust-rocksdb", rev = "b3e3f248ecc1b47be3e77aa99e5aa60129e606b8" }
+rust-librocksdb-sys = { git = "https://github.com/vans163/rust-rocksdb", rev = "b3e3f248ecc1b47be3e77aa99e5aa60129e606b8" }
