@@ -2,7 +2,7 @@
 pub use amadeus_runtime::kv::{
     ApplyCtx, Mutation, Op, hash_mutations, mutations_from_etf, mutations_to_etf, revert,
 };
-use crate::utils::rocksdb::RocksDb;
+use amadeus_utils::rocksdb::RocksDb;
 use crate::utils::blake3;
 
 // Consensus-specific utilities that depend on consensus types

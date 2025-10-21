@@ -10,16 +10,5 @@ description = "Consensus library for Amadeus blockchain including WASM execution
 doctest = false
 
 [dependencies]
-rustler = "0.36.1"
 atoi = "2"
 amadeus-utils = { path = "../amadeus-utils" }
-
-[dependencies.rust-rocksdb]
-git = "https://github.com/vans163/rust-rocksdb"
-rev = "b3e3f248ecc1b47be3e77aa99e5aa60129e606b8"
-default-features = false
-features = ["bindgen-runtime", "lz4", "snappy"] # "zstd", "zstd-static-linking-only", "multi-threaded-cf", "jemalloc", "malloc-usable-size"
-
-[dependencies.rust-librocksdb-sys]
-git = "https://github.com/vans163/rust-rocksdb"
-rev = "b3e3f248ecc1b47be3e77aa99e5aa60129e606b8"

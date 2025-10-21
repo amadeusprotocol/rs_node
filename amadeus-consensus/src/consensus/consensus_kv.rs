@@ -5,8 +5,8 @@ use crate::consensus::consensus_muts;
 use consensus_muts::Mutation;
 
 pub fn kv_put<'db>(env: &mut ApplyEnv<'db>, key: &[u8], value: &[u8]) {
-    let old_value = env.txn.get_cf(&env.cf, key).unwrap();
-    env.txn.put_cf(&env.cf, key, value);
+    let old_value = env.txn.get(&env.cf, key).unwrap();
+    let _ = env.txn.put(&env.cf, key, value);
 
     env.muts.push(Mutation::Put { op: b"put".to_vec(), key: key.to_vec(), value: value.to_vec() });
     match old_value {
@@ -16,36 +16,36 @@ pub fn kv_put<'db>(env: &mut ApplyEnv<'db>, key: &[u8], value: &[u8]) {
 }
 
 pub fn kv_increment<'db>(env: &mut ApplyEnv<'db>, key: &[u8], value: i128) -> i128 {
-    match env.txn.get_cf(&env.cf, key).unwrap() {
+    match env.txn.get(&env.cf, key).unwrap() {
         None => {
             env.muts.push(Mutation::Put { op: b"put".to_vec(), key: key.to_vec(), value: value.to_string().into_bytes() });
             env.muts_rev.push(Mutation::Delete { op: b"delete".to_vec(), key: key.to_vec() });
-            env.txn.put_cf(&env.cf, key, value.to_string().into_bytes());
+            let _ = env.txn.put(&env.cf, key, &value.to_string().into_bytes());
             value
         },
         Some(old) => {
             let new_value: i128 = atoi::atoi::<i128>(&old).ok_or("invalid_integer").unwrap() + value;
             env.muts.push(Mutation::Put { op: b"put".to_vec(), key: key.to_vec(), value: new_value.to_string().into_bytes() });
             env.muts_rev.push(Mutation::Put { op: b"put".to_vec(), key: key.to_vec(), value: old });
-            env.txn.put_cf(&env.cf, key, new_value.to_string().into_bytes());
+            let _ = env.txn.put(&env.cf, key, &new_value.to_string().into_bytes());
             new_value
         }
     }
 }
 
 pub fn kv_delete<'db>(env: &mut ApplyEnv<'db>, key: &[u8]) {
-    match env.txn.get_cf(&env.cf, key).unwrap() {
+    match env.txn.get(&env.cf, key).unwrap() {
         None => (),
         Some(old) => {
             env.muts.push(Mutation::Delete { op: b"delete".to_vec(), key: key.to_vec() });
             env.muts_rev.push(Mutation::Put { op: b"put".to_vec(), key: key.to_vec(), value: old.to_vec() })
         }
     }
-    env.txn.delete_cf(&env.cf, key);
+    let _ = env.txn.delete(&env.cf, key);
 }
 
 pub fn kv_set_bit<'db>(env: &mut ApplyEnv<'db>, key: &[u8], bit_idx: u64) -> bool {
-    let (mut old, exists) = match env.txn.get_cf(&env.cf, key).unwrap() {
+    let (mut old, exists) = match env.txn.get(&env.cf, key).unwrap() {
         None => (vec![0u8; crate::consensus::bic::sol_bloom::PAGE_SIZE as usize], false),
         Some(value) => (value, true)
     };
@@ -63,20 +63,20 @@ pub fn kv_set_bit<'db>(env: &mut ApplyEnv<'db>, key: &[u8], bit_idx: u64) -> boo
             false => env.muts.push(Mutation::Delete { op: b"delete".to_vec(), key: key.to_vec()})
         };
         old[byte_idx] |= mask;
-        env.txn.put_cf(&env.cf, key, &old).unwrap();
+        let _ = env.txn.put(&env.cf, key, &old).unwrap();
         true
     }
 }
 
 pub fn kv_exists<'db>(env: &mut ApplyEnv<'db>, key: &[u8]) -> bool {
-    match env.txn.get_cf(&env.cf, key).unwrap() {
+    match env.txn.get(&env.cf, key).unwrap() {
         None => false,
         Some(_) => true
     }
 }
 
 pub fn kv_get<'db>(env: &mut ApplyEnv<'db>, key: &[u8]) -> Option<Vec<u8>> {
-    env.txn.get_cf(&env.cf, key).unwrap()
+    env.txn.get(&env.cf, key).unwrap()
 }
 
 pub fn kv_get_next<'db>(env: &mut ApplyEnv<'db>, prefix: &[u8], key: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
@@ -84,7 +84,7 @@ pub fn kv_get_next<'db>(env: &mut ApplyEnv<'db>, prefix: &[u8], key: &[u8]) -> O
     seek.extend_from_slice(prefix);
     seek.extend_from_slice(key);
 
-    let mut it = env.txn.raw_iterator_cf(&env.cf);
+    let mut it = env.txn.raw_iterator_cf(&env.cf).unwrap();
     it.seek(&seek);
     let it_valid = it.valid();
     if !it_valid { return None};
@@ -108,7 +108,7 @@ pub fn kv_get_prev<'db>(env: &mut ApplyEnv<'db>, prefix: &[u8], key: &[u8]) -> O
     seek.extend_from_slice(prefix);
     seek.extend_from_slice(key);
 
-    let mut it = env.txn.raw_iterator_cf(&env.cf);
+    let mut it = env.txn.raw_iterator_cf(&env.cf).unwrap();
     it.seek_for_prev(&seek);
     let it_valid = it.valid();
     if !it_valid { return None};

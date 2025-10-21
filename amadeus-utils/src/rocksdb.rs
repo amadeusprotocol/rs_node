@@ -1,9 +1,14 @@
 //! Deterministic wrapper API over RocksDB v10.
-use rust_rocksdb::{
-    BlockBasedOptions, Cache, ColumnFamilyDescriptor, DBCompressionType, DBRecoveryMode, Direction,
-    IteratorMode, MultiThreaded, TransactionDB, TransactionDBOptions, TransactionOptions, Options, ReadOptions,
-    SliceTransform, Transaction, WriteOptions,
+
+// Re-export commonly used types for downstream crates
+pub use rust_rocksdb::{
+    statistics, AsColumnFamilyRef, BlockBasedIndexType, BlockBasedOptions, BottommostLevelCompaction,
+    BoundColumnFamily, Cache, ColumnFamilyDescriptor, CompactOptions, DBCompressionType,
+    DBRawIteratorWithThreadMode, DBRecoveryMode, Direction, Error as RocksDbError, IteratorMode, LruCacheOptions,
+    MultiThreaded, Options, ReadOptions, SliceTransform, Transaction, TransactionDB, TransactionDBOptions,
+    TransactionOptions, WriteOptions,
 };
+pub use rust_librocksdb_sys;
 use tokio::fs::create_dir_all;
 
 #[cfg(test)]
@@ -263,6 +268,9 @@ impl<'a> RocksDbTxn<'a> {
     pub fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
         self.inner.get(cf, key)
     }
+    pub fn raw_iterator_cf(&self, cf: &str) -> Result<DBRawIteratorWithThreadMode<'_, Transaction<'_, TransactionDB<MultiThreaded>>>, Error> {
+        self.inner.raw_iterator_cf(cf)
+    }
     pub fn commit(self) -> Result<(), Error> {
         self.inner.commit()
     }
@@ -347,6 +355,13 @@ impl Cf {
 pub struct SimpleTransaction<'a> {
     txn: Transaction<'a, TransactionDB<MultiThreaded>>,
     db: &'a TransactionDB<MultiThreaded>,
+}
+
+impl<'a> SimpleTransaction<'a> {
+    pub fn raw_iterator_cf(&self, cf: &str) -> Result<DBRawIteratorWithThreadMode<'_, Transaction<'_, TransactionDB<MultiThreaded>>>, Error> {
+        let cf_handle = self.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
+        Ok(self.txn.raw_iterator_cf(&cf_handle))
+    }
 }
 
 impl<'a> RocksDbTransaction for SimpleTransaction<'a> {
