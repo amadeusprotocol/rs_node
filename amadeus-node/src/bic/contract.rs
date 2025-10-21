@@ -1,4 +1,5 @@
-use crate::kv;
+use amadeus_consensus::consensus::consensus_apply::ApplyEnv;
+use amadeus_consensus::consensus::consensus_kv;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -30,8 +31,8 @@ fn key_bytecode(account: &[u8; 48]) -> Vec<u8> {
 }
 
 /// Read stored bytecode for a given account public key
-pub fn bytecode(ctx: &mut kv::ApplyCtx, db: &crate::utils::rocksdb::RocksDb, account: &[u8; 48]) -> Option<Vec<u8>> {
-    ctx.get(db, &key_bytecode(account))
+pub fn bytecode(env: &mut ApplyEnv, account: &[u8; 48]) -> Option<Vec<u8>> {
+    consensus_kv::kv_get(env, &key_bytecode(account))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,10 +42,9 @@ pub struct CallEnv {
 
 /// Dispatch contract module calls (currently only "deploy")
 pub fn call(
-    ctx: &mut kv::ApplyCtx,
-    db: &crate::utils::rocksdb::RocksDb,
+    env: &mut ApplyEnv,
     function: &str,
-    env: &CallEnv,
+    call_env: &CallEnv,
     args: &[Vec<u8>],
 ) -> Result<(), ContractError> {
     match function {
@@ -55,46 +55,10 @@ pub fn call(
             }
             let wasmbytes = &args[0];
             // Store bytecode under caller's account key
-            let key = key_bytecode(&env.account_caller);
-            ctx.put(db, &key, wasmbytes);
+            let key = key_bytecode(&call_env.account_caller);
+            consensus_kv::kv_put(env, &key, wasmbytes);
             Ok(())
         }
         other => Err(ContractError::InvalidFunction(other.to_string())),
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use std::sync::Once;
-//
-//     static INIT: Once = Once::new();
-//
-//     fn ensure_db_init() {
-//         INIT.call_once(|| {
-//             let test_db_path = "target/test_bic_contract_db";
-//             std::fs::create_dir_all(test_db_path).unwrap();
-//             tokio::runtime::Runtime::new().unwrap().block_on(async {
-//                 let _ = crate::utils::rocksdb::init("target/test_bic_contract").await;
-//             });
-//         });
-//     }
-//
-//     #[test]
-//     fn bytecode_roundtrip_with_deploy_call() {
-//         ensure_db_init();
-//         // reset KV
-//         kv::reset_for_tests();
-//         let env = CallEnv { account_caller: [7u8; 48] };
-//         let wasm = vec![0xde, 0xad, 0xbe, 0xef];
-//
-//         // Wrong usage
-//         assert!(matches!(call("deploy", &env, &[]), Err(ContractError::InvalidArgs)));
-//         assert!(matches!(call("unknown", &env, &[wasm.clone()]), Err(ContractError::InvalidFunction(_))));
-//
-//         // Correct deploy
-//         call("deploy", &env, &[wasm.clone()]).expect("deploy ok");
-//         let got = bytecode(&env.account_caller).expect("stored");
-//         assert_eq!(got, wasm);
-//     }
-// }

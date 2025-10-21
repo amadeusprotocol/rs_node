@@ -13,6 +13,8 @@ use bitvec::prelude::*;
 use eetf::{Atom, Binary, Term};
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
+use amadeus_consensus::consensus::consensus_apply::ApplyEnv;
+use amadeus_consensus::consensus::consensus_kv;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -133,12 +135,12 @@ fn unmask_trainers(mask: &BitVec<u8, Msb0>, trainers: &[[u8; 48]]) -> Vec<[u8; 4
     mask.iter().zip(trainers.iter()).filter_map(|(bit, pk)| if *bit { Some(*pk) } else { None }).collect()
 }
 
-pub fn chain_muts_rev(fabric: &fabric::Fabric, hash: &[u8; 32]) -> Option<Vec<crate::consensus::kv::Mutation>> {
+pub fn chain_muts_rev(fabric: &fabric::Fabric, hash: &[u8; 32]) -> Option<Vec<crate::consensus::kv::MutationLegacy>> {
     let bin = fabric.get_muts_rev(hash).ok()??;
     crate::consensus::kv::mutations_from_etf(&bin).ok()
 }
 
-pub fn chain_muts(fabric: &fabric::Fabric, hash: &[u8; 32]) -> Option<Vec<crate::consensus::kv::Mutation>> {
+pub fn chain_muts(fabric: &fabric::Fabric, hash: &[u8; 32]) -> Option<Vec<crate::consensus::kv::MutationLegacy>> {
     let bin = fabric.get_muts(hash).ok()??;
     crate::consensus::kv::mutations_from_etf(&bin).ok()
 }
@@ -169,24 +171,26 @@ impl TxResult {
 /// Execute a single transaction, routing to the appropriate contract handler
 /// Returns (error, logs, mutations, mutations_reverse, mutations_gas, mutations_gas_reverse)
 fn execute_transaction(
-    ctx: &mut crate::consensus::kv::ApplyCtx,
+    env: &mut ApplyEnv,
     db: &RocksDb,
     next_entry: &Entry,
     txu: &TxU,
 ) -> (
     String,
     Vec<String>,
-    Vec<crate::consensus::kv::Mutation>,
-    Vec<crate::consensus::kv::Mutation>,
-    Vec<crate::consensus::kv::Mutation>,
-    Vec<crate::consensus::kv::Mutation>,
+    Vec<amadeus_consensus::consensus::consensus_muts::Mutation>,
+    Vec<amadeus_consensus::consensus::consensus_muts::Mutation>,
+    Vec<amadeus_consensus::consensus::consensus_muts::Mutation>,
+    Vec<amadeus_consensus::consensus::consensus_muts::Mutation>,
 ) {
     let action = match txu.tx.actions.first() {
         Some(a) => a,
         None => return ("no_actions".to_string(), vec![], vec![], vec![], vec![], vec![]),
     };
 
-    ctx.reset();
+    // Clear mutations before executing transaction
+    env.muts.clear();
+    env.muts_rev.clear();
 
     let call_env = crate::bic::epoch::CallEnv {
         entry_epoch: next_entry.header.height as u64 / 100_000,
@@ -207,122 +211,195 @@ fn execute_transaction(
         readonly: false,
     };
 
-    let (error, logs) = match action.contract.as_slice() {
-        b"Epoch" => execute_epoch_call(ctx, db, &call_env, &action.function, &action.args),
-        b"Coin" => execute_coin_call(ctx, db, txu.tx.signer, &action.function, &action.args),
-        b"Contract" => execute_contract_call(ctx, db, txu.tx.signer, &action.function, &action.args),
-        contract if contract.len() == 48 => {
-            execute_wasm_call(ctx, db, &call_env, contract, &action.function, &action.args)
+    let (error, logs, muts_gas, muts_gas_rev) = match action.contract.as_slice() {
+        b"Epoch" => {
+            let (err, logs) = execute_epoch_call(env, &call_env, &action.function, &action.args);
+            (err, logs, vec![], vec![])
         }
-        _ => ("invalid_contract".to_string(), vec![]),
+        b"Coin" => {
+            let (err, logs) = execute_coin_call(env, txu.tx.signer, &action.function, &action.args);
+            (err, logs, vec![], vec![])
+        }
+        b"Contract" => {
+            let (err, logs) = execute_contract_call(env, txu.tx.signer, &action.function, &action.args);
+            (err, logs, vec![], vec![])
+        }
+        contract if contract.len() == 48 => {
+            execute_wasm_call(env, db, &call_env, contract, &action.function, &action.args)
+        }
+        _ => ("invalid_contract".to_string(), vec![], vec![], vec![]),
     };
 
-    (error, logs, ctx.mutations(), ctx.mutations_reverse(), ctx.mutations_gas(), ctx.mutations_gas_reverse())
+    // Capture mutations after execution (regular mutations + gas mutations)
+    (error, logs, env.muts.clone(), env.muts_rev.clone(), muts_gas, muts_gas_rev)
 }
 
 fn execute_epoch_call(
-    ctx: &mut crate::consensus::kv::ApplyCtx,
-    db: &RocksDb,
-    env: &crate::bic::epoch::CallEnv,
+    env: &mut ApplyEnv,
+    call_env: &crate::bic::epoch::CallEnv,
     function: &str,
     args: &[Vec<u8>],
 ) -> (String, Vec<String>) {
     parse_epoch_call(function, args)
-        .and_then(|call| crate::bic::epoch::Epoch.call(ctx, call, env, db).map_err(|e| e.to_string()))
+        .and_then(|call| crate::bic::epoch::Epoch.call(env, call, call_env).map_err(|e| e.to_string()))
         .map(|_| ("ok".to_string(), vec![]))
         .unwrap_or_else(|e| (e, vec![]))
 }
 
 fn execute_coin_call(
-    ctx: &mut crate::consensus::kv::ApplyCtx,
-    db: &RocksDb,
+    env: &mut ApplyEnv,
     caller: [u8; 48],
     function: &str,
     args: &[Vec<u8>],
 ) -> (String, Vec<String>) {
-    let env = crate::bic::coin::CallEnv { account_caller: caller };
-    crate::bic::coin::call(ctx, db, function, &env, args)
+    let call_env = crate::bic::coin::CallEnv { account_caller: caller };
+    crate::bic::coin::call(env, function, &call_env, args)
         .map(|_| ("ok".to_string(), vec![]))
         .unwrap_or_else(|e| (e.to_string(), vec![]))
 }
 
 fn execute_contract_call(
-    ctx: &mut crate::consensus::kv::ApplyCtx,
-    db: &RocksDb,
+    env: &mut ApplyEnv,
     caller: [u8; 48],
     function: &str,
     args: &[Vec<u8>],
 ) -> (String, Vec<String>) {
-    let env = crate::bic::contract::CallEnv { account_caller: caller };
-    crate::bic::contract::call(ctx, db, function, &env, args)
+    let call_env = crate::bic::contract::CallEnv { account_caller: caller };
+    crate::bic::contract::call(env, function, &call_env, args)
         .map(|_| ("ok".to_string(), vec![]))
         .unwrap_or_else(|e| (e.to_string(), vec![]))
 }
 
 fn execute_wasm_call(
-    ctx: &mut crate::consensus::kv::ApplyCtx,
+    apply_env: &mut ApplyEnv,
     db: &RocksDb,
-    env: &crate::bic::epoch::CallEnv,
+    call_env: &crate::bic::epoch::CallEnv,
     contract: &[u8],
     function: &str,
     args: &[Vec<u8>],
-) -> (String, Vec<String>) {
+) -> (String, Vec<String>, Vec<amadeus_consensus::consensus::consensus_muts::Mutation>, Vec<amadeus_consensus::consensus::consensus_muts::Mutation>) {
+    
+
     let contract_pk: [u8; 48] = contract.try_into().expect("contract len checked");
 
-    // Handle attached tokens BEFORE WASM execution (regular mutations)
-    if !env.attached_symbol.is_empty() && !env.attached_amount.is_empty() {
-        let amount_str = String::from_utf8_lossy(&env.attached_amount);
+    // Handle attached tokens BEFORE WASM execution (using ApplyEnv)
+    if !call_env.attached_symbol.is_empty() && !call_env.attached_amount.is_empty() {
+        let amount_str = String::from_utf8_lossy(&call_env.attached_amount);
         let amount = amount_str.parse::<i128>().unwrap_or(0);
         if amount > 0 {
             let signer_key =
-                crate::utils::misc::bcat(&[b"bic:coin:balance:", &env.tx_signer, b":", &env.attached_symbol]);
+                crate::utils::misc::bcat(&[b"bic:coin:balance:", &call_env.tx_signer, b":", &call_env.attached_symbol]);
             let contract_key =
-                crate::utils::misc::bcat(&[b"bic:coin:balance:", &contract_pk, b":", &env.attached_symbol]);
-            ctx.increment(db, &signer_key, -amount);
-            ctx.increment(db, &contract_key, amount);
+                crate::utils::misc::bcat(&[b"bic:coin:balance:", &contract_pk, b":", &call_env.attached_symbol]);
+            consensus_kv::kv_increment(apply_env, &signer_key, -amount);
+            consensus_kv::kv_increment(apply_env, &contract_key, amount);
         }
     }
 
-    // Execute WASM (regular mutations)
-    match crate::bic::contract::bytecode(ctx, db, &contract_pk) {
+    // Save mutations from attached tokens handling
+    let muts_attached = apply_env.muts.clone();
+    let muts_attached_rev = apply_env.muts_rev.clone();
+
+    // Get bytecode from ApplyEnv
+    let wasm_bytecode_opt = crate::bic::contract::bytecode(apply_env, &contract_pk);
+
+    // For WASM execution, use old ApplyCtx approach (WASM runtime not migrated yet)
+    let ctx = crate::consensus::kv::ApplyCtx::new();
+
+    // Execute WASM (using old ApplyCtx)
+    match wasm_bytecode_opt {
         Some(wasm_bytes) => {
-            match crate::wasm::runtime::execute(env, db, ctx.clone(), &wasm_bytes, function, args) {
+            match crate::wasm::runtime::execute(call_env, db, ctx.clone(), &wasm_bytes, function, args) {
                 Ok(result) => {
-                    // Save regular mutations and switch to gas context
-                    let muts = ctx.mutations();
-                    let muts_rev = ctx.mutations_reverse();
-                    ctx.save_to_gas_and_restore(vec![], vec![]); // clear and prepare gas context
+                    // Get WASM execution mutations
+                    let muts_wasm = ctx.mutations();
+                    let muts_wasm_rev = ctx.mutations_reverse();
 
-                    // Charge gas (gas mutations)
+                    // Convert old Mutation type to new Mutation type and add to apply_env
+                    for m in muts_wasm {
+                        let new_mut = convert_old_mutation_to_new(&m);
+                        apply_env.muts.push(new_mut);
+                    }
+                    for m in muts_wasm_rev {
+                        let new_mut = convert_old_mutation_to_new(&m);
+                        apply_env.muts_rev.push(new_mut);
+                    }
+
+                    // Now handle gas charging (separate mutations for gas)
+                    // Save current mutations (attached + wasm)
+                    let saved_muts = apply_env.muts.clone();
+                    let saved_muts_rev = apply_env.muts_rev.clone();
+
+                    // Clear to collect gas mutations separately
+                    apply_env.muts = vec![];
+                    apply_env.muts_rev = vec![];
+
+                    // Charge gas
                     let exec_used = (result.exec_used * 100) as i128;
-                    let signer_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &env.tx_signer, b":AMA"]);
-                    ctx.use_gas_context(true);
-                    ctx.increment(db, &signer_key, -exec_used);
+                    let signer_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &call_env.tx_signer, b":AMA"]);
+                    consensus_kv::kv_increment(apply_env, &signer_key, -exec_used);
 
-                    if env.entry_epoch >= 295 {
+                    if call_env.entry_epoch >= 295 {
                         let half_exec_cost = exec_used / 2;
                         let entry_signer_key =
-                            crate::utils::misc::bcat(&[b"bic:coin:balance:", &env.entry_signer, b":AMA"]);
+                            crate::utils::misc::bcat(&[b"bic:coin:balance:", &call_env.entry_signer, b":AMA"]);
                         let zero_pubkey = [0u8; 48];
                         let burn_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &zero_pubkey, b":AMA"]);
-                        ctx.increment(db, &entry_signer_key, half_exec_cost);
-                        ctx.increment(db, &burn_key, half_exec_cost);
+                        consensus_kv::kv_increment(apply_env, &entry_signer_key, half_exec_cost);
+                        consensus_kv::kv_increment(apply_env, &burn_key, half_exec_cost);
                     } else {
                         let entry_signer_key =
-                            crate::utils::misc::bcat(&[b"bic:coin:balance:", &env.entry_signer, b":AMA"]);
-                        ctx.increment(db, &entry_signer_key, exec_used);
+                            crate::utils::misc::bcat(&[b"bic:coin:balance:", &call_env.entry_signer, b":AMA"]);
+                        consensus_kv::kv_increment(apply_env, &entry_signer_key, exec_used);
                     }
-                    ctx.use_gas_context(false);
 
-                    // Restore regular mutations
-                    ctx.save_to_gas_and_restore(muts, muts_rev);
+                    // Extract gas mutations
+                    let muts_gas = apply_env.muts.clone();
+                    let muts_gas_rev = apply_env.muts_rev.clone();
 
-                    ("ok".to_string(), result.logs)
+                    // Restore regular mutations (attached + wasm)
+                    apply_env.muts = saved_muts;
+                    apply_env.muts_rev = saved_muts_rev;
+
+                    ("ok".to_string(), result.logs, muts_gas, muts_gas_rev)
                 }
-                Err(e) => (e.to_string(), vec![]),
+                Err(e) => {
+                    // Restore attached token mutations on error
+                    apply_env.muts = muts_attached;
+                    apply_env.muts_rev = muts_attached_rev;
+                    (e.to_string(), vec![], vec![], vec![])
+                }
             }
         }
-        None => ("contract_not_found".to_string(), vec![]),
+        None => ("contract_not_found".to_string(), vec![], vec![], vec![]),
+    }
+}
+
+// Helper function to convert old Mutation type to new Mutation type
+fn convert_old_mutation_to_new(old: &crate::consensus::kv::MutationLegacy) -> amadeus_consensus::consensus::consensus_muts::Mutation {
+    use amadeus_consensus::consensus::consensus_muts::Mutation;
+    use crate::consensus::kv::Op;
+    match &old.op {
+        Op::Put => Mutation::Put {
+            op: b"put".to_vec(),
+            key: old.key.clone(),
+            value: old.value.clone().unwrap_or_default(),
+        },
+        Op::Delete => Mutation::Delete {
+            op: b"delete".to_vec(),
+            key: old.key.clone(),
+        },
+        Op::SetBit { bit_idx, bloom_size } => Mutation::SetBit {
+            op: b"set_bit".to_vec(),
+            key: old.key.clone(),
+            value: *bit_idx as u64,
+            bloomsize: *bloom_size as u64,
+        },
+        Op::ClearBit { bit_idx } => Mutation::ClearBit {
+            op: b"clear_bit".to_vec(),
+            key: old.key.clone(),
+            value: *bit_idx as u64,
+        },
     }
 }
 
@@ -349,7 +426,7 @@ fn parse_epoch_call(function: &str, args: &[Vec<u8>]) -> Result<crate::bic::epoc
 }
 
 /// Pre-process transactions: update nonces, deduct gas
-fn call_txs_pre(ctx: &mut crate::consensus::kv::ApplyCtx, db: &RocksDb, next_entry: &Entry, txus: &[TxU]) {
+fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) {
     // DON'T reset here - we want to accumulate mutations from the entire entry processing
 
     let epoch = next_entry.header.height / 100_000;
@@ -364,7 +441,7 @@ fn call_txs_pre(ctx: &mut crate::consensus::kv::ApplyCtx, db: &RocksDb, next_ent
         let nonce_key = crate::utils::misc::bcat(&[b"bic:base:nonce:", &txu.tx.signer]);
         // unavoidable: i128 nonce needs to fit in i64 for storage
         let nonce_i64 = i64::try_from(txu.tx.nonce).unwrap_or(i64::MAX);
-        ctx.put(db, &nonce_key, &nonce_i64.to_string().into_bytes());
+        consensus_kv::kv_put(env, &nonce_key, &nonce_i64.to_string().into_bytes());
 
         // Calculate and deduct exec cost using proper unit conversion
         let bytes = txu.tx_encoded.len() + 32 + 96;
@@ -377,30 +454,148 @@ fn call_txs_pre(ctx: &mut crate::consensus::kv::ApplyCtx, db: &RocksDb, next_ent
         };
 
         let signer_balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &txu.tx.signer, b":AMA"]);
-        ctx.increment(db, &signer_balance_key, -exec_cost);
+        consensus_kv::kv_increment(env, &signer_balance_key, -exec_cost);
 
         // Credit entry signer and burn address
         if epoch >= 295 {
-            ctx.increment(db, &entry_signer_key, exec_cost / 2);
-            ctx.increment(db, &burn_key, exec_cost / 2);
+            consensus_kv::kv_increment(env, &entry_signer_key, exec_cost / 2);
+            consensus_kv::kv_increment(env, &burn_key, exec_cost / 2);
         } else {
-            ctx.increment(db, &entry_signer_key, exec_cost);
+            consensus_kv::kv_increment(env, &entry_signer_key, exec_cost);
         }
     }
 }
 
+// Helper functions for new Mutation type
+
+/// Revert mutations using new Mutation type
+fn revert_new_mutations(db: &RocksDb, muts_rev: &[amadeus_consensus::consensus::consensus_muts::Mutation]) {
+    use amadeus_consensus::consensus::consensus_muts::Mutation;
+    for m in muts_rev {
+        match m {
+            Mutation::Put { key, value, .. } => {
+                let _ = db.put("contractstate", key, value);
+            }
+            Mutation::Delete { key, .. } => {
+                let _ = db.delete("contractstate", key);
+            }
+            Mutation::SetBit { key, value,  .. } => {
+                // implement set_bit logic similar to old version
+                let _ = db.put("contractstate", key, &value.to_le_bytes());
+            }
+            Mutation::ClearBit { key, value, .. } => {
+                // implement clear_bit logic similar to old version
+                let _ = db.put("contractstate", key, &value.to_le_bytes());
+            }
+        }
+    }
+}
+
+/// Hash mutations with transaction results using new Mutation type
+fn hash_mutations_with_results_new(results: &[TxResult], muts: &[amadeus_consensus::consensus::consensus_muts::Mutation]) -> [u8; 32] {
+    use amadeus_consensus::consensus::consensus_muts::Mutation;
+    use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
+    use eetf::{Atom, Binary, List, Map, Term};
+    use std::collections::HashMap;
+
+    let mut etf_list = Vec::new();
+
+    // First, add transaction results to the list
+    for result in results {
+        let mut map = HashMap::new();
+        map.insert(Term::Atom(Atom::from("error")), Term::Atom(Atom::from(result.error.as_str())));
+        etf_list.push(Term::Map(Map { map }));
+    }
+
+    // Then, add mutations to the list
+    for m in muts {
+        let mut map = HashMap::new();
+
+        match m {
+            Mutation::Put { op: _, key, value } => {
+                map.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("put")));
+                map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: key.clone() }));
+                map.insert(Term::Atom(Atom::from("value")), Term::Binary(Binary { bytes: value.clone() }));
+            }
+            Mutation::Delete { op: _, key } => {
+                map.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("delete")));
+                map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: key.clone() }));
+            }
+            Mutation::SetBit { op: _, key, value, bloomsize } => {
+                map.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("set_bit")));
+                map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: key.clone() }));
+                map.insert(Term::Atom(Atom::from("value")), u64_to_term(*value));
+                map.insert(Term::Atom(Atom::from("bloomsize")), u64_to_term(*bloomsize));
+            }
+            Mutation::ClearBit { op: _, key, value } => {
+                map.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("clear_bit")));
+                map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: key.clone() }));
+                map.insert(Term::Atom(Atom::from("value")), u64_to_term(*value));
+            }
+        }
+
+        etf_list.push(Term::Map(Map { map }));
+    }
+
+    let list = Term::List(List { elements: etf_list });
+    let bin = encode_safe_deterministic(&list);
+    crate::utils::blake3::hash(&bin)
+}
+
+/// Convert new Mutation type to ETF
+fn mutations_to_etf_new(muts: &[amadeus_consensus::consensus::consensus_muts::Mutation]) -> Vec<u8> {
+    use amadeus_consensus::consensus::consensus_muts::Mutation;
+    use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
+    use eetf::{Atom, Binary, List, Map, Term};
+    use std::collections::HashMap;
+
+    let mut etf_list = Vec::new();
+
+    for m in muts {
+        let mut map = HashMap::new();
+
+        match m {
+            Mutation::Put { op: _, key, value } => {
+                map.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("put")));
+                map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: key.clone() }));
+                map.insert(Term::Atom(Atom::from("value")), Term::Binary(Binary { bytes: value.clone() }));
+            }
+            Mutation::Delete { op: _, key } => {
+                map.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("delete")));
+                map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: key.clone() }));
+            }
+            Mutation::SetBit { op: _, key, value, bloomsize } => {
+                map.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("set_bit")));
+                map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: key.clone() }));
+                map.insert(Term::Atom(Atom::from("value")), u64_to_term(*value));
+                map.insert(Term::Atom(Atom::from("bloomsize")), u64_to_term(*bloomsize));
+            }
+            Mutation::ClearBit { op: _, key, value } => {
+                map.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("clear_bit")));
+                map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: key.clone() }));
+                map.insert(Term::Atom(Atom::from("value")), u64_to_term(*value));
+            }
+        }
+
+        etf_list.push(Term::Map(Map { map }));
+    }
+
+    let list = Term::List(List { elements: etf_list });
+    encode_safe_deterministic(&list)
+}
+
 /// Exit logic: segment VR updates and epoch transitions
-fn call_exit(ctx: &mut crate::consensus::kv::ApplyCtx, db: &RocksDb, next_entry: &Entry) {
+fn call_exit(env: &mut ApplyEnv, next_entry: &Entry, db: &RocksDb) {
     // DON'T reset here - we want to accumulate mutations from the entire entry processing
 
     // Update segment VR hash every 1000 blocks
     if next_entry.header.height % 1000 == 0 {
-        ctx.put(db, b"bic:epoch:segment_vr_hash", &crate::utils::blake3::hash(&next_entry.header.vr));
+        consensus_kv::kv_put(env, b"bic:epoch:segment_vr_hash", &crate::utils::blake3::hash(&next_entry.header.vr));
     }
 
     // Epoch transition every 100k blocks
     if next_entry.header.height % 100_000 == 99_999 {
-        let env = crate::bic::epoch::CallEnv {
+        let call_env = crate::bic::epoch::CallEnv {
             entry_epoch: next_entry.header.height as u64 / 100_000,
             entry_height: next_entry.header.height as u64,
             entry_signer: next_entry.header.signer,
@@ -418,7 +613,7 @@ fn call_exit(ctx: &mut crate::consensus::kv::ApplyCtx, db: &RocksDb, next_entry:
             seedf64: 0.0,
             readonly: true,
         };
-        let _ = crate::bic::epoch::Epoch.next(ctx, db, &env);
+        let _ = crate::bic::epoch::Epoch.next(env, &call_env, db);
     }
 }
 
@@ -427,8 +622,6 @@ pub fn apply_entry(
     config: &crate::config::Config,
     next_entry: &Entry,
 ) -> Result<Option<Vec<u8>>, Error> {
-    let mut ctx = crate::consensus::kv::ApplyCtx::new();
-
     let Some(curr_h) = fabric.get_temporal_height().ok().flatten() else {
         return Err(Error::Missing("temporal_height"));
     };
@@ -446,17 +639,34 @@ pub fn apply_entry(
         }
     }
 
-    // pre-process transactions (nonce updates, gas deduction)
+    // Create transaction and ApplyEnv
     let db = fabric.db();
-    call_txs_pre(&mut ctx, db, next_entry, &txus);
+    let txn = db.begin_transaction()?;
+    let entry_vr_b3 = crate::utils::blake3::hash(&next_entry.header.vr);
+    let mut env = amadeus_consensus::consensus::consensus_apply::make_apply_env(
+        txn,
+        "contractstate".to_string(),
+        &next_entry.header.signer,
+        &next_entry.header.prev_hash,
+        next_entry.header.slot,
+        next_entry.header.prev_slot as u64,
+        next_entry.header.height,
+        next_entry.header.height / 100_000,
+        &next_entry.header.vr,
+        &entry_vr_b3,
+        &next_entry.header.dr,
+    );
+
+    // pre-process transactions (nonce updates, gas deduction)
+    call_txs_pre(&mut env, next_entry, &txus);
     // Collect mutations from pre-processing AFTER call_txs_pre
-    let mut muts = ctx.mutations();
-    let mut muts_rev = ctx.mutations_reverse();
+    let mut muts = env.muts.clone();
+    let mut muts_rev = env.muts_rev.clone();
 
     // execute transactions with gas separation (matches Elixir logic)
     let mut tx_results = Vec::new();
     for txu in &txus {
-        let (error, logs, m3, m_rev3, m3_gas, m3_gas_rev) = execute_transaction(&mut ctx, db, next_entry, txu);
+        let (error, logs, m3, m_rev3, m3_gas, m3_gas_rev) = execute_transaction(&mut env, db, next_entry, txu);
 
         if error == "ok" {
             // success: combine regular + gas mutations
@@ -465,8 +675,8 @@ pub fn apply_entry(
             muts_rev.extend(m_rev3);
             muts_rev.extend(m3_gas_rev);
         } else {
-            // failure: revert regular mutations, keep only gas mutations
-            crate::consensus::kv::revert(db, &m_rev3);
+            // failure: revert regular mutations using new mutation type
+            revert_new_mutations(db, &m_rev3);
             muts.extend(m3_gas);
             muts_rev.extend(m3_gas_rev);
         }
@@ -483,20 +693,24 @@ pub fn apply_entry(
         }
     }
 
-    // Reset mutations before call_exit to avoid collecting the last transaction's mutations twice
-    ctx.reset();
+    // Clear mutations before call_exit to avoid collecting the last transaction's mutations twice
+    env.muts.clear();
+    env.muts_rev.clear();
 
     // call exit logic (segment VR updates, epoch transitions)
-    call_exit(&mut ctx, db, next_entry);
+    call_exit(&mut env, next_entry, db);
 
     // get exit mutations and combine
-    let muts_exit = ctx.mutations();
-    let muts_exit_rev = ctx.mutations_reverse();
+    let muts_exit = env.muts.clone();
+    let muts_exit_rev = env.muts_rev.clone();
     muts.extend(muts_exit);
     muts_rev.extend(muts_exit_rev);
 
     // Hash results + mutations (matching Elixir: ConsensusKV.hash_mutations(l ++ m))
-    let mutations_hash = crate::consensus::kv::hash_mutations_with_results(&tx_results, &muts);
+    let mutations_hash = hash_mutations_with_results_new(&tx_results, &muts);
+
+    // Commit the transaction
+    env.txn.commit()?;
 
     // sign attestation
     let pk = config.get_pk();
@@ -520,9 +734,9 @@ pub fn apply_entry(
     fabric.set_temporal_hash_height(next_entry)?;
 
     // store mutations and reverse mutations for potential rewind
-    let muts_bin = crate::consensus::kv::mutations_to_etf(&muts);
+    let muts_bin = mutations_to_etf_new(&muts);
     fabric.put_muts(&next_entry.hash, &muts_bin)?;
-    let muts_rev_bin = crate::consensus::kv::mutations_to_etf(&muts_rev);
+    let muts_rev_bin = mutations_to_etf_new(&muts_rev);
     fabric.put_muts_rev(&next_entry.hash, &muts_rev_bin)?;
 
     // store entry itself and index it (fabric.insert_entry handles both)
@@ -640,7 +854,7 @@ fn chain_rewind_internal(
         // revert mutations for current entry
         let db = fabric.db();
         if let Some(m_rev) = chain_muts_rev(fabric, &current.hash) {
-            crate::consensus::kv::revert(db, &m_rev);
+            crate::consensus::kv::revert(db, &m_rev[..]);
         }
 
         // remove current entry from indices

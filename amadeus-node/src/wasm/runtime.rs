@@ -395,10 +395,9 @@ mod host_functions {
         let mut contract_pk = [0u8; 48];
         contract_pk.copy_from_slice(&contract);
 
-        let bytecode = match {
-            let mut kv_ctx = context.kv_ctx.lock().unwrap();
-            crate::bic::contract::bytecode(&mut *kv_ctx, &context.db, &contract_pk)
-        } {
+        // Look up bytecode directly from DB (read-only operation)
+        let key = crate::utils::misc::bcat(&[b"bic:contract:account:", &contract_pk, b":bytecode"]);
+        let bytecode = match context.db.get("contractstate", &key).ok().flatten() {
             Some(b) => b,
             None => {
                 let mut logs = context.logs.lock().unwrap();

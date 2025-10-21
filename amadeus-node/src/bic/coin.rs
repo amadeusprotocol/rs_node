@@ -1,6 +1,6 @@
-use crate::consensus::kv;
+use amadeus_consensus::consensus::consensus_apply::ApplyEnv;
+use amadeus_consensus::consensus::consensus_kv;
 use crate::utils::bls12_381;
-use crate::utils::rocksdb::RocksDb;
 
 pub const DECIMALS: u32 = 9;
 pub const BURN_ADDRESS: [u8; 48] = [0u8; 48];
@@ -45,12 +45,14 @@ fn key_permission(symbol: &str) -> Vec<u8> {
     crate::utils::misc::bcat(&[b"bic:coin:permission:", symbol.as_bytes()])
 }
 
-pub fn balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, pubkey: &[u8; 48], symbol: &str) -> i128 {
-    ctx.get_to_i128(db, &key_balance(pubkey, symbol)).unwrap_or(0)
+pub fn balance(env: &mut ApplyEnv, pubkey: &[u8; 48], symbol: &str) -> i128 {
+    consensus_kv::kv_get(env, &key_balance(pubkey, symbol))
+        .and_then(|v| atoi::atoi::<i128>(&v))
+        .unwrap_or(0)
 }
 
-pub fn burn_balance(ctx: &mut kv::ApplyCtx, db: &RocksDb, symbol: &str) -> i128 {
-    balance(ctx, db, &BURN_ADDRESS, symbol)
+pub fn burn_balance(env: &mut ApplyEnv, symbol: &str) -> i128 {
+    balance(env, &BURN_ADDRESS, symbol)
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -105,8 +107,7 @@ fn parse_i128_ascii_decimal(bytes: &[u8]) -> Result<i128, CoinError> {
     if bytes.is_empty() {
         return Err(CoinError::InvalidAmount);
     }
-    let s = std::str::from_utf8(bytes).map_err(|_| CoinError::InvalidAmount)?;
-    s.parse::<i128>().map_err(|_| CoinError::InvalidAmount)
+    atoi::atoi::<i128>(bytes).ok_or(CoinError::InvalidAmount)
 }
 
 fn is_alphanumeric_ascii(s: &str) -> bool {
@@ -170,23 +171,23 @@ fn decode_pk_list(bytes: &[u8]) -> Result<Vec<[u8; 48]>, CoinError> {
 }
 
 /// Check if a public key is in the admin list for a symbol
-fn is_admin(ctx: &mut kv::ApplyCtx, db: &RocksDb, symbol: &str, pk: &[u8; 48]) -> bool {
-    match ctx.get(db, &key_permission(symbol)) {
+fn is_admin(env: &mut ApplyEnv, symbol: &str, pk: &[u8; 48]) -> bool {
+    match consensus_kv::kv_get(env, &key_permission(symbol)) {
         Some(ref bytes) => decode_pk_list(bytes).map(|admins| admins.contains(pk)).unwrap_or(false),
         None => false,
     }
 }
 
 /// Add a public key to the admin list for a symbol
-fn add_admin(ctx: &mut kv::ApplyCtx, db: &RocksDb, symbol: &str, pk: &[u8; 48]) {
-    let mut admins = match ctx.get(db, &key_permission(symbol)) {
+fn add_admin(env: &mut ApplyEnv, symbol: &str, pk: &[u8; 48]) {
+    let mut admins = match consensus_kv::kv_get(env, &key_permission(symbol)) {
         Some(ref bytes) => decode_pk_list(bytes).unwrap_or_default(),
         None => Vec::new(),
     };
     if !admins.contains(pk) {
         admins.push(*pk);
     }
-    ctx.put(db, &key_permission(symbol), &encode_pk_list(&admins));
+    consensus_kv::kv_put(env, &key_permission(symbol), &encode_pk_list(&admins));
 }
 
 impl CoinCall {
@@ -313,80 +314,79 @@ impl CoinCall {
 }
 
 pub fn call(
-    ctx: &mut kv::ApplyCtx,
-    db: &RocksDb,
+    env: &mut ApplyEnv,
     function: &str,
-    env: &CallEnv,
+    call_env: &CallEnv,
     args: &[Vec<u8>],
 ) -> Result<(), CoinError> {
     let parsed = CoinCall::parse(function, args)?;
     match parsed {
         CoinCall::Transfer { receiver, amount, symbol } => {
             // check if paused
-            if ctx.get(db, &key_pausable(&symbol)) == Some(b"true".to_vec())
-                && ctx.get(db, &key_paused(&symbol)) == Some(b"true".to_vec())
+            if consensus_kv::kv_get(env, &key_pausable(&symbol)) == Some(b"true".to_vec())
+                && consensus_kv::kv_get(env, &key_paused(&symbol)) == Some(b"true".to_vec())
             {
                 return Err(CoinError::Paused);
             }
             // balance check
-            let bal = balance(ctx, db, &env.account_caller, &symbol);
+            let bal = balance(env, &call_env.account_caller, &symbol);
             if bal < amount {
                 return Err(CoinError::InsufficientFunds);
             }
             // apply
-            ctx.increment(db, &key_balance(&env.account_caller, &symbol), -amount);
-            ctx.increment(db, &key_balance(&receiver, &symbol), amount);
+            consensus_kv::kv_increment(env, &key_balance(&call_env.account_caller, &symbol), -amount);
+            consensus_kv::kv_increment(env, &key_balance(&receiver, &symbol), amount);
             Ok(())
         }
         CoinCall::CreateAndMint { symbol, amount, mintable, pausable } => {
             // symbol checks already in parse
-            if ctx.exists(db, &key_total_supply(&symbol)) {
+            if consensus_kv::kv_exists(env, &key_total_supply(&symbol)) {
                 return Err(CoinError::SymbolExists);
             }
-            ctx.increment(db, &key_balance(&env.account_caller, &symbol), amount);
-            ctx.increment(db, &key_total_supply(&symbol), amount);
+            consensus_kv::kv_increment(env, &key_balance(&call_env.account_caller, &symbol), amount);
+            consensus_kv::kv_increment(env, &key_total_supply(&symbol), amount);
             // permissions: add caller to admin list
-            add_admin(ctx, db, &symbol, &env.account_caller);
+            add_admin(env, &symbol, &call_env.account_caller);
             if mintable {
-                ctx.put(db, &key_mintable(&symbol), b"true");
+                consensus_kv::kv_put(env, &key_mintable(&symbol), b"true");
             }
             if pausable {
-                ctx.put(db, &key_pausable(&symbol), b"true");
+                consensus_kv::kv_put(env, &key_pausable(&symbol), b"true");
             }
             Ok(())
         }
         CoinCall::Mint { symbol, amount } => {
-            if !ctx.exists(db, &key_total_supply(&symbol)) {
+            if !consensus_kv::kv_exists(env, &key_total_supply(&symbol)) {
                 return Err(CoinError::SymbolDoesntExist);
             }
             // permission check: caller must be admin
-            if !is_admin(ctx, db, &symbol, &env.account_caller) {
+            if !is_admin(env, &symbol, &call_env.account_caller) {
                 return Err(CoinError::NoPermissions);
             }
-            if ctx.get(db, &key_mintable(&symbol)) != Some(b"true".to_vec()) {
+            if consensus_kv::kv_get(env, &key_mintable(&symbol)) != Some(b"true".to_vec()) {
                 return Err(CoinError::NotMintable);
             }
-            if ctx.get(db, &key_pausable(&symbol)) == Some(b"true".to_vec())
-                && ctx.get(db, &key_paused(&symbol)) == Some(b"true".to_vec())
+            if consensus_kv::kv_get(env, &key_pausable(&symbol)) == Some(b"true".to_vec())
+                && consensus_kv::kv_get(env, &key_paused(&symbol)) == Some(b"true".to_vec())
             {
                 return Err(CoinError::Paused);
             }
-            ctx.increment(db, &key_balance(&env.account_caller, &symbol), amount);
-            ctx.increment(db, &key_total_supply(&symbol), amount);
+            consensus_kv::kv_increment(env, &key_balance(&call_env.account_caller, &symbol), amount);
+            consensus_kv::kv_increment(env, &key_total_supply(&symbol), amount);
             Ok(())
         }
         CoinCall::Pause { symbol, direction } => {
-            if !ctx.exists(db, &key_total_supply(&symbol)) {
+            if !consensus_kv::kv_exists(env, &key_total_supply(&symbol)) {
                 return Err(CoinError::SymbolDoesntExist);
             }
             // permission check: caller must be admin
-            if !is_admin(ctx, db, &symbol, &env.account_caller) {
+            if !is_admin(env, &symbol, &call_env.account_caller) {
                 return Err(CoinError::NoPermissions);
             }
-            if ctx.get(db, &key_pausable(&symbol)) != Some(b"true".to_vec()) {
+            if consensus_kv::kv_get(env, &key_pausable(&symbol)) != Some(b"true".to_vec()) {
                 return Err(CoinError::NotPausable);
             }
-            ctx.put(db, &key_paused(&symbol), if direction { b"true" } else { b"false" });
+            consensus_kv::kv_put(env, &key_paused(&symbol), if direction { b"true" } else { b"false" });
             Ok(())
         }
     }

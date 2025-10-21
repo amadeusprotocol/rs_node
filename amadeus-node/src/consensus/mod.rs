@@ -194,7 +194,7 @@ mod tests {
             .collect()
     }
 
-    fn decode_muts(bin: &[u8]) -> Result<Vec<kv::Mutation>, Box<dyn std::error::Error>> {
+    fn decode_muts(bin: &[u8]) -> Result<Vec<kv::MutationLegacy>, Box<dyn std::error::Error>> {
         use crate::utils::misc::TermExt;
         let term = Term::decode(bin)?;
         let list = match &term {
@@ -245,7 +245,7 @@ mod tests {
                     }
                     _ => return Err("unknown op".into()),
                 };
-                Ok(kv::Mutation { op, key, value: val })
+                Ok(kv::MutationLegacy { op, key, value: val })
             })
             .collect()
     }

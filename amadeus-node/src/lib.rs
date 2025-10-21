@@ -14,11 +14,13 @@ pub mod wasm;
 pub use amadeus_utils as utils;
 pub use amadeus_utils::{Database, DatabaseError};
 
-// Re-export local modules
-pub use kv::{ApplyCtx, Mutation, Op};
+// Re-export consensus modules (primary API - use these!)
+pub use amadeus_consensus::consensus::{consensus_apply, consensus_kv, consensus_muts};
+pub use amadeus_consensus::consensus::consensus_apply::{ApplyEnv, CallerEnv};
+pub use amadeus_consensus::consensus::consensus_muts::Mutation;
 
-// Re-export consensus modules (for future migration)
-pub use amadeus_consensus::consensus::{consensus_kv, consensus_muts};
+// Re-export local kv module (legacy - used only by WASM runtime internally)
+pub use kv::{ApplyCtx as ApplyCtxLegacy, Mutation as MutationLegacy, Op as OpLegacy};
 
 pub use config::Config;
 pub use context::{Context, SoftforkStatus};

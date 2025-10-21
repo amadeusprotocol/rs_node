@@ -1,9 +1,10 @@
-// Re-export from local kv module
-pub use crate::kv::{ApplyCtx, Mutation, Op, hash_mutations, mutations_from_etf, mutations_to_etf, revert};
+// Re-export from local kv module (legacy - used only for WASM and old code)
+pub use crate::kv::{ApplyCtx, Mutation as MutationLegacy, Op, hash_mutations, mutations_from_etf, mutations_to_etf, revert};
 
-// Also re-export from amadeus-consensus for future use
-pub use amadeus_consensus::consensus::consensus_kv as consensus_kv_new;
-pub use amadeus_consensus::consensus::consensus_muts::Mutation as MutationNew;
+// Re-export from amadeus-consensus (primary API)
+pub use amadeus_consensus::consensus::consensus_apply::{ApplyEnv, CallerEnv};
+pub use amadeus_consensus::consensus::consensus_kv;
+pub use amadeus_consensus::consensus::consensus_muts::Mutation;
 use amadeus_utils::rocksdb::RocksDb;
 use crate::utils::blake3;
 
@@ -25,7 +26,8 @@ pub fn get_prefix(db: &RocksDb, prefix: &str) -> Vec<(String, Vec<u8>)> {
 
 /// Hash mutations with transaction results prepended (matching Elixir: hash_mutations(l ++ m))
 /// where l is the list of transaction results and m is the list of mutations
-pub fn hash_mutations_with_results(results: &[crate::consensus::consensus::TxResult], muts: &[Mutation]) -> [u8; 32] {
+/// Note: This uses the old Mutation type for backward compatibility
+pub fn hash_mutations_with_results(results: &[crate::consensus::consensus::TxResult], muts: &[MutationLegacy]) -> [u8; 32] {
     use crate::utils::safe_etf::{encode_safe_deterministic, u32_to_term};
     use eetf::{Atom, Binary, List, Map, Term};
     use std::collections::HashMap;

@@ -101,6 +101,7 @@ dependencies = [
  "amadeus-consensus",
  "amadeus-utils",
  "async-trait",
+ "atoi",
  "bincode",
  "bitvec",
  "blake3",

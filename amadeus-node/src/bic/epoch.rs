@@ -1,3 +1,5 @@
+use amadeus_consensus::consensus::consensus_apply::ApplyEnv;
+use amadeus_consensus::consensus::consensus_kv;
 use crate::utils::constants::{DST_MOTION, DST_POP};
 use crate::utils::blake3;
 use crate::utils::bls12_381;
@@ -37,6 +39,34 @@ pub const EPOCH_INTERVAL: u64 = 100_000;
 const A_SCALED: u128 = 23_072_960_000_000_000_000; // 23_072_960_000.0 * 1e9
 const C_SCALED: u128 = 1_110_573_766_000; // 1_110.573_766 * 1e6 (using 1e6 for C to prevent overflow)
 const START_EPOCH: u64 = 420;
+
+/// Helper function to clear all keys with a given prefix
+/// Since ApplyEnv doesn't have a clear method, we iterate and delete
+fn kv_clear_prefix(env: &mut ApplyEnv, prefix: &[u8]) {
+    // Get all keys with this prefix using the transaction iterator
+    let keys_to_delete: Vec<Vec<u8>> = {
+        let mut keys = Vec::new();
+        let mut it = env.txn.raw_iterator_cf(&env.cf).unwrap();
+        it.seek(prefix);
+        while it.valid() {
+            if let Some(k) = it.key() {
+                if !k.starts_with(prefix) {
+                    break;
+                }
+                keys.push(k.to_vec());
+                it.next();
+            } else {
+                break;
+            }
+        }
+        keys
+    }; // Iterator dropped here, releasing the borrow
+
+    // Delete all keys found
+    for key in keys_to_delete {
+        consensus_kv::kv_delete(env, &key);
+    }
+}
 
 /// Integer approximation of pow(x, 1.5) using integer arithmetic
 /// Returns result scaled by 1e9
@@ -275,25 +305,23 @@ impl Epoch {
     /// Dispatch a call with db access
     pub fn call(
         &self,
-        ctx: &mut crate::kv::ApplyCtx,
+        apply_env: &mut ApplyEnv,
         op: EpochCall,
-        env: &CallEnv,
-        db: &crate::utils::rocksdb::RocksDb,
+        call_env: &CallEnv,
     ) -> Result<(), EpochError> {
         match op {
-            EpochCall::SubmitSol { sol } => self.submit_sol(ctx, env, db, &sol),
-            EpochCall::SetEmissionAddress { address } => self.set_emission_address(ctx, env, db, &address),
+            EpochCall::SubmitSol { sol } => self.submit_sol(apply_env, call_env, &sol),
+            EpochCall::SetEmissionAddress { address } => self.set_emission_address(apply_env, call_env, &address),
             EpochCall::SlashTrainer { epoch, malicious_pk, signature, mask, trainers } => {
-                self.slash_trainer(ctx, env, db, epoch, &malicious_pk, &signature, &mask, trainers)
+                self.slash_trainer(apply_env, call_env, epoch, &malicious_pk, &signature, &mask, trainers)
             }
         }
     }
 
     fn submit_sol(
         &self,
-        ctx: &mut crate::kv::ApplyCtx,
-        env: &CallEnv,
-        db: &crate::utils::rocksdb::RocksDb,
+        env: &mut ApplyEnv,
+        _call_env: &CallEnv,
         sol_bytes: &[u8],
     ) -> Result<(), EpochError> {
         let hash = blake3::hash(sol_bytes);
@@ -304,7 +332,7 @@ impl Epoch {
         // Only process first segment to match Elixir
         for seg in segs.iter().take(1) {
             let key = format!("bic:epoch:solbloom:{}", seg.page);
-            let was_newly_set = ctx.set_bit(db, key.as_bytes(), seg.bit_offset, Some(65536));
+            let was_newly_set = consensus_kv::kv_set_bit(env, key.as_bytes(), seg.bit_offset as u64);
             if was_newly_set {
                 any_bit_newly_set = true;
             }
@@ -322,7 +350,7 @@ impl Epoch {
             sol::Solution::V1(v1) => (v1.epoch as u64, v1.pk, v1.pop),
             sol::Solution::V0(v0) => (v0.epoch as u64, v0.pk, v0.pop),
         };
-        if epoch != env.entry_epoch {
+        if epoch != env.caller_env.entry_epoch {
             return Err(EpochError::InvalidEpoch);
         }
 
@@ -332,7 +360,7 @@ impl Epoch {
 
         // Check if POP already exists for this public key (key uses raw binary pk)
         let pop_key = crate::utils::misc::bcat(&[b"bic:epoch:pop:", &pk]);
-        let pop_exists = db.get("contractstate", &pop_key).ok().flatten().is_some();
+        let pop_exists = env.txn.get(&env.cf, &pop_key).ok().flatten().is_some();
 
         if !pop_exists {
             // verify Proof-of-Possession: message is pk bytes
@@ -340,21 +368,20 @@ impl Epoch {
                 return Err(EpochError::InvalidPop);
             }
             // Store the POP for future use
-            ctx.put(db, &pop_key, &pop);
+            consensus_kv::kv_put(env, &pop_key, &pop);
         }
 
         // Increment solution count for this address (key uses raw binary pk, matching Elixir implementation)
         let count_key = crate::utils::misc::bcat(&[b"bic:epoch:solutions_count:", &pk]);
-        ctx.increment(db, &count_key, 1);
+        consensus_kv::kv_increment(env, &count_key, 1);
 
         Ok(())
     }
 
     fn set_emission_address(
         &self,
-        ctx: &mut crate::kv::ApplyCtx,
-        env: &CallEnv,
-        db: &crate::utils::rocksdb::RocksDb,
+        env: &mut ApplyEnv,
+        call_env: &CallEnv,
         address: &[u8; 48],
     ) -> Result<(), EpochError> {
         if address.len() != 48 {
@@ -362,8 +389,8 @@ impl Epoch {
         }
 
         // Key uses raw binary account_caller (matching Elixir implementation)
-        let key = crate::utils::misc::bcat(&[b"bic:epoch:emission_address:", &env.account_caller]);
-        ctx.put(db, &key, address);
+        let key = crate::utils::misc::bcat(&[b"bic:epoch:emission_address:", &call_env.account_caller]);
+        consensus_kv::kv_put(env, &key, address);
 
         Ok(())
     }
@@ -371,16 +398,15 @@ impl Epoch {
     #[allow(clippy::too_many_arguments)]
     fn slash_trainer(
         &self,
-        ctx: &mut crate::kv::ApplyCtx,
-        env: &CallEnv,
-        db: &crate::utils::rocksdb::RocksDb,
+        env: &mut ApplyEnv,
+        call_env: &CallEnv,
         epoch: u64,
         malicious_pk: &[u8; 48],
         signature: &[u8],
         mask: &BitVec<u8, Msb0>,
         trainers_opt: Option<Vec<[u8; 48]>>,
     ) -> Result<(), EpochError> {
-        let cur_epoch = env.entry_epoch;
+        let cur_epoch = call_env.entry_epoch;
 
         if cur_epoch != epoch {
             return Err(EpochError::InvalidEpoch);
@@ -391,7 +417,7 @@ impl Epoch {
             Some(t) => t,
             None => {
                 // Fetch from KV (stored as Term/ETF format)
-                db.get("contractstate", format!("bic:epoch:trainers:{}", cur_epoch).as_bytes())
+                env.txn.get("contractstate", format!("bic:epoch:trainers:{}", cur_epoch).as_bytes())
                     .ok()
                     .flatten()
                     .and_then(|bytes| {
@@ -445,7 +471,7 @@ impl Epoch {
 
         // Persist removal into KV: add to removed list
         let removed_key = format!("bic:epoch:trainers:removed:{}", cur_epoch);
-        let mut removed: Vec<[u8; 48]> = db
+        let mut removed: Vec<[u8; 48]> = env.txn
             .get("contractstate", removed_key.as_bytes())
             .ok()
             .flatten()
@@ -474,7 +500,7 @@ impl Epoch {
         let removed_term = Term::List(eetf::List::from(removed_terms));
         let mut removed_bytes = Vec::new();
         let _ = removed_term.encode(&mut removed_bytes);
-        ctx.put(db, removed_key.as_bytes(), &removed_bytes);
+        consensus_kv::kv_put(env, removed_key.as_bytes(), &removed_bytes);
 
         // Update trainer set by removing the malicious trainer
         let new_trainers: Vec<[u8; 48]> = trainers.into_iter().filter(|pk| pk != malicious_pk).collect();
@@ -487,11 +513,11 @@ impl Epoch {
         let _ = trainers_term.encode(&mut trainers_bytes);
 
         let trainers_key = format!("bic:epoch:trainers:{}", cur_epoch);
-        ctx.put(db, trainers_key.as_bytes(), &trainers_bytes);
+        consensus_kv::kv_put(env, trainers_key.as_bytes(), &trainers_bytes);
 
         // Update height index
-        let trainers_height_key = format!("bic:epoch:trainers:height:{:012}", env.entry_height + 1);
-        ctx.put(db, trainers_height_key.as_bytes(), &trainers_bytes);
+        let trainers_height_key = format!("bic:epoch:trainers:height:{:012}", call_env.entry_height + 1);
+        consensus_kv::kv_put(env, trainers_height_key.as_bytes(), &trainers_bytes);
 
         Ok(())
     }
@@ -499,11 +525,11 @@ impl Epoch {
     /// Epoch transition: distribute emissions, select validators, clear bloom filters
     pub fn next(
         &self,
-        ctx: &mut crate::kv::ApplyCtx,
-        db: &crate::utils::rocksdb::RocksDb,
-        env: &CallEnv,
+        env: &mut ApplyEnv,
+        call_env: &CallEnv,
+        db: &RocksDb,
     ) -> Result<(), EpochError> {
-        let epoch_cur = env.entry_epoch;
+        let epoch_cur = call_env.entry_epoch;
         let epoch_next = epoch_cur + 1;
 
         // Get removed trainers for this epoch
@@ -631,7 +657,7 @@ impl Epoch {
                     })
                     .unwrap_or(*pk);
                 let balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &emission_addr, b":AMA"]);
-                ctx.increment(db, &balance_key, coins);
+                consensus_kv::kv_increment(env, &balance_key, coins);
             }
 
             // Distribute early adopter emission
@@ -657,7 +683,7 @@ impl Epoch {
                         })
                         .unwrap_or(*pk);
                     let balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &emission_addr, b":AMA"]);
-                    ctx.increment(db, &balance_key, coins);
+                    consensus_kv::kv_increment(env, &balance_key, coins);
                 }
             }
         } else {
@@ -683,14 +709,14 @@ impl Epoch {
                         })
                         .unwrap_or(*pk);
                     let balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &emission_addr, b":AMA"]);
-                    ctx.increment(db, &balance_key, coins);
+                    consensus_kv::kv_increment(env, &balance_key, coins);
                 }
             }
         }
 
         // Clear bloom filters and solution counters (matching Elixir's kv_clear prefix delete)
-        ctx.clear(db, b"bic:epoch:solbloom:");
-        ctx.clear(db, b"bic:epoch:solutions_count:");
+        kv_clear_prefix(env, b"bic:epoch:solbloom:");
+        kv_clear_prefix(env, b"bic:epoch:solutions_count:");
 
         // Select new validators and store for next epoch
         let leader_pks: Vec<[u8; 48]> = leaders.into_iter().map(|(pk, _)| pk).collect();
@@ -704,9 +730,9 @@ impl Epoch {
         let _ = trainers_term.encode(&mut trainers_bytes);
 
         let trainers_key = format!("bic:epoch:trainers:{}", epoch_next).into_bytes();
-        ctx.put(db, &trainers_key, &trainers_bytes);
-        let trainers_height_key = format!("bic:epoch:trainers:height:{:012}", env.entry_height + 1).into_bytes();
-        ctx.put(db, &trainers_height_key, &trainers_bytes);
+        consensus_kv::kv_put(env, &trainers_key, &trainers_bytes);
+        let trainers_height_key = format!("bic:epoch:trainers:height:{:012}", env.caller_env.entry_height + 1).into_bytes();
+        consensus_kv::kv_put(env, &trainers_height_key, &trainers_bytes);
 
         Ok(())
     }
