@@ -3,7 +3,7 @@ use crate::node::protocol::{self, Protocol};
 use crate::utils::misc::TermMap;
 use crate::utils::safe_etf::encode_safe;
 use crate::Context;
-use amadeus_runtime::bic::sol::{Solution, Error, SOL_SIZE};
+use crate::bic::sol::{Solution, Error, SOL_SIZE};
 use eetf::{Atom, Term};
 use std::collections::HashMap;
 

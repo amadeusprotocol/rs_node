@@ -98,17 +98,19 @@ name = "amadeus-node"
 version = "1.1.9"
 dependencies = [
  "aes-gcm",
- "amadeus-runtime",
+ "amadeus-consensus",
  "amadeus-utils",
  "async-trait",
  "bincode",
  "bitvec",
+ "blake3",
  "bs58",
  "eetf",
  "flate2",
  "hex",
  "num-bigint",
  "num-traits",
+ "once_cell",
  "rand 0.9.2",
  "scc",
  "serde",
@@ -119,6 +121,7 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tracing",
+ "wasmer",
 ]
 
 [[package]]

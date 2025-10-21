@@ -1,7 +1,9 @@
-// Re-export from amadeus-runtime
-pub use amadeus_runtime::kv::{
-    ApplyCtx, Mutation, Op, hash_mutations, mutations_from_etf, mutations_to_etf, revert,
-};
+// Re-export from local kv module
+pub use crate::kv::{ApplyCtx, Mutation, Op, hash_mutations, mutations_from_etf, mutations_to_etf, revert};
+
+// Also re-export from amadeus-consensus for future use
+pub use amadeus_consensus::consensus::consensus_kv as consensus_kv_new;
+pub use amadeus_consensus::consensus::consensus_muts::Mutation as MutationNew;
 use amadeus_utils::rocksdb::RocksDb;
 use crate::utils::blake3;
 
