@@ -1,5 +1,5 @@
 #[allow(dead_code)]
-use blake3::Hasher;
+use amadeus_utils::blake3::Hasher;
 
 pub const PAGES: u64 = 256;
 pub const PAGE_SIZE: u64 = 65_536;
@@ -33,7 +33,7 @@ pub fn hash_to_indices(bin: &[u8]) -> Vec<u64> {
     let mut hasher = Hasher::new();
     hasher.update(bin);
     let digest = hasher.finalize();
-    indices_from_digest(digest.as_bytes())
+    indices_from_digest(&digest)
 }
 
 #[inline]

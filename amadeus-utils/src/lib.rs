@@ -15,3 +15,4 @@ pub mod version;
 
 pub use constants::*;
 pub use database::{Database, DatabaseError};
+pub use misc::bcat;

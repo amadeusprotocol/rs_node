@@ -1,7 +1,7 @@
 //! Deterministic wrapper API over RocksDB v10.
 use rust_rocksdb::{
-    BlockBasedOptions, Cache, ColumnFamilyDescriptor, DBCompressionType, DBRecoveryMode, Direction, FlushOptions,
-    IteratorMode, MultiThreaded, OptimisticTransactionDB, OptimisticTransactionOptions, Options, ReadOptions,
+    BlockBasedOptions, Cache, ColumnFamilyDescriptor, DBCompressionType, DBRecoveryMode, Direction,
+    IteratorMode, MultiThreaded, TransactionDB, TransactionDBOptions, TransactionOptions, Options, ReadOptions,
     SliceTransform, Transaction, WriteOptions,
 };
 use tokio::fs::create_dir_all;
@@ -45,15 +45,20 @@ pub enum Error {
     ColumnFamilyNotFound(String),
 }
 
-#[derive(Debug)]
 pub struct DbHandles {
-    pub db: OptimisticTransactionDB<MultiThreaded>,
+    pub db: TransactionDB<MultiThreaded>,
 }
 
 /// Instance-oriented wrapper to be used from Context
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RocksDb {
     handles: std::sync::Arc<DbHandles>,
+}
+
+impl std::fmt::Debug for RocksDb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RocksDb").finish_non_exhaustive()
+    }
 }
 
 fn cf_names() -> &'static [&'static str] {
@@ -96,8 +101,13 @@ pub fn init_for_test(base: &str) -> Result<TestDbGuard, Error> {
         })
         .collect();
 
-    let db: OptimisticTransactionDB<MultiThreaded> =
-        OptimisticTransactionDB::open_cf_descriptors(&db_opts, path, cf_descs)?;
+    let mut txn_db_opts = TransactionDBOptions::default();
+    txn_db_opts.set_default_lock_timeout(3000);
+    txn_db_opts.set_txn_lock_timeout(3000);
+    txn_db_opts.set_num_stripes(32);
+
+    let db: TransactionDB<MultiThreaded> =
+        TransactionDB::open_cf_descriptors(&db_opts, &txn_db_opts, path, cf_descs)?;
 
     TEST_DB.with(|cell| {
         *cell.borrow_mut() = Some(DbHandles { db });
@@ -160,9 +170,14 @@ impl RocksDb {
             })
             .collect();
 
-        let db: OptimisticTransactionDB<MultiThreaded> =
-            OptimisticTransactionDB::open_cf_descriptors(&db_opts, path.clone(), cf_descs)?;
-        db.flush_opt(&FlushOptions::default())?;
+        let mut txn_db_opts = TransactionDBOptions::default();
+        txn_db_opts.set_default_lock_timeout(3000);
+        txn_db_opts.set_txn_lock_timeout(3000);
+        txn_db_opts.set_num_stripes(32);
+
+        let db: TransactionDB<MultiThreaded> =
+            TransactionDB::open_cf_descriptors(&db_opts, &txn_db_opts, path.clone(), cf_descs)?;
+        db.flush()?;
         db.flush_wal(true)?;
 
         Ok(RocksDb { handles: std::sync::Arc::new(DbHandles { db }) })
@@ -231,7 +246,7 @@ impl RocksDb {
     }
     pub fn begin_transaction(&self) -> Result<RocksDbTxn<'_>, Error> {
         let h = &self.handles;
-        let txn_opts = OptimisticTransactionOptions::default();
+        let txn_opts = TransactionOptions::default();
         let write_opts = WriteOptions::default();
         let txn = h.db.transaction_opt(&write_opts, &txn_opts);
         Ok(RocksDbTxn { inner: SimpleTransaction { txn, db: &h.db } })
@@ -328,10 +343,10 @@ impl Cf {
     }
 }
 
-/// Simple transaction for OptimisticTransactionDB
+/// Simple transaction for TransactionDB
 pub struct SimpleTransaction<'a> {
-    txn: Transaction<'a, OptimisticTransactionDB<MultiThreaded>>,
-    db: &'a OptimisticTransactionDB<MultiThreaded>,
+    txn: Transaction<'a, TransactionDB<MultiThreaded>>,
+    db: &'a TransactionDB<MultiThreaded>,
 }
 
 impl<'a> RocksDbTransaction for SimpleTransaction<'a> {
