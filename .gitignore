@@ -3,6 +3,7 @@ target/
 
 .config
 *.local
+*.trace
 .env
 **/.env
 log

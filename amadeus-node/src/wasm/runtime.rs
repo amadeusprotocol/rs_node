@@ -9,7 +9,7 @@ use wasmer::{Function, FunctionEnv, FunctionEnvMut, Instance, Memory, Module, St
 pub struct WasmContext {
     pub env: CallEnv,
     pub db: crate::utils::rocksdb::RocksDb,
-    pub kv_ctx: Arc<Mutex<kv::ApplyCtx>>,
+    pub kv_ctx: Arc<Mutex<kv::ApplyEnvLegacy>>,
     pub logs: Arc<Mutex<Vec<String>>>,
     pub exec_used: Arc<Mutex<u64>>,
     pub rpc_tx: Option<Sender<RpcMessage>>,
@@ -20,7 +20,7 @@ pub struct WasmContext {
 }
 
 impl WasmContext {
-    pub fn new(env: CallEnv, db: crate::utils::rocksdb::RocksDb, kv_ctx: kv::ApplyCtx) -> Self {
+    pub fn new(env: CallEnv, db: crate::utils::rocksdb::RocksDb, kv_ctx: kv::ApplyEnvLegacy) -> Self {
         Self {
             env,
             db,
@@ -489,7 +489,7 @@ mod host_functions {
 pub fn execute(
     env: &CallEnv,
     db: &crate::utils::rocksdb::RocksDb,
-    kv_ctx: kv::ApplyCtx,
+    kv_ctx: kv::ApplyEnvLegacy,
     bytecode: &[u8],
     function: &str,
     args: &[Vec<u8>],

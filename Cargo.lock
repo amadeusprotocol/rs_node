@@ -86,19 +86,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
-name = "amadeus-consensus"
-version = "1.1.9"
-dependencies = [
- "amadeus-utils",
- "atoi",
-]
-
-[[package]]
 name = "amadeus-node"
 version = "1.1.9"
 dependencies = [
  "aes-gcm",
- "amadeus-consensus",
+ "amadeus-runtime",
  "amadeus-utils",
  "async-trait",
  "atoi",
@@ -130,22 +122,7 @@ name = "amadeus-runtime"
 version = "1.1.9"
 dependencies = [
  "amadeus-utils",
- "async-trait",
- "bitvec",
- "blake3",
- "bs58",
- "eetf",
- "hex",
- "num-bigint",
- "num-traits",
- "once_cell",
- "rand 0.9.2",
- "serde",
- "serde_json",
- "thiserror 2.0.17",
- "tokio",
- "tracing",
- "wasmer",
+ "atoi",
 ]
 
 [[package]]

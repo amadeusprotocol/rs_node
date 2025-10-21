@@ -1,9 +1,11 @@
-pub mod apply_entry;
-pub mod bic;
-pub mod kv;
-pub mod wasm;
+pub mod consensus;
 
-pub use apply_entry::{
-    apply_entry, ApplyEntryResult, EntryHeader, Error as ApplyEntryError, Tx, TxAction, TxResult, TxU,
+// Re-export commonly used RocksDB types
+pub use amadeus_utils::rocksdb::{
+    AsColumnFamilyRef, BlockBasedIndexType, BlockBasedOptions, BottommostLevelCompaction, BoundColumnFamily, Cache,
+    ColumnFamilyDescriptor, CompactOptions, DBCompressionType, DBRawIteratorWithThreadMode, LruCacheOptions,
+    MultiThreaded, Options, RocksDbTxn, TransactionDB, TransactionDBOptions, TransactionOptions, WriteOptions,
 };
-pub use kv::{ApplyCtx, Mutation, Op};
+
+// Re-export utility functions
+pub use amadeus_utils::bcat;

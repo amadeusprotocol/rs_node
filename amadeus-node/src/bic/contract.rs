@@ -1,5 +1,5 @@
-use amadeus_consensus::consensus::consensus_apply::ApplyEnv;
-use amadeus_consensus::consensus::consensus_kv;
+use amadeus_runtime::consensus::consensus_apply::ApplyEnv;
+use amadeus_runtime::consensus::consensus_kv;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

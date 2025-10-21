@@ -1,5 +1,5 @@
-use amadeus_consensus::consensus::consensus_apply::ApplyEnv;
-use amadeus_consensus::consensus::consensus_kv;
+use amadeus_runtime::consensus::consensus_apply::ApplyEnv;
+use amadeus_runtime::consensus::consensus_kv;
 use crate::utils::constants::{DST_MOTION, DST_POP};
 use crate::utils::blake3;
 use crate::utils::bls12_381;

@@ -11,22 +11,22 @@ pub enum Op {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Mutation {
+pub struct MutationLegacy {
     pub op: Op,
     pub key: Vec<u8>,           // Raw binary key (NOT String) to support non-UTF8 pubkeys
     pub value: Option<Vec<u8>>, // for Put original/new values or for revert
 }
 
 #[derive(Default, Debug, Clone)]
-pub struct ApplyCtx {
-    mutations: VecDeque<Mutation>,
-    mutations_reverse: VecDeque<Mutation>,
-    mutations_gas: VecDeque<Mutation>,
-    mutations_gas_reverse: VecDeque<Mutation>,
+pub struct ApplyEnvLegacy {
+    mutations: VecDeque<MutationLegacy>,
+    mutations_reverse: VecDeque<MutationLegacy>,
+    mutations_gas: VecDeque<MutationLegacy>,
+    mutations_gas_reverse: VecDeque<MutationLegacy>,
     use_gas_context: bool,
 }
 
-impl ApplyCtx {
+impl ApplyEnvLegacy {
     pub fn new() -> Self {
         Self::default()
     }
@@ -52,7 +52,7 @@ impl ApplyCtx {
     }
 
     /// Save current mutations to gas context and restore previous mutations
-    pub fn save_to_gas_and_restore(&mut self, saved_muts: Vec<Mutation>, saved_muts_rev: Vec<Mutation>) {
+    pub fn save_to_gas_and_restore(&mut self, saved_muts: Vec<MutationLegacy>, saved_muts_rev: Vec<MutationLegacy>) {
         // Save current mutations to gas
         self.mutations_gas = self.mutations.clone();
         self.mutations_gas_reverse = self.mutations_reverse.clone();
@@ -96,11 +96,11 @@ impl ApplyCtx {
         };
 
         // forward mutation tracks new value
-        fwd.push_back(Mutation { op: Op::Put, key: key.to_vec(), value: Some(value.to_vec()) });
+        fwd.push_back(MutationLegacy { op: Op::Put, key: key.to_vec(), value: Some(value.to_vec()) });
         // reverse mutation: if existed put old value, else delete
         match existed {
-            Some(old) => rev.push_back(Mutation { op: Op::Put, key: key.to_vec(), value: Some(old) }),
-            None => rev.push_back(Mutation { op: Op::Delete, key: key.to_vec(), value: None }),
+            Some(old) => rev.push_back(MutationLegacy { op: Op::Put, key: key.to_vec(), value: Some(old) }),
+            None => rev.push_back(MutationLegacy { op: Op::Delete, key: key.to_vec(), value: None }),
         }
     }
 
@@ -123,10 +123,10 @@ impl ApplyCtx {
             (&mut self.mutations, &mut self.mutations_reverse)
         };
 
-        fwd.push_back(Mutation { op: Op::Put, key: key.to_vec(), value: Some(new_bytes) });
+        fwd.push_back(MutationLegacy { op: Op::Put, key: key.to_vec(), value: Some(new_bytes) });
         match old_bytes {
-            Some(old) => rev.push_back(Mutation { op: Op::Put, key: key.to_vec(), value: Some(old) }),
-            None => rev.push_back(Mutation { op: Op::Delete, key: key.to_vec(), value: None }),
+            Some(old) => rev.push_back(MutationLegacy { op: Op::Put, key: key.to_vec(), value: Some(old) }),
+            None => rev.push_back(MutationLegacy { op: Op::Delete, key: key.to_vec(), value: None }),
         }
         newv
     }
@@ -148,8 +148,8 @@ impl ApplyCtx {
                 (&mut self.mutations, &mut self.mutations_reverse)
             };
 
-            fwd.push_back(Mutation { op: Op::Delete, key: key.to_vec(), value: None });
-            rev.push_back(Mutation { op: Op::Put, key: key.to_vec(), value: Some(old) });
+            fwd.push_back(MutationLegacy { op: Op::Delete, key: key.to_vec(), value: None });
+            rev.push_back(MutationLegacy { op: Op::Put, key: key.to_vec(), value: Some(old) });
         }
     }
 
@@ -193,8 +193,8 @@ impl ApplyCtx {
                     (&mut self.mutations, &mut self.mutations_reverse)
                 };
 
-                fwd.push_back(Mutation { op: Op::Delete, key: k.clone(), value: None });
-                rev.push_back(Mutation { op: Op::Put, key: k.clone(), value: Some(v) });
+                fwd.push_back(MutationLegacy { op: Op::Delete, key: k.clone(), value: None });
+                rev.push_back(MutationLegacy { op: Op::Put, key: k.clone(), value: Some(v) });
                 count += 1;
             }
         }
@@ -227,11 +227,11 @@ impl ApplyCtx {
             (&mut self.mutations, &mut self.mutations_reverse)
         };
 
-        fwd.push_back(Mutation { op: Op::SetBit { bit_idx, bloom_size }, key: key.to_vec(), value: None });
+        fwd.push_back(MutationLegacy { op: Op::SetBit { bit_idx, bloom_size }, key: key.to_vec(), value: None });
         if existed {
-            rev.push_back(Mutation { op: Op::ClearBit { bit_idx }, key: key.to_vec(), value: None });
+            rev.push_back(MutationLegacy { op: Op::ClearBit { bit_idx }, key: key.to_vec(), value: None });
         } else {
-            rev.push_back(Mutation { op: Op::Delete, key: key.to_vec(), value: None });
+            rev.push_back(MutationLegacy { op: Op::Delete, key: key.to_vec(), value: None });
         }
 
         // Set the bit and store in database
@@ -241,22 +241,22 @@ impl ApplyCtx {
     }
 
     /// Get mutations
-    pub fn mutations(&self) -> Vec<Mutation> {
+    pub fn mutations(&self) -> Vec<MutationLegacy> {
         self.mutations.iter().cloned().collect()
     }
 
     /// Get reverse mutations
-    pub fn mutations_reverse(&self) -> Vec<Mutation> {
+    pub fn mutations_reverse(&self) -> Vec<MutationLegacy> {
         self.mutations_reverse.iter().cloned().collect()
     }
 
     /// Get gas mutations
-    pub fn mutations_gas(&self) -> Vec<Mutation> {
+    pub fn mutations_gas(&self) -> Vec<MutationLegacy> {
         self.mutations_gas.iter().cloned().collect()
     }
 
     /// Get reverse gas mutations
-    pub fn mutations_gas_reverse(&self) -> Vec<Mutation> {
+    pub fn mutations_gas_reverse(&self) -> Vec<MutationLegacy> {
         self.mutations_gas_reverse.iter().cloned().collect()
     }
 }
@@ -272,7 +272,7 @@ fn i128_ascii(n: i128) -> Vec<u8> {
 }
 
 // Static utility function - doesn't operate on context
-pub fn revert(db: &dyn Database, m_rev: &[Mutation]) {
+pub fn revert(db: &dyn Database, m_rev: &[MutationLegacy]) {
     for m in m_rev.iter().rev() {
         match &m.op {
             Op::Put => {
@@ -305,7 +305,7 @@ pub fn revert(db: &dyn Database, m_rev: &[Mutation]) {
     }
 }
 
-pub fn hash_mutations(muts: &[Mutation]) -> [u8; 32] {
+pub fn hash_mutations(muts: &[MutationLegacy]) -> [u8; 32] {
     use crate::utils::safe_etf::{encode_safe_deterministic, u32_to_term};
     use eetf::{Atom, Binary, List, Map, Term};
     use std::collections::HashMap;
@@ -355,7 +355,7 @@ pub fn hash_mutations(muts: &[Mutation]) -> [u8; 32] {
     blake3::hash(&encoded)
 }
 
-pub fn mutations_to_etf(muts: &[Mutation]) -> Vec<u8> {
+pub fn mutations_to_etf(muts: &[MutationLegacy]) -> Vec<u8> {
     let mut buf = Vec::new();
     for m in muts {
         match &m.op {
@@ -384,7 +384,7 @@ pub fn mutations_to_etf(muts: &[Mutation]) -> Vec<u8> {
     buf
 }
 
-pub fn mutations_from_etf(bin: &[u8]) -> Result<Vec<Mutation>, std::io::Error> {
+pub fn mutations_from_etf(bin: &[u8]) -> Result<Vec<MutationLegacy>, std::io::Error> {
     let mut mutations = Vec::new();
     let mut cursor = 0;
 
@@ -429,7 +429,7 @@ pub fn mutations_from_etf(bin: &[u8]) -> Result<Vec<Mutation>, std::io::Error> {
             _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid op code")),
         };
 
-        mutations.push(Mutation { op, key, value });
+        mutations.push(MutationLegacy { op, key, value });
     }
 
     Ok(mutations)

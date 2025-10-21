@@ -62,7 +62,7 @@ pub fn chain_height(db: &RocksDb) -> u32 {
 mod tests {
     use crate::consensus::consensus::apply_entry;
     use crate::consensus::fabric::Fabric;
-    use crate::consensus::kv;
+    use crate::kv::{MutationLegacy, Op};
     use eetf::Term;
     use std::path::Path;
 
@@ -131,8 +131,12 @@ mod tests {
         apply_entry(&fabric, &config, &entry)?;
 
         // get results
-        let muts = crate::consensus::consensus::chain_muts(&fabric, &entry.hash).ok_or("no muts")?;
-        let muts_rev = crate::consensus::consensus::chain_muts_rev(&fabric, &entry.hash).ok_or("no muts_rev")?;
+        let muts_new = crate::consensus::consensus::chain_muts(&fabric, &entry.hash).ok_or("no muts")?;
+        let muts_rev_new = crate::consensus::consensus::chain_muts_rev(&fabric, &entry.hash).ok_or("no muts_rev")?;
+
+        // convert to legacy format for comparison
+        let muts: Vec<_> = muts_new.iter().map(crate::consensus::consensus::mutation_to_legacy).collect();
+        let muts_rev: Vec<_> = muts_rev_new.iter().map(crate::consensus::consensus::mutation_to_legacy).collect();
 
         // decode expected from elixir
         let exp_muts = decode_muts(&std::fs::read(format!("{}/next_muts", db_path))?)?;
@@ -194,7 +198,7 @@ mod tests {
             .collect()
     }
 
-    fn decode_muts(bin: &[u8]) -> Result<Vec<kv::MutationLegacy>, Box<dyn std::error::Error>> {
+    fn decode_muts(bin: &[u8]) -> Result<Vec<MutationLegacy>, Box<dyn std::error::Error>> {
         use crate::utils::misc::TermExt;
         let term = Term::decode(bin)?;
         let list = match &term {
@@ -222,9 +226,9 @@ mod tests {
                             .and_then(|t| t.get_binary())
                             .ok_or("no val")?
                             .to_vec();
-                        (kv::Op::Put, Some(v))
+                        (Op::Put, Some(v))
                     }
-                    "delete" => (kv::Op::Delete, None),
+                    "delete" => (Op::Delete, None),
                     "set_bit" => {
                         let bit = m
                             .get(&Term::Atom(eetf::Atom::from("value")))
@@ -234,18 +238,18 @@ mod tests {
                             .get(&Term::Atom(eetf::Atom::from("bloomsize")))
                             .and_then(|t| if let Term::FixInteger(i) = t { Some(i.value) } else { None })
                             .ok_or("no size")? as u32;
-                        (kv::Op::SetBit { bit_idx: bit, bloom_size: size }, None)
+                        (Op::SetBit { bit_idx: bit, bloom_size: size }, None)
                     }
                     "clear_bit" => {
                         let bit = m
                             .get(&Term::Atom(eetf::Atom::from("value")))
                             .and_then(|t| if let Term::FixInteger(i) = t { Some(i.value) } else { None })
                             .ok_or("no bit")? as u32;
-                        (kv::Op::ClearBit { bit_idx: bit }, None)
+                        (Op::ClearBit { bit_idx: bit }, None)
                     }
                     _ => return Err("unknown op".into()),
                 };
-                Ok(kv::MutationLegacy { op, key, value: val })
+                Ok(MutationLegacy { op, key, value: val })
             })
             .collect()
     }
