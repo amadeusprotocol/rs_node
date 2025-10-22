@@ -316,7 +316,7 @@ impl Context {
         if behind_bft > 0 {
             info!("Behind BFT: Syncing {} entries", behind_bft);
             let online_trainer_ips = self.node_peers.get_trainer_ips_above_rooted(peers_bft, &trainer_pks).await?;
-            let heights: Vec<u64> = (rooted_height + 1..=peers_bft).take(100).collect();
+            let heights: Vec<u64> = (rooted_height + 1..=peers_bft).take(1000).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
                 .map(|height| CatchupHeight { height, c: Some(true), e: Some(true), a: None, hashes: None })

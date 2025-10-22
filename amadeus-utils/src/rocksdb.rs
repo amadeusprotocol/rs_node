@@ -1,14 +1,13 @@
 //! Deterministic wrapper API over RocksDB v10.
 
 // Re-export commonly used types for downstream crates
-pub use rust_rocksdb::{
-    statistics, AsColumnFamilyRef, BlockBasedIndexType, BlockBasedOptions, BottommostLevelCompaction,
-    BoundColumnFamily, Cache, ColumnFamilyDescriptor, CompactOptions, DBCompressionType,
-    DBRawIteratorWithThreadMode, DBRecoveryMode, Direction, Error as RocksDbError, IteratorMode, LruCacheOptions,
-    MultiThreaded, Options, ReadOptions, SliceTransform, Transaction, TransactionDB, TransactionDBOptions,
-    TransactionOptions, WriteOptions,
-};
 pub use rust_librocksdb_sys;
+pub use rust_rocksdb::{
+    AsColumnFamilyRef, BlockBasedIndexType, BlockBasedOptions, BottommostLevelCompaction, BoundColumnFamily, Cache,
+    ColumnFamilyDescriptor, CompactOptions, DBCompressionType, DBRawIteratorWithThreadMode, DBRecoveryMode, Direction,
+    Error as RocksDbError, IteratorMode, LruCacheOptions, MultiThreaded, Options, ReadOptions, SliceTransform,
+    Transaction, TransactionDB, TransactionDBOptions, TransactionOptions, WriteOptions, statistics,
+};
 use tokio::fs::create_dir_all;
 
 #[cfg(test)]
@@ -111,8 +110,7 @@ pub fn init_for_test(base: &str) -> Result<TestDbGuard, Error> {
     txn_db_opts.set_txn_lock_timeout(3000);
     txn_db_opts.set_num_stripes(32);
 
-    let db: TransactionDB<MultiThreaded> =
-        TransactionDB::open_cf_descriptors(&db_opts, &txn_db_opts, path, cf_descs)?;
+    let db: TransactionDB<MultiThreaded> = TransactionDB::open_cf_descriptors(&db_opts, &txn_db_opts, path, cf_descs)?;
 
     TEST_DB.with(|cell| {
         *cell.borrow_mut() = Some(DbHandles { db });
@@ -268,7 +266,10 @@ impl<'a> RocksDbTxn<'a> {
     pub fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
         self.inner.get(cf, key)
     }
-    pub fn raw_iterator_cf(&self, cf: &str) -> Result<DBRawIteratorWithThreadMode<'_, Transaction<'_, TransactionDB<MultiThreaded>>>, Error> {
+    pub fn raw_iterator_cf(
+        &self,
+        cf: &str,
+    ) -> Result<DBRawIteratorWithThreadMode<'_, Transaction<'_, TransactionDB<MultiThreaded>>>, Error> {
         self.inner.raw_iterator_cf(cf)
     }
     pub fn commit(self) -> Result<(), Error> {
@@ -358,7 +359,10 @@ pub struct SimpleTransaction<'a> {
 }
 
 impl<'a> SimpleTransaction<'a> {
-    pub fn raw_iterator_cf(&self, cf: &str) -> Result<DBRawIteratorWithThreadMode<'_, Transaction<'_, TransactionDB<MultiThreaded>>>, Error> {
+    pub fn raw_iterator_cf(
+        &self,
+        cf: &str,
+    ) -> Result<DBRawIteratorWithThreadMode<'_, Transaction<'_, TransactionDB<MultiThreaded>>>, Error> {
         let cf_handle = self.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
         Ok(self.txn.raw_iterator_cf(&cf_handle))
     }

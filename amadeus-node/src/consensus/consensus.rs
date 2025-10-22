@@ -170,19 +170,19 @@ impl TxResult {
 }
 
 /// Execute a single transaction, routing to the appropriate contract handler
-/// Returns (error, logs, mutations, mutations_reverse, mutations_gas, mutations_gas_reverse)
+/// Returns (error, logs, mutations, mutations_reverse)
 fn execute_transaction(
     env: &mut ApplyEnv,
     db: &RocksDb,
     next_entry: &Entry,
     txu: &TxU,
-) -> (String, Vec<String>, Vec<Mutation>, Vec<Mutation>, Vec<Mutation>, Vec<Mutation>) {
+) -> (String, Vec<String>, Vec<Mutation>, Vec<Mutation>) {
     let action = match txu.tx.actions.first() {
         Some(a) => a,
-        None => return ("no_actions".to_string(), vec![], vec![], vec![], vec![], vec![]),
+        None => return ("no_actions".to_string(), vec![], vec![], vec![]),
     };
 
-    // Clear mutations before executing transaction
+    // Clear mutations before executing transaction (pre-processing mutations already saved in apply_entry)
     env.muts.clear();
     env.muts_rev.clear();
 
@@ -205,27 +205,18 @@ fn execute_transaction(
         readonly: false,
     };
 
-    let (error, logs, muts_gas, muts_gas_rev) = match action.contract.as_slice() {
-        b"Epoch" => {
-            let (err, logs) = execute_epoch_call(env, &call_env, &action.function, &action.args);
-            (err, logs, vec![], vec![])
-        }
-        b"Coin" => {
-            let (err, logs) = execute_coin_call(env, txu.tx.signer, &action.function, &action.args);
-            (err, logs, vec![], vec![])
-        }
-        b"Contract" => {
-            let (err, logs) = execute_contract_call(env, txu.tx.signer, &action.function, &action.args);
-            (err, logs, vec![], vec![])
-        }
+    let (error, logs) = match action.contract.as_slice() {
+        b"Epoch" => execute_epoch_call(env, &call_env, &action.function, &action.args),
+        b"Coin" => execute_coin_call(env, txu.tx.signer, &action.function, &action.args),
+        b"Contract" => execute_contract_call(env, txu.tx.signer, &action.function, &action.args),
         contract if contract.len() == 48 => {
             execute_wasm_call(env, db, &call_env, contract, &action.function, &action.args)
         }
-        _ => ("invalid_contract".to_string(), vec![], vec![], vec![]),
+        _ => ("invalid_contract".to_string(), vec![]),
     };
 
-    // Capture mutations after execution (regular mutations + gas mutations)
-    (error, logs, env.muts.clone(), env.muts_rev.clone(), muts_gas, muts_gas_rev)
+    // Capture all mutations after execution (including gas mutations)
+    (error, logs, env.muts.clone(), env.muts_rev.clone())
 }
 
 fn execute_epoch_call(
@@ -266,7 +257,7 @@ fn execute_wasm_call(
     contract: &[u8],
     function: &str,
     args: &[Vec<u8>],
-) -> (String, Vec<String>, Vec<Mutation>, Vec<Mutation>) {
+) -> (String, Vec<String>) {
     let contract_pk: [u8; 48] = contract.try_into().expect("contract len checked");
 
     // Handle attached tokens BEFORE WASM execution (using ApplyEnv)
@@ -312,16 +303,7 @@ fn execute_wasm_call(
                         apply_env.muts_rev.push(new_mut);
                     }
 
-                    // Now handle gas charging (separate mutations for gas)
-                    // Save current mutations (attached + wasm)
-                    let saved_muts = apply_env.muts.clone();
-                    let saved_muts_rev = apply_env.muts_rev.clone();
-
-                    // Clear to collect gas mutations separately
-                    apply_env.muts = vec![];
-                    apply_env.muts_rev = vec![];
-
-                    // Charge gas
+                    // Now handle gas charging (added directly to apply_env.muts)
                     let exec_used = (result.exec_used * 100) as i128;
                     let signer_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &call_env.tx_signer, b":AMA"]);
                     consensus_kv::kv_increment(apply_env, &signer_key, -exec_used);
@@ -340,25 +322,17 @@ fn execute_wasm_call(
                         consensus_kv::kv_increment(apply_env, &entry_signer_key, exec_used);
                     }
 
-                    // Extract gas mutations
-                    let muts_gas = apply_env.muts.clone();
-                    let muts_gas_rev = apply_env.muts_rev.clone();
-
-                    // Restore regular mutations (attached + wasm)
-                    apply_env.muts = saved_muts;
-                    apply_env.muts_rev = saved_muts_rev;
-
-                    ("ok".to_string(), result.logs, muts_gas, muts_gas_rev)
+                    ("ok".to_string(), result.logs)
                 }
                 Err(e) => {
                     // Restore attached token mutations on error
                     apply_env.muts = muts_attached;
                     apply_env.muts_rev = muts_attached_rev;
-                    (e.to_string(), vec![], vec![], vec![])
+                    (e.to_string(), vec![])
                 }
             }
         }
-        None => ("contract_not_found".to_string(), vec![], vec![], vec![]),
+        None => ("contract_not_found".to_string(), vec![]),
     }
 }
 
@@ -412,8 +386,6 @@ fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) {
 
     // Build keys with raw binary pubkey bytes (NOT base58!)
     let entry_signer_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &next_entry.header.signer, b":AMA"]);
-    let zero_pubkey = [0u8; 48]; // Burn address: all zeros
-    let burn_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &zero_pubkey, b":AMA"]);
 
     for txu in txus {
         // Update nonce (using raw binary key with pubkey bytes)
@@ -435,13 +407,8 @@ fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) {
         let signer_balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &txu.tx.signer, b":AMA"]);
         consensus_kv::kv_increment(env, &signer_balance_key, -exec_cost);
 
-        // Credit entry signer and burn address
-        if epoch >= 295 {
-            consensus_kv::kv_increment(env, &entry_signer_key, exec_cost / 2);
-            consensus_kv::kv_increment(env, &burn_key, exec_cost / 2);
-        } else {
-            consensus_kv::kv_increment(env, &entry_signer_key, exec_cost);
-        }
+        // Credit entry signer only in pre-processing
+        consensus_kv::kv_increment(env, &entry_signer_key, exec_cost);
     }
 }
 
@@ -468,7 +435,6 @@ fn revert_mutations(db: &RocksDb, muts_rev: &[Mutation]) {
         }
     }
 }
-
 
 /// Convert Mutation type to ETF
 fn mutations_to_etf(muts: &[Mutation]) -> Vec<u8> {
@@ -697,22 +663,18 @@ pub fn apply_entry(
     let mut muts = env.muts.clone();
     let mut muts_rev = env.muts_rev.clone();
 
-    // execute transactions with gas separation (matches Elixir logic)
+    // execute transactions (mutations include gas)
     let mut tx_results = Vec::new();
     for txu in &txus {
-        let (error, logs, m3, m_rev3, m3_gas, m3_gas_rev) = execute_transaction(&mut env, db, next_entry, txu);
+        let (error, logs, m3, m_rev3) = execute_transaction(&mut env, db, next_entry, txu);
 
         if error == "ok" {
-            // success: combine regular + gas mutations
+            // success: add all mutations
             muts.extend(m3);
-            muts.extend(m3_gas);
             muts_rev.extend(m_rev3);
-            muts_rev.extend(m3_gas_rev);
         } else {
-            // failure: revert regular mutations
+            // failure: revert mutations
             revert_mutations(db, &m_rev3);
-            muts.extend(m3_gas);
-            muts_rev.extend(m3_gas_rev);
         }
 
         tx_results.push(TxResult { error, logs });

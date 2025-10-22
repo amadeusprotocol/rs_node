@@ -23,10 +23,7 @@ pub fn get_prefix(db: &RocksDb, prefix: &str) -> Vec<(String, Vec<u8>)> {
 
 /// Hash mutations with transaction results prepended (matching Elixir: hash_mutations(l ++ m))
 /// where l is the list of transaction results and m is the list of mutations
-pub fn hash_mutations_with_results(
-    results: &[crate::consensus::consensus::TxResult],
-    muts: &[Mutation],
-) -> [u8; 32] {
+pub fn hash_mutations_with_results(results: &[crate::consensus::consensus::TxResult], muts: &[Mutation]) -> [u8; 32] {
     use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
     use eetf::{Atom, Binary, List, Map, Term};
     use std::collections::HashMap;
@@ -80,4 +77,3 @@ pub fn hash_mutations_with_results(
     // Hash the encoded bytes
     blake3::hash(&encoded)
 }
-

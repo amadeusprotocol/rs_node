@@ -1,9 +1,9 @@
 // Protocol implementation for Solution from runtime
+use crate::Context;
+use crate::bic::sol::{Error, SOL_SIZE, Solution};
 use crate::node::protocol::{self, Protocol};
 use crate::utils::misc::TermMap;
 use crate::utils::safe_etf::encode_safe;
-use crate::Context;
-use crate::bic::sol::{Solution, Error, SOL_SIZE};
 use eetf::{Atom, Term};
 use std::collections::HashMap;
 

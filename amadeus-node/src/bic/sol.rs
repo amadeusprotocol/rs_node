@@ -57,8 +57,6 @@ pub enum Solution {
     V0(SolV0), // epoch < 1
 }
 
-
-
 impl Solution {
     pub const TYPENAME: &'static str = "sol";
 

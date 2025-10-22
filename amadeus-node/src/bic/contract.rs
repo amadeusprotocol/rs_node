@@ -41,12 +41,7 @@ pub struct CallEnv {
 }
 
 /// Dispatch contract module calls (currently only "deploy")
-pub fn call(
-    env: &mut ApplyEnv,
-    function: &str,
-    call_env: &CallEnv,
-    args: &[Vec<u8>],
-) -> Result<(), ContractError> {
+pub fn call(env: &mut ApplyEnv, function: &str, call_env: &CallEnv, args: &[Vec<u8>]) -> Result<(), ContractError> {
     match function {
         "deploy" => {
             // Expect exactly one argument: wasm bytes

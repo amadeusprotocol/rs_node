@@ -1,10 +1,10 @@
-use amadeus_runtime::consensus::consensus_apply::ApplyEnv;
-use amadeus_runtime::consensus::consensus_kv;
-use crate::utils::constants::{DST_MOTION, DST_POP};
 use crate::utils::blake3;
 use crate::utils::bls12_381;
+use crate::utils::constants::{DST_MOTION, DST_POP};
 use crate::utils::misc::TermExt;
 use crate::utils::rocksdb::RocksDb;
+use amadeus_runtime::consensus::consensus_apply::ApplyEnv;
+use amadeus_runtime::consensus::consensus_kv;
 use bitvec::prelude::*;
 use eetf::Term;
 
@@ -303,12 +303,7 @@ pub struct Epoch;
 
 impl Epoch {
     /// Dispatch a call with db access
-    pub fn call(
-        &self,
-        apply_env: &mut ApplyEnv,
-        op: EpochCall,
-        call_env: &CallEnv,
-    ) -> Result<(), EpochError> {
+    pub fn call(&self, apply_env: &mut ApplyEnv, op: EpochCall, call_env: &CallEnv) -> Result<(), EpochError> {
         match op {
             EpochCall::SubmitSol { sol } => self.submit_sol(apply_env, call_env, &sol),
             EpochCall::SetEmissionAddress { address } => self.set_emission_address(apply_env, call_env, &address),
@@ -318,12 +313,7 @@ impl Epoch {
         }
     }
 
-    fn submit_sol(
-        &self,
-        env: &mut ApplyEnv,
-        _call_env: &CallEnv,
-        sol_bytes: &[u8],
-    ) -> Result<(), EpochError> {
+    fn submit_sol(&self, env: &mut ApplyEnv, _call_env: &CallEnv, sol_bytes: &[u8]) -> Result<(), EpochError> {
         let hash = blake3::hash(sol_bytes);
 
         // Bloom filter: check and set bits from hash segments (matching Elixir implementation)
@@ -417,7 +407,8 @@ impl Epoch {
             Some(t) => t,
             None => {
                 // Fetch from KV (stored as Term/ETF format)
-                env.txn.get("contractstate", format!("bic:epoch:trainers:{}", cur_epoch).as_bytes())
+                env.txn
+                    .get("contractstate", format!("bic:epoch:trainers:{}", cur_epoch).as_bytes())
                     .ok()
                     .flatten()
                     .and_then(|bytes| {
@@ -471,7 +462,8 @@ impl Epoch {
 
         // Persist removal into KV: add to removed list
         let removed_key = format!("bic:epoch:trainers:removed:{}", cur_epoch);
-        let mut removed: Vec<[u8; 48]> = env.txn
+        let mut removed: Vec<[u8; 48]> = env
+            .txn
             .get("contractstate", removed_key.as_bytes())
             .ok()
             .flatten()
@@ -523,12 +515,7 @@ impl Epoch {
     }
 
     /// Epoch transition: distribute emissions, select validators, clear bloom filters
-    pub fn next(
-        &self,
-        env: &mut ApplyEnv,
-        call_env: &CallEnv,
-        db: &RocksDb,
-    ) -> Result<(), EpochError> {
+    pub fn next(&self, env: &mut ApplyEnv, call_env: &CallEnv, db: &RocksDb) -> Result<(), EpochError> {
         let epoch_cur = call_env.entry_epoch;
         let epoch_next = epoch_cur + 1;
 
@@ -731,7 +718,8 @@ impl Epoch {
 
         let trainers_key = format!("bic:epoch:trainers:{}", epoch_next).into_bytes();
         consensus_kv::kv_put(env, &trainers_key, &trainers_bytes);
-        let trainers_height_key = format!("bic:epoch:trainers:height:{:012}", env.caller_env.entry_height + 1).into_bytes();
+        let trainers_height_key =
+            format!("bic:epoch:trainers:height:{:012}", env.caller_env.entry_height + 1).into_bytes();
         consensus_kv::kv_put(env, &trainers_height_key, &trainers_bytes);
 
         Ok(())

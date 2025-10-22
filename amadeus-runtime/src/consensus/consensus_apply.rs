@@ -31,9 +31,15 @@ pub struct CallerEnv {
 }
 
 pub fn make_caller_env(
-    entry_signer: &[u8; 48], entry_prev_hash: &[u8; 32],
-    entry_slot: u64, entry_prev_slot: u64, entry_height: u64, entry_epoch: u64,
-    entry_vr: &[u8; 96], entry_vr_b3: &[u8; 32], entry_dr: &[u8; 32],
+    entry_signer: &[u8; 48],
+    entry_prev_hash: &[u8; 32],
+    entry_slot: u64,
+    entry_prev_slot: u64,
+    entry_height: u64,
+    entry_epoch: u64,
+    entry_vr: &[u8; 96],
+    entry_vr_b3: &[u8; 32],
+    entry_dr: &[u8; 32],
 ) -> CallerEnv {
     CallerEnv {
         readonly: false,
@@ -75,15 +81,31 @@ pub struct ApplyEnv<'a> {
 pub fn make_apply_env<'a>(
     txn: RocksDbTxn<'a>,
     cf: String,
-    entry_signer: &[u8; 48], entry_prev_hash: &[u8; 32],
-    entry_slot: u64, entry_prev_slot: u64, entry_height: u64, entry_epoch: u64,
-    entry_vr: &[u8; 96], entry_vr_b3: &[u8; 32], entry_dr: &[u8; 32],
+    entry_signer: &[u8; 48],
+    entry_prev_hash: &[u8; 32],
+    entry_slot: u64,
+    entry_prev_slot: u64,
+    entry_height: u64,
+    entry_epoch: u64,
+    entry_vr: &[u8; 96],
+    entry_vr_b3: &[u8; 32],
+    entry_dr: &[u8; 32],
 ) -> ApplyEnv<'a> {
     ApplyEnv {
         txn,
         cf,
         result_log: Vec::new(),
-        caller_env: make_caller_env(entry_signer, entry_prev_hash, entry_slot, entry_prev_slot, entry_height, entry_epoch, entry_vr, entry_vr_b3, entry_dr),
+        caller_env: make_caller_env(
+            entry_signer,
+            entry_prev_hash,
+            entry_slot,
+            entry_prev_slot,
+            entry_height,
+            entry_epoch,
+            entry_vr,
+            entry_vr_b3,
+            entry_dr,
+        ),
         muts: Vec::new(),
         muts_rev: Vec::new(),
     }

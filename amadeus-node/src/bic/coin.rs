@@ -1,6 +1,6 @@
+use crate::utils::bls12_381;
 use amadeus_runtime::consensus::consensus_apply::ApplyEnv;
 use amadeus_runtime::consensus::consensus_kv;
-use crate::utils::bls12_381;
 
 pub const DECIMALS: u32 = 9;
 pub const BURN_ADDRESS: [u8; 48] = [0u8; 48];
@@ -46,9 +46,7 @@ fn key_permission(symbol: &str) -> Vec<u8> {
 }
 
 pub fn balance(env: &mut ApplyEnv, pubkey: &[u8; 48], symbol: &str) -> i128 {
-    consensus_kv::kv_get(env, &key_balance(pubkey, symbol))
-        .and_then(|v| atoi::atoi::<i128>(&v))
-        .unwrap_or(0)
+    consensus_kv::kv_get(env, &key_balance(pubkey, symbol)).and_then(|v| atoi::atoi::<i128>(&v)).unwrap_or(0)
 }
 
 pub fn burn_balance(env: &mut ApplyEnv, symbol: &str) -> i128 {
@@ -313,12 +311,7 @@ impl CoinCall {
     }
 }
 
-pub fn call(
-    env: &mut ApplyEnv,
-    function: &str,
-    call_env: &CallEnv,
-    args: &[Vec<u8>],
-) -> Result<(), CoinError> {
+pub fn call(env: &mut ApplyEnv, function: &str, call_env: &CallEnv, args: &[Vec<u8>]) -> Result<(), CoinError> {
     let parsed = CoinCall::parse(function, args)?;
     match parsed {
         CoinCall::Transfer { receiver, amount, symbol } => {

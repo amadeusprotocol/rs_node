@@ -138,7 +138,9 @@ pub fn parse_etf_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
         Entry::TYPENAME => Box::new(Entry::from_etf_map_validated(map)?),
         EventTip::TYPENAME => Box::new(EventTip::from_etf_map_validated(map)?),
         EventAttestation::TYPENAME => Box::new(EventAttestation::from_etf_map_validated(map)?),
-        crate::bic::sol::Solution::TYPENAME => Box::new(crate::bic::sol_protocol::SolutionProto::from_etf_map_validated(map)?),
+        crate::bic::sol::Solution::TYPENAME => {
+            Box::new(crate::bic::sol_protocol::SolutionProto::from_etf_map_validated(map)?)
+        }
         EventTx::TYPENAME => Box::new(EventTx::from_etf_map_validated(map)?),
         GetPeerAnrs::TYPENAME => Box::new(GetPeerAnrs::from_etf_map_validated(map)?),
         GetPeerAnrsReply::TYPENAME => Box::new(GetPeerAnrsReply::from_etf_map_validated(map)?),
@@ -466,7 +468,7 @@ impl Protocol for CatchupReply {
     }
 
     async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
-        use tracing::{debug, info};
+        use tracing::debug;
 
         let mut instructions = Vec::new();
         let rooted_tip_height = ctx.fabric.get_rooted_height()?.unwrap_or(0);
@@ -500,7 +502,7 @@ impl Protocol for CatchupReply {
         }
 
         if !instructions.is_empty() {
-            info!("Processed catchup_reply from {} with {} instructions", src, instructions.len());
+            debug!("Processed catchup_reply from {} with {} instructions", src, instructions.len());
         }
 
         Ok(instructions)
