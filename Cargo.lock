@@ -140,6 +140,7 @@ dependencies = [
  "flate2",
  "group",
  "hex",
+ "jemallocator",
  "num-bigint",
  "num-traits",
  "once_cell",

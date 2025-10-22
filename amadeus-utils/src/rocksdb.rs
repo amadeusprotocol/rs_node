@@ -2,6 +2,7 @@
 
 // Re-export commonly used types for downstream crates
 pub use rust_librocksdb_sys;
+use rust_rocksdb::WriteBufferManager;
 pub use rust_rocksdb::{
     AsColumnFamilyRef, BlockBasedIndexType, BlockBasedOptions, BottommostLevelCompaction, BoundColumnFamily, Cache,
     ColumnFamilyDescriptor, CompactOptions, DBCompressionType, DBRawIteratorWithThreadMode, DBRecoveryMode, Direction,
@@ -87,30 +88,49 @@ fn cf_names() -> &'static [&'static str] {
 
 #[cfg(test)]
 pub fn init_for_test(base: &str) -> Result<TestDbGuard, Error> {
-    // create base/db path synchronously (tests are synchronous)
     let path = format!("{}/db", base);
     std::fs::create_dir_all(&path)?;
+
+    // 256 MB for block cache, 256 MB shared memtables
+    let block_cache = Cache::new_lru_cache(256 * 1024 * 1024);
+    let wbm = WriteBufferManager::new_write_buffer_manager_with_cache(256 * 1024 * 1024, true, block_cache.clone());
 
     let mut db_opts = Options::default();
     db_opts.create_if_missing(true);
     db_opts.create_missing_column_families(true);
+    db_opts.set_max_open_files(512);
+    db_opts.increase_parallelism(4);
+    db_opts.set_max_background_jobs(4);
+    db_opts.set_max_subcompactions(2);
 
-    let cf_descs: Vec<_> = cf_names()
-        .iter()
-        .map(|&name| {
-            let mut opts = Options::default();
-            opts.set_target_file_size_base(2 * 1024 * 1024 * 1024);
-            opts.set_target_file_size_multiplier(2);
-            ColumnFamilyDescriptor::new(name, opts)
-        })
-        .collect();
+    db_opts.set_write_buffer_manager(&wbm);
+    db_opts.set_max_total_wal_size(256 * 1024 * 1024);
+    db_opts.set_target_file_size_base(64 * 1024 * 1024);
+    db_opts.set_max_compaction_bytes(256 * 1024 * 1024);
 
-    let mut txn_db_opts = TransactionDBOptions::default();
-    txn_db_opts.set_default_lock_timeout(3000);
-    txn_db_opts.set_txn_lock_timeout(3000);
-    txn_db_opts.set_num_stripes(32);
+    let mut cf_opts = Options::default();
+    let mut bopts = BlockBasedOptions::default();
+    bopts.set_block_cache(&block_cache);
+    bopts.set_cache_index_and_filter_blocks(true);
+    bopts.set_pin_top_level_index_and_filter(true);
+    cf_opts.set_block_based_table_factory(&bopts);
 
-    let db: TransactionDB<MultiThreaded> = TransactionDB::open_cf_descriptors(&db_opts, &txn_db_opts, path, cf_descs)?;
+    cf_opts.set_write_buffer_size(64 * 1024 * 1024);
+    cf_opts.set_max_write_buffer_number(2);
+    cf_opts.set_min_write_buffer_number_to_merge(1);
+    cf_opts.set_max_write_buffer_size_to_maintain(0); // don't keep flushed memtables
+    cf_opts.set_level_zero_file_num_compaction_trigger(2);
+    cf_opts.set_level_zero_slowdown_writes_trigger(4);
+    cf_opts.set_level_zero_stop_writes_trigger(8);
+    cf_opts.set_compression_type(DBCompressionType::Zstd);
+
+    let cf_descs = vec![ColumnFamilyDescriptor::new("default", cf_opts)];
+
+    let mut txn_opts = TransactionDBOptions::default();
+    txn_opts.set_default_lock_timeout(2000);
+    txn_opts.set_txn_lock_timeout(2000);
+
+    let db = TransactionDB::open_cf_descriptors(&db_opts, &txn_opts, path, cf_descs)?;
 
     TEST_DB.with(|cell| {
         *cell.borrow_mut() = Some(DbHandles { db });
@@ -178,13 +198,13 @@ impl RocksDb {
 
                 let dict_bytes = 32 * 1024;
                 cf_opts.set_compression_per_level(&[
-                    DBCompressionType::None,  // L0
-                    DBCompressionType::None,  // L1
-                    DBCompressionType::Zstd,  // L2
-                    DBCompressionType::Zstd,  // L3
-                    DBCompressionType::Zstd,  // L4
-                    DBCompressionType::Zstd,  // L5
-                    DBCompressionType::Zstd,  // L6
+                    DBCompressionType::None, // L0
+                    DBCompressionType::None, // L1
+                    DBCompressionType::Zstd, // L2
+                    DBCompressionType::Zstd, // L3
+                    DBCompressionType::Zstd, // L4
+                    DBCompressionType::Zstd, // L5
+                    DBCompressionType::Zstd, // L6
                 ]);
 
                 cf_opts.set_compression_type(DBCompressionType::Zstd);
@@ -799,5 +819,87 @@ impl crate::database::Database for RocksDb {
         prefix: &[u8],
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, crate::database::DatabaseError> {
         self.iter_prefix(column_family, prefix).map_err(|e| crate::database::DatabaseError::Generic(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[global_allocator]
+    static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
+    #[test]
+    #[ignore]
+    fn spam_random_writes() {
+        use rand::Rng;
+        let _guard = init_for_test("/tmp/rocksdb_spam").unwrap();
+        TEST_DB.with(|cell| {
+            let h = cell.borrow();
+            let db = &h.as_ref().unwrap().db;
+            std::thread::scope(|s| {
+                for _ in 0..16 {
+                    s.spawn(|| {
+                        let mut rng = rand::rng();
+                        loop {
+                            let cf = cf_names()[rng.random_range(0..cf_names().len())];
+                            let key: Vec<u8> = (0..rng.random_range(8..64)).map(|_| rng.random()).collect();
+                            let val: Vec<u8> = (0..rng.random_range(8000..12000)).map(|_| rng.random()).collect();
+                            let cf_h = db.cf_handle(cf).unwrap();
+                            db.put_cf(&cf_h, &key, &val).unwrap();
+                        }
+                    });
+                }
+            });
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn append_to_all_keys() {
+        use rand::Rng;
+        let _guard = init_for_test("/tmp/rocksdb_spam").unwrap();
+        TEST_DB.with(|cell| {
+            let h = cell.borrow();
+            let db = &h.as_ref().unwrap().db;
+            let mut rng = rand::rng();
+            loop {
+                for cf in cf_names() {
+                    let cf_h = db.cf_handle(cf).unwrap();
+                    let mut opts = ReadOptions::default();
+                    opts.set_total_order_seek(true);
+                    let iter = db.iterator_cf_opt(&cf_h, opts, IteratorMode::Start);
+                    for item in iter {
+                        let (key, val) = item.unwrap();
+                        let mut new_val = val.to_vec();
+                        let append: Vec<u8> = (0..rng.random_range(16..100)).map(|_| rng.random()).collect();
+                        new_val.extend_from_slice(&append);
+                        db.put_cf(&cf_h, &key, &new_val).unwrap();
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn delete_all_keys() {
+        let _guard = init_for_test("/tmp/rocksdb_spam").unwrap();
+        TEST_DB.with(|cell| {
+            let h = cell.borrow();
+            let db = &h.as_ref().unwrap().db;
+            loop {
+                for cf in cf_names() {
+                    let cf_h = db.cf_handle(cf).unwrap();
+                    let mut opts = ReadOptions::default();
+                    opts.set_total_order_seek(true);
+                    let iter = db.iterator_cf_opt(&cf_h, opts, IteratorMode::Start);
+                    for item in iter {
+                        let (key, _val) = item.unwrap();
+                        db.delete_cf(&cf_h, &key).unwrap();
+                    }
+                }
+            }
+        });
     }
 }
