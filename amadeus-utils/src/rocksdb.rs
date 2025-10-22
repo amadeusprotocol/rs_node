@@ -127,49 +127,85 @@ pub struct RocksDbTxn<'a> {
 impl RocksDb {
     pub async fn open(path: String) -> Result<Self, Error> {
         create_dir_all(&path).await?;
+
+        // Row cache and block cache (4GB each, matching reference implementation)
+        let mut lru_opts = LruCacheOptions::default();
+        lru_opts.set_capacity(4 * 1024 * 1024 * 1024); // 4GB
+        lru_opts.set_num_shard_bits(8);
+        let row_cache = Cache::new_lru_cache_opts(&lru_opts);
+        let block_cache = Cache::new_lru_cache(4 * 1024 * 1024 * 1024); // 4GB
+
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
-
-        #[cfg(debug_assertions)]
-        db_opts.set_use_fsync(false);
-
-        db_opts.set_write_buffer_size(64 * 1024 * 1024);
-        db_opts.set_db_write_buffer_size(1024 * 1024 * 1024);
-        db_opts.set_max_write_buffer_number(3);
-        db_opts.set_min_write_buffer_number_to_merge(1);
-        db_opts.set_max_open_files(1024);
-        db_opts.set_max_file_opening_threads(8);
+        db_opts.set_max_open_files(30000);
         db_opts.increase_parallelism(4);
-        db_opts.set_max_total_wal_size(1 * 1024 * 1024 * 1024);
-        db_opts.set_recycle_log_file_num(8);
-        db_opts.set_wal_bytes_per_sync(1 << 20);
-        db_opts.set_bytes_per_sync(1 << 20);
-        db_opts.set_wal_recovery_mode(DBRecoveryMode::TolerateCorruptedTailRecords);
-        db_opts.set_max_background_jobs(6);
+        db_opts.set_max_background_jobs(2);
 
-        let mut block_opts = BlockBasedOptions::default();
-        let cache = Cache::new_lru_cache(128 * 1024 * 1024);
-        block_opts.set_block_cache(&cache);
-        db_opts.set_block_based_table_factory(&block_opts);
+        db_opts.set_max_total_wal_size(2 * 1024 * 1024 * 1024); // 2GB
+        db_opts.set_target_file_size_base(8 * 1024 * 1024 * 1024);
+        db_opts.set_max_compaction_bytes(20 * 1024 * 1024 * 1024);
+
+        db_opts.enable_statistics();
+        db_opts.set_statistics_level(statistics::StatsLevel::All);
+        db_opts.set_skip_stats_update_on_db_open(true);
+
+        // Bigger L0 flushes
+        db_opts.set_write_buffer_size(512 * 1024 * 1024);
+        db_opts.set_max_write_buffer_number(6);
+        db_opts.set_min_write_buffer_number_to_merge(2);
+        // L0 thresholds
+        db_opts.set_level_zero_file_num_compaction_trigger(8);
+        db_opts.set_level_zero_slowdown_writes_trigger(30);
+        db_opts.set_level_zero_stop_writes_trigger(100);
+        db_opts.set_max_subcompactions(2);
 
         let cf_descs: Vec<_> = cf_names()
             .iter()
             .map(|&name| {
-                let mut opts = Options::default();
-                opts.set_target_file_size_base(64 * 1024 * 1024);
-                opts.set_target_file_size_multiplier(2);
-                opts.set_write_buffer_size(64 * 1024 * 1024);
-                opts.set_max_write_buffer_number(2);
-                opts.set_level_zero_file_num_compaction_trigger(4);
-                opts.set_compression_type(DBCompressionType::Lz4);
-                opts.set_level_compaction_dynamic_level_bytes(true);
-                opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(8));
-                let mut block_opts = BlockBasedOptions::default();
-                block_opts.set_bloom_filter(10.0, true);
-                block_opts.set_block_size(16 * 1024);
-                opts.set_block_based_table_factory(&block_opts);
-                ColumnFamilyDescriptor::new(name, opts)
+                let mut cf_opts = Options::default();
+                cf_opts.set_row_cache(&row_cache);
+
+                let mut block_based_options = BlockBasedOptions::default();
+                block_based_options.set_block_cache(&block_cache);
+                block_based_options.set_index_type(BlockBasedIndexType::TwoLevelIndexSearch);
+                block_based_options.set_partition_filters(true);
+                block_based_options.set_cache_index_and_filter_blocks(true);
+                block_based_options.set_cache_index_and_filter_blocks_with_high_priority(true);
+                block_based_options.set_pin_top_level_index_and_filter(true);
+                block_based_options.set_pin_l0_filter_and_index_blocks_in_cache(false);
+                cf_opts.set_block_based_table_factory(&block_based_options);
+
+                let dict_bytes = 32 * 1024;
+                cf_opts.set_compression_per_level(&[
+                    DBCompressionType::None,  // L0
+                    DBCompressionType::None,  // L1
+                    DBCompressionType::Zstd,  // L2
+                    DBCompressionType::Zstd,  // L3
+                    DBCompressionType::Zstd,  // L4
+                    DBCompressionType::Zstd,  // L5
+                    DBCompressionType::Zstd,  // L6
+                ]);
+
+                cf_opts.set_compression_type(DBCompressionType::Zstd);
+                cf_opts.set_compression_options(-14, 2, 0, dict_bytes);
+                cf_opts.set_zstd_max_train_bytes(100 * dict_bytes);
+
+                cf_opts.set_max_total_wal_size(2 * 1024 * 1024 * 1024); // 2GB
+                cf_opts.set_target_file_size_base(8 * 1024 * 1024 * 1024);
+                cf_opts.set_max_compaction_bytes(20 * 1024 * 1024 * 1024);
+
+                // Bigger L0 flushes
+                cf_opts.set_write_buffer_size(512 * 1024 * 1024);
+                cf_opts.set_max_write_buffer_number(6);
+                cf_opts.set_min_write_buffer_number_to_merge(2);
+                // L0 thresholds
+                cf_opts.set_level_zero_file_num_compaction_trigger(20);
+                cf_opts.set_level_zero_slowdown_writes_trigger(40);
+                cf_opts.set_level_zero_stop_writes_trigger(100);
+                cf_opts.set_max_subcompactions(2);
+
+                ColumnFamilyDescriptor::new(name, cf_opts)
             })
             .collect();
 

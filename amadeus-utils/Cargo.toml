@@ -37,7 +37,7 @@ bs58 = "0.5.1"
 git = "https://github.com/vans163/rust-rocksdb"
 rev = "b3e3f248ecc1b47be3e77aa99e5aa60129e606b8"
 default-features = false
-features = ["bindgen-runtime", "lz4", "snappy"] # "zstd", "zstd-static-linking-only", "multi-threaded-cf", "jemalloc", "malloc-usable-size"
+features = ["zstd", "zstd-static-linking-only", "multi-threaded-cf"]
 
 
 [dependencies.rust-librocksdb-sys]
