@@ -91,46 +91,76 @@ pub fn init_for_test(base: &str) -> Result<TestDbGuard, Error> {
     let path = format!("{}/db", base);
     std::fs::create_dir_all(&path)?;
 
-    // 256 MB for block cache, 256 MB shared memtables
-    let block_cache = Cache::new_lru_cache(256 * 1024 * 1024);
-    let wbm = WriteBufferManager::new_write_buffer_manager_with_cache(256 * 1024 * 1024, true, block_cache.clone());
+    let block_cache = Cache::new_lru_cache(512 * 1024 * 1024);
+    let wbm = WriteBufferManager::new_write_buffer_manager_with_cache(512 * 1024 * 1024, true, block_cache.clone());
 
     let mut db_opts = Options::default();
     db_opts.create_if_missing(true);
     db_opts.create_missing_column_families(true);
-    db_opts.set_max_open_files(512);
+    db_opts.set_max_open_files(30000);
     db_opts.increase_parallelism(4);
-    db_opts.set_max_background_jobs(4);
+    db_opts.set_max_background_jobs(2);
+    db_opts.set_write_buffer_manager(&wbm);
+    db_opts.set_max_total_wal_size(2 * 1024 * 1024 * 1024);
+    db_opts.set_target_file_size_base(8 * 1024 * 1024 * 1024);
+    db_opts.set_max_compaction_bytes(20 * 1024 * 1024 * 1024);
+    db_opts.enable_statistics();
+    db_opts.set_statistics_level(statistics::StatsLevel::All);
+    db_opts.set_skip_stats_update_on_db_open(true);
+    db_opts.set_write_buffer_size(512 * 1024 * 1024);
+    db_opts.set_max_write_buffer_number(6);
+    db_opts.set_min_write_buffer_number_to_merge(2);
+    db_opts.set_level_zero_file_num_compaction_trigger(8);
+    db_opts.set_level_zero_slowdown_writes_trigger(30);
+    db_opts.set_level_zero_stop_writes_trigger(100);
     db_opts.set_max_subcompactions(2);
 
-    db_opts.set_write_buffer_manager(&wbm);
-    db_opts.set_max_total_wal_size(256 * 1024 * 1024);
-    db_opts.set_target_file_size_base(64 * 1024 * 1024);
-    db_opts.set_max_compaction_bytes(256 * 1024 * 1024);
+    let cf_descs: Vec<_> = cf_names()
+        .iter()
+        .map(|&name| {
+            let mut cf_opts = Options::default();
+            let mut block_based_options = BlockBasedOptions::default();
+            block_based_options.set_block_cache(&block_cache);
+            block_based_options.set_index_type(BlockBasedIndexType::TwoLevelIndexSearch);
+            block_based_options.set_partition_filters(true);
+            block_based_options.set_cache_index_and_filter_blocks(true);
+            block_based_options.set_cache_index_and_filter_blocks_with_high_priority(true);
+            block_based_options.set_pin_top_level_index_and_filter(true);
+            block_based_options.set_pin_l0_filter_and_index_blocks_in_cache(false);
+            cf_opts.set_block_based_table_factory(&block_based_options);
+            let dict_bytes = 32 * 1024;
+            cf_opts.set_compression_per_level(&[
+                DBCompressionType::None,
+                DBCompressionType::None,
+                DBCompressionType::Zstd,
+                DBCompressionType::Zstd,
+                DBCompressionType::Zstd,
+                DBCompressionType::Zstd,
+                DBCompressionType::Zstd,
+            ]);
+            cf_opts.set_compression_type(DBCompressionType::Zstd);
+            cf_opts.set_compression_options(-14, 2, 0, dict_bytes);
+            cf_opts.set_zstd_max_train_bytes(100 * dict_bytes);
+            cf_opts.set_max_total_wal_size(2 * 1024 * 1024 * 1024);
+            cf_opts.set_target_file_size_base(8 * 1024 * 1024 * 1024);
+            cf_opts.set_max_compaction_bytes(20 * 1024 * 1024 * 1024);
+            cf_opts.set_write_buffer_size(512 * 1024 * 1024);
+            cf_opts.set_max_write_buffer_number(6);
+            cf_opts.set_min_write_buffer_number_to_merge(2);
+            cf_opts.set_level_zero_file_num_compaction_trigger(20);
+            cf_opts.set_level_zero_slowdown_writes_trigger(40);
+            cf_opts.set_level_zero_stop_writes_trigger(100);
+            cf_opts.set_max_subcompactions(2);
+            ColumnFamilyDescriptor::new(name, cf_opts)
+        })
+        .collect();
 
-    let mut cf_opts = Options::default();
-    let mut bopts = BlockBasedOptions::default();
-    bopts.set_block_cache(&block_cache);
-    bopts.set_cache_index_and_filter_blocks(true);
-    bopts.set_pin_top_level_index_and_filter(true);
-    cf_opts.set_block_based_table_factory(&bopts);
+    let mut txn_db_opts = TransactionDBOptions::default();
+    txn_db_opts.set_default_lock_timeout(3000);
+    txn_db_opts.set_txn_lock_timeout(3000);
+    txn_db_opts.set_num_stripes(32);
 
-    cf_opts.set_write_buffer_size(64 * 1024 * 1024);
-    cf_opts.set_max_write_buffer_number(2);
-    cf_opts.set_min_write_buffer_number_to_merge(1);
-    cf_opts.set_max_write_buffer_size_to_maintain(0); // don't keep flushed memtables
-    cf_opts.set_level_zero_file_num_compaction_trigger(2);
-    cf_opts.set_level_zero_slowdown_writes_trigger(4);
-    cf_opts.set_level_zero_stop_writes_trigger(8);
-    cf_opts.set_compression_type(DBCompressionType::Zstd);
-
-    let cf_descs = vec![ColumnFamilyDescriptor::new("default", cf_opts)];
-
-    let mut txn_opts = TransactionDBOptions::default();
-    txn_opts.set_default_lock_timeout(2000);
-    txn_opts.set_txn_lock_timeout(2000);
-
-    let db = TransactionDB::open_cf_descriptors(&db_opts, &txn_opts, path, cf_descs)?;
+    let db = TransactionDB::open_cf_descriptors(&db_opts, &txn_db_opts, path, cf_descs)?;
 
     TEST_DB.with(|cell| {
         *cell.borrow_mut() = Some(DbHandles { db });
@@ -148,12 +178,9 @@ impl RocksDb {
     pub async fn open(path: String) -> Result<Self, Error> {
         create_dir_all(&path).await?;
 
-        // Row cache and block cache (4GB each, matching reference implementation)
-        let mut lru_opts = LruCacheOptions::default();
-        lru_opts.set_capacity(4 * 1024 * 1024 * 1024); // 4GB
-        lru_opts.set_num_shard_bits(8);
-        let row_cache = Cache::new_lru_cache_opts(&lru_opts);
-        let block_cache = Cache::new_lru_cache(4 * 1024 * 1024 * 1024); // 4GB
+        // Block cache and write buffer manager (512MB each, shared budget = ~1GB total)
+        let block_cache = Cache::new_lru_cache(512 * 1024 * 1024);
+        let wbm = WriteBufferManager::new_write_buffer_manager_with_cache(512 * 1024 * 1024, true, block_cache.clone());
 
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
@@ -161,6 +188,7 @@ impl RocksDb {
         db_opts.set_max_open_files(30000);
         db_opts.increase_parallelism(4);
         db_opts.set_max_background_jobs(2);
+        db_opts.set_write_buffer_manager(&wbm);
 
         db_opts.set_max_total_wal_size(2 * 1024 * 1024 * 1024); // 2GB
         db_opts.set_target_file_size_base(8 * 1024 * 1024 * 1024);
@@ -184,7 +212,6 @@ impl RocksDb {
             .iter()
             .map(|&name| {
                 let mut cf_opts = Options::default();
-                cf_opts.set_row_cache(&row_cache);
 
                 let mut block_based_options = BlockBasedOptions::default();
                 block_based_options.set_block_cache(&block_cache);
