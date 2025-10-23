@@ -12,3 +12,12 @@ doctest = false
 [dependencies]
 atoi = "2"
 amadeus-utils = { path = "../amadeus-utils" }
+bls12_381 = { version = "0.8.0", git = "https://github.com/vans163/bls12_381" }
+blst = "0.3.16"
+thiserror = "2.0.17"
+group = "0.13.0"
+eetf = "0.11.0"
+rand = "0.9.1"
+
+[dev-dependencies]
+bs58 = "0.5"

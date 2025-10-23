@@ -46,7 +46,7 @@ fn kv_clear_prefix(env: &mut ApplyEnv, prefix: &[u8]) {
     // Get all keys with this prefix using the transaction iterator
     let keys_to_delete: Vec<Vec<u8>> = {
         let mut keys = Vec::new();
-        let mut it = env.txn.raw_iterator_cf(&env.cf).unwrap();
+        let mut it = env.txn.raw_iterator_cf(&env.cf);
         it.seek(prefix);
         while it.valid() {
             if let Some(k) = it.key() {
@@ -350,7 +350,7 @@ impl Epoch {
 
         // Check if POP already exists for this public key (key uses raw binary pk)
         let pop_key = crate::utils::misc::bcat(&[b"bic:epoch:pop:", &pk]);
-        let pop_exists = env.txn.get(&env.cf, &pop_key).ok().flatten().is_some();
+        let pop_exists = env.txn.get_cf(&env.cf, &pop_key).ok().flatten().is_some();
 
         if !pop_exists {
             // verify Proof-of-Possession: message is pk bytes
@@ -407,10 +407,7 @@ impl Epoch {
             Some(t) => t,
             None => {
                 // Fetch from KV (stored as Term/ETF format)
-                env.txn
-                    .get("contractstate", format!("bic:epoch:trainers:{}", cur_epoch).as_bytes())
-                    .ok()
-                    .flatten()
+                consensus_kv::kv_get(env, format!("bic:epoch:trainers:{}", cur_epoch).as_bytes())
                     .and_then(|bytes| {
                         // Try to decode as Term first (new format)
                         Term::decode(&bytes[..])
@@ -462,11 +459,7 @@ impl Epoch {
 
         // Persist removal into KV: add to removed list
         let removed_key = format!("bic:epoch:trainers:removed:{}", cur_epoch);
-        let mut removed: Vec<[u8; 48]> = env
-            .txn
-            .get("contractstate", removed_key.as_bytes())
-            .ok()
-            .flatten()
+        let mut removed: Vec<[u8; 48]> = consensus_kv::kv_get(env, removed_key.as_bytes())
             .and_then(|bytes| {
                 Term::decode(&bytes[..]).ok().and_then(|term| {
                     term.get_list().map(|list| {

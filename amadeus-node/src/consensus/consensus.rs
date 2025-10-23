@@ -706,7 +706,7 @@ pub fn apply_entry(
     let mutations_hash = crate::consensus::kv::hash_mutations_with_results(&tx_results, &muts);
 
     // Commit the transaction
-    env.txn.commit()?;
+    env.txn.commit().map_err(crate::utils::rocksdb::Error::from)?;
 
     // sign attestation
     let pk = config.get_pk();

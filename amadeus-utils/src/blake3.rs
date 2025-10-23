@@ -39,6 +39,9 @@ impl Hasher {
         x.fill(&mut out);
         out
     }
+    pub fn finalize_xof_reader(&self) -> blake3::OutputReader {
+        self.0.finalize_xof()
+    }
 }
 
 pub fn hash(buf: &[u8]) -> [u8; 32] {

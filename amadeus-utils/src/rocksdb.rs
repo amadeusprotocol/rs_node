@@ -174,6 +174,13 @@ pub struct RocksDbTxn<'a> {
     inner: SimpleTransaction<'a>,
 }
 
+impl<'a> RocksDbTxn<'a> {
+    /// Get access to the inner transaction for advanced operations
+    pub fn inner(&self) -> &SimpleTransaction<'a> {
+        &self.inner
+    }
+}
+
 impl RocksDb {
     pub async fn open(path: String) -> Result<Self, Error> {
         create_dir_all(&path).await?;
@@ -437,8 +444,8 @@ impl Cf {
 
 /// Simple transaction for TransactionDB
 pub struct SimpleTransaction<'a> {
-    txn: Transaction<'a, TransactionDB<MultiThreaded>>,
-    db: &'a TransactionDB<MultiThreaded>,
+    pub txn: Transaction<'a, TransactionDB<MultiThreaded>>,
+    pub db: &'a TransactionDB<MultiThreaded>,
 }
 
 impl<'a> SimpleTransaction<'a> {
@@ -856,28 +863,25 @@ mod tests {
     #[global_allocator]
     static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn spam_random_writes() {
+    async fn spam_random_writes() {
         use rand::Rng;
-        let _guard = init_for_test("/tmp/rocksdb_spam").unwrap();
-        TEST_DB.with(|cell| {
-            let h = cell.borrow();
-            let db = &h.as_ref().unwrap().db;
-            std::thread::scope(|s| {
-                for _ in 0..16 {
-                    s.spawn(|| {
-                        let mut rng = rand::rng();
-                        loop {
-                            let cf = cf_names()[rng.random_range(0..cf_names().len())];
-                            let key: Vec<u8> = (0..rng.random_range(8..64)).map(|_| rng.random()).collect();
-                            let val: Vec<u8> = (0..rng.random_range(8000..12000)).map(|_| rng.random()).collect();
-                            let cf_h = db.cf_handle(cf).unwrap();
-                            db.put_cf(&cf_h, &key, &val).unwrap();
-                        }
-                    });
-                }
-            });
+        let db = RocksDb::open("/tmp/rocksdb_spam".to_string()).await.unwrap();
+        let db_ref = &db.handles.db;
+        std::thread::scope(|s| {
+            for _ in 0..16 {
+                s.spawn(|| {
+                    let mut rng = rand::rng();
+                    loop {
+                        let cf = cf_names()[rng.random_range(0..cf_names().len())];
+                        let key: Vec<u8> = (0..rng.random_range(8..64)).map(|_| rng.random()).collect();
+                        let val: Vec<u8> = (0..rng.random_range(8000..12000)).map(|_| rng.random()).collect();
+                        let cf_h = db_ref.cf_handle(cf).unwrap();
+                        db_ref.put_cf(&cf_h, &key, &val).unwrap();
+                    }
+                });
+            }
         });
     }
 

@@ -1,33 +1,32 @@
-use crate::RocksDbTxn;
+// Consensus application environment and entry processing
+use amadeus_utils::rocksdb::{Transaction, TransactionDB, MultiThreaded, BoundColumnFamily};
+use std::collections::HashMap;
+use std::panic::panic_any;
+use std::sync::Arc;
 
 use crate::consensus::consensus_muts;
-use std::collections::HashMap;
+
+pub struct ApplyEnv<'db> {
+    pub caller_env: CallerEnv,
+    pub cf: Arc<BoundColumnFamily<'db>>,
+    pub txn: Transaction<'db, TransactionDB<MultiThreaded>>,
+    pub muts_final: Vec<consensus_muts::Mutation>,
+    pub muts_final_rev: Vec<consensus_muts::Mutation>,
+    pub muts: Vec<consensus_muts::Mutation>,
+    pub muts_gas: Vec<consensus_muts::Mutation>,
+    pub muts_rev: Vec<consensus_muts::Mutation>,
+    pub muts_rev_gas: Vec<consensus_muts::Mutation>,
+    pub result_log: Vec<HashMap<&'static str, &'static str>>,
+}
 
 pub struct CallerEnv {
-    pub readonly: bool,
-    pub seed: Option<Vec<u8>>,
-    pub seedf64: f64,
-    pub entry_signer: [u8; 48],
-    pub entry_prev_hash: [u8; 32],
-    pub entry_slot: u64,
-    pub entry_prev_slot: u64,
+    pub account_current: Vec<u8>,
+    pub account_caller: Vec<u8>,
+    pub account_origin: Vec<u8>,
+    pub entry_signer: Vec<u8>,
     pub entry_height: u64,
     pub entry_epoch: u64,
-    pub entry_vr: [u8; 96],
-    pub entry_vr_b3: [u8; 32],
-    pub entry_dr: [u8; 32],
-    pub tx_index: u64,
-    pub tx_signer: [u8; 48],
-    pub tx_nonce: u64,
-    pub tx_hash: [u8; 32],
-    pub account_origin: Vec<u8>,
-    pub account_caller: Vec<u8>,
-    pub account_current: Vec<u8>,
-    pub attached_symbol: String,
-    pub attached_amount: String,
-    pub call_counter: u32,
-    pub call_exec_points: u64,
-    pub call_exec_points_remaining: u64,
+    pub entry_vr: Vec<u8>,
 }
 
 pub fn make_caller_env(
@@ -42,45 +41,19 @@ pub fn make_caller_env(
     entry_dr: &[u8; 32],
 ) -> CallerEnv {
     CallerEnv {
-        readonly: false,
-        seed: None,
-        seedf64: 1.0,
-        entry_signer: *entry_signer,
-        entry_prev_hash: *entry_prev_hash,
-        entry_slot: entry_slot,
-        entry_prev_slot: entry_prev_slot,
-        entry_height: entry_height,
-        entry_epoch: entry_epoch,
-        entry_vr: *entry_vr,
-        entry_vr_b3: *entry_vr_b3,
-        entry_dr: *entry_dr,
-        tx_index: 0,
-        tx_signer: [0u8; 48],
-        tx_nonce: 0,
-        tx_hash: [0u8; 32],
-        account_origin: Vec::new(),
-        account_caller: Vec::new(),
-        account_current: Vec::new(),
-        attached_symbol: String::new(),
-        attached_amount: String::new(),
-        call_counter: 0,
-        call_exec_points: 3_000_000,
-        call_exec_points_remaining: 3_000_000,
+        account_current: vec![],
+        account_caller: vec![],
+        account_origin: vec![],
+        entry_signer: entry_signer.to_vec(),
+        entry_height,
+        entry_epoch,
+        entry_vr: entry_vr.to_vec(),
     }
 }
 
-pub struct ApplyEnv<'a> {
-    pub txn: RocksDbTxn<'a>,
-    pub cf: String,
-    pub result_log: Vec<HashMap<&'static str, &'static str>>,
-    pub caller_env: CallerEnv,
-    pub muts: Vec<consensus_muts::Mutation>,
-    pub muts_rev: Vec<consensus_muts::Mutation>,
-}
-
-pub fn make_apply_env<'a>(
-    txn: RocksDbTxn<'a>,
-    cf: String,
+pub fn make_apply_env<'db>(
+    txn_wrapper: amadeus_utils::rocksdb::RocksDbTxn<'db>,
+    cf_name: String,
     entry_signer: &[u8; 48],
     entry_prev_hash: &[u8; 32],
     entry_slot: u64,
@@ -90,32 +63,49 @@ pub fn make_apply_env<'a>(
     entry_vr: &[u8; 96],
     entry_vr_b3: &[u8; 32],
     entry_dr: &[u8; 32],
-) -> ApplyEnv<'a> {
+) -> ApplyEnv<'db> {
+    // Extract inner transaction and get column family handle
+    let inner = txn_wrapper.inner();
+    let cf_handle = inner.db.cf_handle(&cf_name)
+        .expect(&format!("Column family '{}' not found", cf_name));
+
+    // SAFETY: We're extracting the transaction from the wrapper
+    // The wrapper must be consumed/leaked to avoid double-free
+    // This is a temporary solution - proper fix would restructure the API
+    let (raw_txn, raw_db) = unsafe {
+        let inner_ptr = inner as *const amadeus_utils::rocksdb::SimpleTransaction<'db>;
+        let txn = std::ptr::read(&(*inner_ptr).txn);
+        let db = (*inner_ptr).db;
+        (txn, db)
+    };
+    std::mem::forget(txn_wrapper); // Prevent double-free
+
     ApplyEnv {
-        txn,
-        cf,
-        result_log: Vec::new(),
-        caller_env: make_caller_env(
-            entry_signer,
-            entry_prev_hash,
-            entry_slot,
-            entry_prev_slot,
-            entry_height,
-            entry_epoch,
-            entry_vr,
-            entry_vr_b3,
-            entry_dr,
-        ),
+        caller_env: make_caller_env(entry_signer, entry_prev_hash, entry_slot, entry_prev_slot,
+                                     entry_height, entry_epoch, entry_vr, entry_vr_b3, entry_dr),
+        cf: cf_handle,
+        txn: raw_txn,
+        muts_final: Vec::new(),
+        muts_final_rev: Vec::new(),
         muts: Vec::new(),
+        muts_gas: Vec::new(),
         muts_rev: Vec::new(),
+        muts_rev_gas: Vec::new(),
+        result_log: Vec::new(),
     }
 }
 
-pub fn set_apply_env_tx(env: &mut ApplyEnv, tx_hash: &[u8; 32], tx_signer: &[u8; 48], tx_nonce: u64) {
-    env.caller_env.tx_hash = *tx_hash;
-    env.caller_env.tx_nonce = tx_nonce;
-    env.caller_env.tx_signer = *tx_signer;
-    env.caller_env.account_origin = tx_signer.to_vec();
-}
+pub fn valid_bic_action(contract: Vec<u8>, function: Vec<u8>) -> bool {
+    let c = contract.as_slice();
+    let f = function.as_slice();
 
-// NIF-specific apply_entry function removed - no longer needed without rustler
+    (c == b"Epoch" || c == b"Coin" || c == b"Contract")
+        && (f == b"submit_sol"
+            || f == b"transfer"
+            || f == b"set_emission_address"
+            || f == b"slash_trainer"
+            || f == b"deploy"
+            || f == b"create_and_mint"
+            || f == b"mint"
+            || f == b"pause")
+}
