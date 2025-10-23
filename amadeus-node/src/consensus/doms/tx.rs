@@ -93,13 +93,13 @@ impl TxU {
     }
 
     /// Compute execution cost from tx_encoded length in cents
-    pub fn exec_cost_from_len(&self) -> u128 {
-        let bytes = (self.tx_encoded.len() + 32 + 96) as u128;
-        crate::bic::coin::to_cents(1 + bytes / 1024)
+    pub fn exec_cost_from_len(&self) -> i128 {
+        let bytes = self.tx_encoded.len() + 32 + 96;
+        crate::bic::coin::to_cents((1 + bytes / 1024) as i128)
     }
 
     /// Compute execution cost in cents (epoch parameter is unused but kept for compatibility)
-    pub fn exec_cost(&self, _epoch: u32) -> u128 {
+    pub fn exec_cost(&self, _epoch: u32) -> i128 {
         self.exec_cost_from_len()
     }
 

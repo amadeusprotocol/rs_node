@@ -1,18 +1,13 @@
-// Local BIC modules
-pub mod coin;
-pub mod coin_symbol_reserved;
-pub mod contract;
-pub mod epoch;
-pub mod sol;
-pub mod sol_bloom;
-pub mod sol_difficulty;
-
-use crate::utils::rocksdb::RocksDb;
+// Re-export BIC modules from amadeus-runtime
+pub use amadeus_runtime::consensus::bic::{coin, coin_symbol_reserved, epoch, sol, sol_bloom, sol_difficulty};
 
 // Re-export common bic functions
 pub use epoch::trainers_for_height;
 
-// Node-specific extensions
+use crate::utils::rocksdb::RocksDb;
+
+// Node-specific modules (wasmer-dependent)
+pub mod contract;
 pub mod sol_protocol;
 
 // Chain query functions
@@ -65,5 +60,5 @@ pub fn chain_total_sols(db: &RocksDb) -> i128 {
 }
 
 pub fn is_reserved(symbol: &str) -> bool {
-    coin_symbol_reserved::is_free(symbol, &[0u8; 48])
+    coin_symbol_reserved::is_free(symbol.as_bytes(), b"")
 }

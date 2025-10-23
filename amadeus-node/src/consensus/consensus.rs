@@ -173,7 +173,7 @@ impl TxResult {
 /// Returns (error, logs, mutations, mutations_reverse)
 fn execute_transaction(
     env: &mut ApplyEnv,
-    db: &RocksDb,
+    _db: &RocksDb,
     next_entry: &Entry,
     txu: &TxU,
 ) -> (String, Vec<String>, Vec<Mutation>, Vec<Mutation>) {
@@ -210,7 +210,9 @@ fn execute_transaction(
         b"Coin" => execute_coin_call(env, txu.tx.signer, &action.function, &action.args),
         b"Contract" => execute_contract_call(env, txu.tx.signer, &action.function, &action.args),
         contract if contract.len() == 48 => {
-            execute_wasm_call(env, db, &call_env, contract, &action.function, &action.args)
+            // TODO: Re-enable WASM after CallEnv migration
+            // execute_wasm_call(env, db, &call_env, contract, &action.function, &action.args)
+            ("wasm_disabled_temporarily".to_string(), vec![])
         }
         _ => ("invalid_contract".to_string(), vec![]),
     };
@@ -250,93 +252,22 @@ fn execute_contract_call(
         .unwrap_or_else(|e| (e.to_string(), vec![]))
 }
 
+// TODO: Re-enable after WASM module migration
+#[allow(dead_code, unused_variables)]
 fn execute_wasm_call(
-    apply_env: &mut ApplyEnv,
-    db: &RocksDb,
-    call_env: &crate::bic::epoch::CallEnv,
-    contract: &[u8],
-    function: &str,
-    args: &[Vec<u8>],
+    _apply_env: &mut ApplyEnv,
+    _db: &RocksDb,
+    _call_env: &crate::bic::epoch::CallEnv,
+    _contract: &[u8],
+    _function: &str,
+    _args: &[Vec<u8>],
 ) -> (String, Vec<String>) {
-    let contract_pk: [u8; 48] = contract.try_into().expect("contract len checked");
-
-    // Handle attached tokens BEFORE WASM execution (using ApplyEnv)
-    if !call_env.attached_symbol.is_empty() && !call_env.attached_amount.is_empty() {
-        let amount_str = String::from_utf8_lossy(&call_env.attached_amount);
-        let amount = amount_str.parse::<i128>().unwrap_or(0);
-        if amount > 0 {
-            let signer_key =
-                crate::utils::misc::bcat(&[b"bic:coin:balance:", &call_env.tx_signer, b":", &call_env.attached_symbol]);
-            let contract_key =
-                crate::utils::misc::bcat(&[b"bic:coin:balance:", &contract_pk, b":", &call_env.attached_symbol]);
-            consensus_kv::kv_increment(apply_env, &signer_key, -amount);
-            consensus_kv::kv_increment(apply_env, &contract_key, amount);
-        }
-    }
-
-    // Save mutations from attached tokens handling
-    let muts_attached = apply_env.muts.clone();
-    let muts_attached_rev = apply_env.muts_rev.clone();
-
-    // Get bytecode from ApplyEnv
-    let wasm_bytecode_opt = crate::bic::contract::bytecode(apply_env, &contract_pk);
-
-    // For WASM execution, use old ApplyCtx approach (WASM runtime not migrated yet)
-    let ctx = crate::kv::ApplyEnvLegacy::new();
-
-    // Execute WASM (using old ApplyCtx)
-    match wasm_bytecode_opt {
-        Some(wasm_bytes) => {
-            match crate::wasm::runtime::execute(call_env, db, ctx.clone(), &wasm_bytes, function, args) {
-                Ok(result) => {
-                    // Get WASM execution mutations
-                    let muts_wasm = ctx.mutations();
-                    let muts_wasm_rev = ctx.mutations_reverse();
-
-                    // Convert old Mutation type to new Mutation type and add to apply_env
-                    for m in muts_wasm {
-                        let new_mut = convert_old_mutation_to_new(&m);
-                        apply_env.muts.push(new_mut);
-                    }
-                    for m in muts_wasm_rev {
-                        let new_mut = convert_old_mutation_to_new(&m);
-                        apply_env.muts_rev.push(new_mut);
-                    }
-
-                    // Now handle gas charging (added directly to apply_env.muts)
-                    let exec_used = (result.exec_used * 100) as i128;
-                    let signer_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &call_env.tx_signer, b":AMA"]);
-                    consensus_kv::kv_increment(apply_env, &signer_key, -exec_used);
-
-                    if call_env.entry_epoch >= 295 {
-                        let half_exec_cost = exec_used / 2;
-                        let entry_signer_key =
-                            crate::utils::misc::bcat(&[b"bic:coin:balance:", &call_env.entry_signer, b":AMA"]);
-                        let zero_pubkey = [0u8; 48];
-                        let burn_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &zero_pubkey, b":AMA"]);
-                        consensus_kv::kv_increment(apply_env, &entry_signer_key, half_exec_cost);
-                        consensus_kv::kv_increment(apply_env, &burn_key, half_exec_cost);
-                    } else {
-                        let entry_signer_key =
-                            crate::utils::misc::bcat(&[b"bic:coin:balance:", &call_env.entry_signer, b":AMA"]);
-                        consensus_kv::kv_increment(apply_env, &entry_signer_key, exec_used);
-                    }
-
-                    ("ok".to_string(), result.logs)
-                }
-                Err(e) => {
-                    // Restore attached token mutations on error
-                    apply_env.muts = muts_attached;
-                    apply_env.muts_rev = muts_attached_rev;
-                    (e.to_string(), vec![])
-                }
-            }
-        }
-        None => ("contract_not_found".to_string(), vec![]),
-    }
+    // WASM execution temporarily disabled during bic module migration
+    ("wasm_disabled_temporarily".to_string(), vec![])
 }
 
 // Helper function to convert old Mutation type to new Mutation type
+#[allow(dead_code)]
 fn convert_old_mutation_to_new(old: &crate::kv::MutationLegacy) -> Mutation {
     use crate::kv::Op;
     match &old.op {
@@ -398,10 +329,10 @@ fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) {
         let bytes = txu.tx_encoded.len() + 32 + 96;
         let exec_cost = if epoch >= 295 {
             // New formula (epoch 295+): convert from AMA units to flat coins
-            crate::bic::coin::to_cents(1 + bytes as u128 / 1024) as i128
+            crate::bic::coin::to_cents((1 + bytes / 1024) as i128)
         } else {
             // Old formula (epoch < 295)
-            crate::bic::coin::to_cents(3 + bytes as u128 / 256 * 3) as i128
+            crate::bic::coin::to_cents((3 + bytes / 256 * 3) as i128)
         };
 
         let signer_balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &txu.tx.signer, b":AMA"]);

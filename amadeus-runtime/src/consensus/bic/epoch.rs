@@ -277,3 +277,139 @@ pub fn call_slash_trainer(env: &mut crate::consensus::consensus_apply::ApplyEnv,
 
 pub fn next(env: &mut crate::consensus::consensus_apply::ApplyEnv) {
 }
+
+// Compatibility wrappers for amadeus-node
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallEnv {
+    pub entry_epoch: u64,
+    pub entry_height: u64,
+    pub entry_signer: [u8; 48],
+    pub entry_vr: Vec<u8>,
+    pub tx_hash: Vec<u8>,
+    pub tx_signer: [u8; 48],
+    pub account_caller: [u8; 48],
+    pub account_current: Vec<u8>,
+    pub call_counter: u64,
+    pub call_exec_points: u64,
+    pub call_exec_points_remaining: u64,
+    pub attached_symbol: Vec<u8>,
+    pub attached_amount: Vec<u8>,
+    pub seed: [u8; 32],
+    pub seedf64: f64,
+    pub readonly: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EpochCall {
+    SubmitSol { sol: Vec<u8> },
+    SetEmissionAddress { address: [u8; 48] },
+    SlashTrainer { epoch: u64, malicious_pk: [u8; 48], signature: Vec<u8>, mask: bitvec::vec::BitVec<u8, bitvec::order::Msb0>, trainers: Option<Vec<[u8; 48]>> },
+}
+
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum EpochError {
+    #[error("sol_exists")]
+    SolExists,
+    #[error("invalid_sol")]
+    InvalidSol,
+    #[error("invalid_epoch")]
+    InvalidEpoch,
+    #[error("invalid_pop")]
+    InvalidPop,
+    #[error("invalid_address_pk")]
+    InvalidAddressPk,
+}
+
+pub struct Epoch;
+
+impl Epoch {
+    pub fn call(&self, env: &mut crate::consensus::consensus_apply::ApplyEnv, op: EpochCall, _call_env: &CallEnv) -> Result<(), EpochError> {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        match op {
+            EpochCall::SubmitSol { sol } => {
+                match catch_unwind(AssertUnwindSafe(|| call_submit_sol(env, vec![sol]))) {
+                    Ok(_) => Ok(()),
+                    Err(e) => {
+                        if let Some(s) = e.downcast_ref::<&str>() {
+                            match *s {
+                                "sol_exists" => Err(EpochError::SolExists),
+                                "invalid_sol" | "invalid_sol_seed_size" => Err(EpochError::InvalidSol),
+                                "invalid_epoch" => Err(EpochError::InvalidEpoch),
+                                "invalid_pop" => Err(EpochError::InvalidPop),
+                                _ => Err(EpochError::InvalidSol),
+                            }
+                        } else {
+                            Err(EpochError::InvalidSol)
+                        }
+                    }
+                }
+            }
+            EpochCall::SetEmissionAddress { address } => {
+                match catch_unwind(AssertUnwindSafe(|| call_set_emission_address(env, vec![address.to_vec()]))) {
+                    Ok(_) => Ok(()),
+                    Err(e) => {
+                        if let Some(s) = e.downcast_ref::<&str>() {
+                            match *s {
+                                "invalid_address_pk" => Err(EpochError::InvalidAddressPk),
+                                _ => Err(EpochError::InvalidAddressPk),
+                            }
+                        } else {
+                            Err(EpochError::InvalidAddressPk)
+                        }
+                    }
+                }
+            }
+            EpochCall::SlashTrainer { epoch, malicious_pk, signature, mask, trainers } => {
+                let mut args = vec![epoch.to_le_bytes().to_vec(), malicious_pk.to_vec(), signature];
+                let mask_bytes = mask.into_vec();
+                args.push(mask_bytes);
+                if let Some(t) = trainers {
+                    args.push(crate::consensus::bic::eetf_list_of_binaries(t.into_iter().map(|pk| pk.to_vec()).collect()).unwrap_or_default());
+                }
+                match catch_unwind(AssertUnwindSafe(|| call_slash_trainer(env, args))) {
+                    Ok(_) => Ok(()),
+                    Err(_) => Err(EpochError::InvalidEpoch),
+                }
+            }
+        }
+    }
+
+    pub fn next(&self, env: &mut crate::consensus::consensus_apply::ApplyEnv, _call_env: &CallEnv, _db: &amadeus_utils::rocksdb::RocksDb) {
+        next(env);
+    }
+}
+
+pub fn trainers_for_height(db: &amadeus_utils::rocksdb::RocksDb, height: u64) -> Option<Vec<[u8; 48]>> {
+    use amadeus_utils::misc::TermExt;
+
+    let cf = "contractstate";
+    let value: Option<Vec<u8>> = if (3_195_570..=3_195_575).contains(&height) {
+        match db.get(cf, b"bic:epoch:trainers:height:000000319557") {
+            Ok(v) => v,
+            Err(_) => return None,
+        }
+    } else {
+        let key_suffix = format!("{:012}", height);
+        match db.get_prev_or_first(cf, "bic:epoch:trainers:height:", &key_suffix) {
+            Ok(Some((_k, v))) => Some(v),
+            Ok(None) => None,
+            Err(_) => return None,
+        }
+    };
+
+    let bytes = value?;
+    let term = eetf::Term::decode(&bytes[..]).ok()?;
+    let list = term.get_list()?;
+    let mut out = Vec::with_capacity(list.len());
+    for t in list {
+        let pk = t.get_binary()?;
+        if pk.len() != 48 {
+            return None;
+        }
+        let mut arr = [0u8; 48];
+        arr.copy_from_slice(pk);
+        out.push(arr);
+    }
+    Some(out)
+}

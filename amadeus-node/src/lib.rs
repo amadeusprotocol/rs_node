@@ -8,7 +8,8 @@ pub mod kv;
 pub mod metrics;
 pub mod node;
 pub mod socket;
-pub mod wasm;
+// TODO: Re-enable after CallEnv migration is complete
+// pub mod wasm;
 
 // Re-export utility modules
 pub use amadeus_utils as utils;

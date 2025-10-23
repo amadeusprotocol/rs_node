@@ -161,3 +161,23 @@ pub fn call_pause(env: &mut crate::consensus::consensus_apply::ApplyEnv, args: V
 
     kv_put(env, &bcat(&[b"bic:coin:paused:", &symbol]), &direction);
 }
+
+// Compatibility wrappers for amadeus-node
+pub fn burn_address() -> [u8; 48] {
+    BURN_ADDRESS
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallEnv {
+    pub account_caller: [u8; 48],
+}
+
+pub fn call(env: &mut crate::consensus::consensus_apply::ApplyEnv, function: &str, _call_env: &CallEnv, args: &[Vec<u8>]) -> Result<(), String> {
+    match function {
+        "transfer" => { call_transfer(env, args.to_vec()); Ok(()) }
+        "create_and_mint" => { call_create_and_mint(env, args.to_vec()); Ok(()) }
+        "mint" => { call_mint(env, args.to_vec()); Ok(()) }
+        "pause" => { call_pause(env, args.to_vec()); Ok(()) }
+        _ => Err(format!("unimplemented function: {}", function))
+    }
+}
