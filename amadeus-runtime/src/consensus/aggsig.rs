@@ -17,7 +17,9 @@ fn get_bit(mask: &[u8], i: usize) -> bool {
 pub fn unmask_trainers<'a>(trainers: &'a [Vec<u8>], mask: &[u8], mask_size: usize) -> Vec<&'a [u8]> {
     let mut out = Vec::with_capacity(mask_size);
     for i in 0..mask_size {
-        if get_bit(mask, i) { out.push(trainers[i].as_slice()) }
+        if get_bit(mask, i) {
+            out.push(trainers[i].as_slice())
+        }
     }
     out
 }

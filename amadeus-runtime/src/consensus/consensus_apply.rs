@@ -1,5 +1,5 @@
 // Consensus application environment and entry processing
-use amadeus_utils::rocksdb::{Transaction, TransactionDB, MultiThreaded, BoundColumnFamily};
+use amadeus_utils::rocksdb::{BoundColumnFamily, MultiThreaded, Transaction, TransactionDB};
 use std::collections::HashMap;
 use std::panic::panic_any;
 use std::sync::Arc;
@@ -96,8 +96,7 @@ pub fn make_apply_env<'db>(
 ) -> ApplyEnv<'db> {
     // Extract inner transaction and get column family handle
     let inner = txn_wrapper.inner();
-    let cf_handle = inner.db.cf_handle(&cf_name)
-        .expect(&format!("Column family '{}' not found", cf_name));
+    let cf_handle = inner.db.cf_handle(&cf_name).expect(&format!("Column family '{}' not found", cf_name));
 
     // SAFETY: We're extracting the transaction from the wrapper
     // The wrapper must be consumed/leaked to avoid double-free
@@ -111,8 +110,17 @@ pub fn make_apply_env<'db>(
     std::mem::forget(txn_wrapper); // Prevent double-free
 
     ApplyEnv {
-        caller_env: make_caller_env(entry_signer, entry_prev_hash, entry_slot, entry_prev_slot,
-                                     entry_height, entry_epoch, entry_vr, entry_vr_b3, entry_dr),
+        caller_env: make_caller_env(
+            entry_signer,
+            entry_prev_hash,
+            entry_slot,
+            entry_prev_slot,
+            entry_height,
+            entry_epoch,
+            entry_vr,
+            entry_vr_b3,
+            entry_dr,
+        ),
         cf: cf_handle,
         txn: raw_txn,
         muts_final: Vec::new(),

@@ -1,9 +1,11 @@
-use std::panic::panic_any;
+use crate::bcat;
 use crate::consensus::consensus_kv::{kv_get, kv_put};
-use crate::{bcat};
+use std::panic::panic_any;
 
 pub fn call_deploy(env: &mut crate::consensus::consensus_apply::ApplyEnv, args: Vec<Vec<u8>>) {
-    if args.len() != 1 { panic_any("invalid_args") }
+    if args.len() != 1 {
+        panic_any("invalid_args")
+    }
     let wasmbytes = args[0].as_slice();
     kv_put(env, &bcat(&[b"bic:contract:account:", env.caller_env.account_caller.as_slice(), b":bytecode"]), wasmbytes);
 }

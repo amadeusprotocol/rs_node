@@ -439,7 +439,6 @@ impl Fabric {
     pub fn set_temporal_hash_height(&self, entry: &Entry) -> Result<(), Error> {
         let txn = self.db.begin_transaction()?;
         txn.put(CF_SYSCONF, b"temporal_tip", &entry.hash)?;
-        // Store as ETF term to match Elixir's `term: true`
         let height_term = encode_safe_deterministic(&u64_to_term(entry.header.height));
         txn.put(CF_SYSCONF, b"temporal_height", &height_term)?;
         txn.commit()?;
@@ -486,7 +485,8 @@ impl Fabric {
     pub fn set_rooted_hash_height(&self, entry: &Entry) -> Result<(), Error> {
         let txn = self.db.begin_transaction()?;
         txn.put(CF_SYSCONF, b"rooted_tip", &entry.hash)?;
-        txn.put(CF_SYSCONF, b"rooted_height", &(entry.header.height as u64).to_be_bytes())?;
+        let height_term = encode_safe_deterministic(&u64_to_term(entry.header.height));
+        txn.put(CF_SYSCONF, b"rooted_height", &height_term)?;
         txn.commit()?;
         Ok(())
     }

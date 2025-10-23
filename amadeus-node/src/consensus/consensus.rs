@@ -209,11 +209,7 @@ fn execute_transaction(
     (error, logs, env.muts.clone(), env.muts_rev.clone())
 }
 
-fn execute_epoch_call(
-    env: &mut ApplyEnv,
-    function: &str,
-    args: &[Vec<u8>],
-) -> (String, Vec<String>) {
+fn execute_epoch_call(env: &mut ApplyEnv, function: &str, args: &[Vec<u8>]) -> (String, Vec<String>) {
     parse_epoch_call(function, args)
         .and_then(|call| crate::bic::epoch::Epoch.call(env, call).map_err(|e| e.to_string()))
         .map(|_| ("ok".to_string(), vec![]))
@@ -226,11 +222,7 @@ fn execute_coin_call(env: &mut ApplyEnv, function: &str, args: &[Vec<u8>]) -> (S
         .unwrap_or_else(|e| (e.to_string(), vec![]))
 }
 
-fn execute_contract_call(
-    env: &mut ApplyEnv,
-    function: &str,
-    args: &[Vec<u8>],
-) -> (String, Vec<String>) {
+fn execute_contract_call(env: &mut ApplyEnv, function: &str, args: &[Vec<u8>]) -> (String, Vec<String>) {
     crate::bic::contract::call(env, function, args)
         .map(|_| ("ok".to_string(), vec![]))
         .unwrap_or_else(|e| (e.to_string(), vec![]))
@@ -883,11 +875,6 @@ pub fn best_entry_for_height(fabric: &fabric::Fabric, height: u64) -> Result<Vec
     });
 
     Ok(entries)
-}
-
-pub fn set_rooted_tip(db: &RocksDb, hash: &[u8; 32]) -> Result<(), Error> {
-    db.put("sysconf", b"rooted_tip", hash)?;
-    Ok(())
 }
 
 pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {

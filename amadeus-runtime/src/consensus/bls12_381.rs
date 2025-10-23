@@ -206,7 +206,7 @@ pub fn get_shared_secret(public_key: &[u8], sk_bytes: &[u8]) -> Result<[u8; 48],
 pub fn validate_public_key(public_key: &[u8]) -> bool {
     match parse_public_key(public_key).map(|_| ()) {
         Err(_) => false,
-        Ok(_) => true
+        Ok(_) => true,
     }
 }
 

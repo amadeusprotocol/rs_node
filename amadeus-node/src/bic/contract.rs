@@ -31,7 +31,11 @@ pub fn validate(wasm: &[u8]) -> Result<(), ContractError> {
 
 /// Dispatch contract module calls with validation
 /// Wrapper around runtime's call_deploy that adds wasmer validation
-pub fn call(env: &mut amadeus_runtime::consensus::consensus_apply::ApplyEnv, function: &str, args: &[Vec<u8>]) -> Result<(), ContractError> {
+pub fn call(
+    env: &mut amadeus_runtime::consensus::consensus_apply::ApplyEnv,
+    function: &str,
+    args: &[Vec<u8>],
+) -> Result<(), ContractError> {
     match function {
         "deploy" => {
             if args.len() != 1 {
