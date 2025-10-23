@@ -18,6 +18,6 @@ thiserror = "2.0.17"
 group = "0.13.0"
 eetf = "0.11.0"
 rand = "0.9.1"
+bs58 = "0.5.1"
 
 [dev-dependencies]
-bs58 = "0.5"

@@ -27,14 +27,14 @@ pub fn unpack(sol: &[u8; SOL_SIZE]) -> Sol {
     Sol { epoch, segment_vr_hash, pk, pop, computor, nonce, tensor_c }
 }
 
-pub fn verify_hash_diff(_epoch: u64, hash: &[u8; 32], diff_bits: u64) -> bool {
+pub fn verify_hash_diff(_epoch: u64, hash: &[u8], diff_bits: u64) -> bool {
     if diff_bits > 256 { return false; }
     let (full, rem) = ((diff_bits / 8) as usize, (diff_bits % 8) as u8);
     hash[..full].iter().all(|&b| b == 0) &&
         (rem == 0 || (hash[full] & (0xFF << (8 - rem))) == 0)
 }
 
-pub fn verify(sol: &[u8; SOL_SIZE], solhash: &[u8; 32], segment_vr_hash: &[u8; 32], vr_b3: &[u8; 32], diff_bits: u64) -> Result<bool, &'static str> {
+pub fn verify(sol: &[u8; SOL_SIZE], solhash: &[u8], segment_vr_hash: &[u8], vr_b3: &[u8], diff_bits: u64) -> Result<bool, &'static str> {
     let usol = unpack(sol);
     if segment_vr_hash != &usol.segment_vr_hash { return Err("segment_vr_hash") }
     if sol.len() != SOL_SIZE { return Err("invalid_sol_seed_size") }

@@ -193,6 +193,15 @@ pub fn call_submit_sol(env: &mut crate::consensus::consensus_apply::ApplyEnv, ar
     let usol = consensus::bic::sol::unpack(&sol);
     if env.caller_env.entry_epoch != usol.epoch { panic_any("invalid_epoch") }
 
+    let segment_vr_hash = kv_get(env, b"bic:epoch:segment_vr_hash").unwrap();
+    let diff_bits = kv_get(env, b"bic:epoch:diff_bits").unwrap();
+    let diff_bits_int = std::str::from_utf8(&diff_bits).unwrap().parse::<u64>().unwrap_or_else(|_| panic_any("invalid_diff_bits"));
+
+    let hash_bytes: [u8; 32] = hash.into();
+    if !consensus::bic::sol::verify(&sol, &hash_bytes[..], &segment_vr_hash, &env.caller_env.entry_vr_b3, diff_bits_int).unwrap_or(false) {
+        panic_any("invalid_sol");
+    }
+
     if !kv_exists(env, &bcat(&[b"bic:epoch:pop:", usol.pk.as_slice()])) {
         match consensus::bls12_381::verify(&usol.pk, &usol.pop, &usol.pk, consensus::aggsig::DST_POP) {
             Ok(()) => kv_put(env, &bcat(&[b"bic:epoch:pop:", usol.pk.as_slice()]), &usol.pop),

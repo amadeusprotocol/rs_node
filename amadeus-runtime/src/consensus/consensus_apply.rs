@@ -27,6 +27,7 @@ pub struct CallerEnv {
     pub entry_height: u64,
     pub entry_epoch: u64,
     pub entry_vr: Vec<u8>,
+    pub entry_vr_b3: Vec<u8>,
 }
 
 pub fn make_caller_env(
@@ -48,6 +49,7 @@ pub fn make_caller_env(
         entry_height,
         entry_epoch,
         entry_vr: entry_vr.to_vec(),
+        entry_vr_b3: entry_vr_b3.to_vec(),
     }
 }
 

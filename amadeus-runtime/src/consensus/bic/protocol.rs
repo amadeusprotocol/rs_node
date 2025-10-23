@@ -13,14 +13,14 @@ pub fn pay_cost(env: &mut crate::consensus::consensus_apply::ApplyEnv, cost: i12
     // Deduct tx cost
     consensus_kv::kv_increment(
         env,
-        &crate::bcat(&[b"bic:base:balance:", env.caller_env.account_origin.as_slice(), b":AMA"]),
+        &crate::bcat(&[b"bic:coin:balance:", env.caller_env.account_origin.as_slice(), b":AMA"]),
         -cost,
     );
     // Increment validator / burn
     consensus_kv::kv_increment(
         env,
-        &crate::bcat(&[b"bic:base:balance:", env.caller_env.entry_signer.as_slice(), b":AMA"]),
+        &crate::bcat(&[b"bic:coin:balance:", env.caller_env.entry_signer.as_slice(), b":AMA"]),
         cost / 2,
     );
-    consensus_kv::kv_increment(env, &crate::bcat(&[b"bic:base:balance:", &coin::BURN_ADDRESS, b":AMA"]), cost / 2);
+    consensus_kv::kv_increment(env, &crate::bcat(&[b"bic:coin:balance:", &coin::BURN_ADDRESS, b":AMA"]), cost / 2);
 }
