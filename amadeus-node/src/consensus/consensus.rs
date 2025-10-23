@@ -300,6 +300,7 @@ fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) {
 
     // Build keys with raw binary pubkey bytes (NOT base58!)
     let entry_signer_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &next_entry.header.signer, b":AMA"]);
+    let burn_address_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &crate::bic::coin::BURN_ADDRESS, b":AMA"]);
 
     for txu in txus {
         // Update nonce (using raw binary key with pubkey bytes)
@@ -321,8 +322,9 @@ fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) {
         let signer_balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &txu.tx.signer, b":AMA"]);
         consensus_kv::kv_increment(env, &signer_balance_key, -exec_cost);
 
-        // Credit entry signer only in pre-processing
-        consensus_kv::kv_increment(env, &entry_signer_key, exec_cost);
+        // Split cost 50/50 between entry signer and burn address (matching Elixir reference)
+        consensus_kv::kv_increment(env, &entry_signer_key, exec_cost / 2);
+        consensus_kv::kv_increment(env, &burn_address_key, exec_cost / 2);
     }
 }
 
