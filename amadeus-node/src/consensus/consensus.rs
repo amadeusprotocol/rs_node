@@ -901,20 +901,10 @@ pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {
         }
 
         let next_height = height_root + 1;
-        tracing::debug!(
-            "proc_consensus: processing height {} (rooted={}, temporal={})",
-            next_height,
-            height_root,
-            height_temp
-        );
 
         let next_entries = best_entry_for_height(fabric, next_height)?;
 
         let Some(best_entry_info) = next_entries.first() else {
-            warn!(
-                "proc_consensus: no entries with consensus at height {} (rooted={}, temporal={})",
-                next_height, height_root, height_temp
-            );
             break;
         };
 
@@ -941,25 +931,30 @@ pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {
             None => {
                 // softfork: consensus chose entry we don't have applied, need to rewind
                 warn!(
-                    "proc_consensus softfork: consensus chose entry {} at height {} but we don't have it applied, rewinding",
+                    "proc_consensus softfork: rewind to entry {} height {}",
                     bs58::encode(&best_entry.hash).into_string(),
                     best_entry.header.height
                 );
-                // rewind to previous entry and try again
-                let prev_entry = fabric.get_rooted_entry()?.ok_or(Error::Missing("rooted_tip"))?;
-                chain_rewind(fabric, &prev_entry.hash)?;
-                break; // exit after rewind
+                // get best entry for previous height to rewind to
+                let rewind_hash = match best_entry_for_height(fabric, next_height - 1)?.first() {
+                    Some(prev_best) => prev_best.entry.hash,
+                    None => fabric.get_temporal_hash()?.unwrap_or([0u8; 32]),
+                };
+                chain_rewind(fabric, &rewind_hash)?;
+                continue; // retry proc_consensus
             }
             Some(my_att) => {
                 if mutations_hash != my_att.mutations_hash {
                     warn!(
-                        "proc_consensus EMERGENCY: consensus mutations {} differ from ours {} for entry {} at height {}",
-                        bs58::encode(&mutations_hash).into_string(),
+                        "EMERGENCY: state divergence at height {}: our mutations {} != consensus {}, halting",
+                        best_entry.header.height,
                         bs58::encode(&my_att.mutations_hash).into_string(),
-                        bs58::encode(&best_entry.hash).into_string(),
-                        best_entry.header.height
+                        bs58::encode(&mutations_hash).into_string()
                     );
-                    // halt consensus processing - state divergence detected
+                    // rewind to previous height before halting
+                    if let Some(prev_best) = best_entry_for_height(fabric, next_height - 1)?.first() {
+                        let _ = chain_rewind(fabric, &prev_best.entry.hash);
+                    }
                     break;
                 } else {
                     // mutations match, safe to root the entry
