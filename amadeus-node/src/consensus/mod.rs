@@ -69,7 +69,7 @@ mod tests {
     #[tokio::test]
     async fn test_apply_entry_34076357() -> Result<(), Box<dyn std::error::Error>> {
         let hash = bs58::decode("DEYRMxK3rCgVvwFagmpJQecbreiLUeYjRxrVfs6yKiJ5").into_vec()?;
-        test_apply_entry_at_height(34076436, hash.try_into().map_err(|_| "invalid hash")?).await
+        test_apply_entry_at_height(34076356, hash.try_into().map_err(|_| "invalid hash")?).await
     }
 
     #[tokio::test]
@@ -89,9 +89,7 @@ mod tests {
         expected_muts_hash: [u8; 32],
     ) -> Result<(), Box<dyn std::error::Error>> {
         let db_path = format!("../assets/rocksdb/{}", height);
-        if !Path::new(&db_path).exists() {
-            return Ok(());
-        }
+        assert!(Path::new(&db_path).exists(), "Test database snapshot not found: {}", db_path);
 
         // copy db to temp
         let temp = format!("/tmp/test-rocksdb-{}-{}", height, std::process::id());
