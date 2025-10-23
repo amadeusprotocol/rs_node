@@ -87,10 +87,10 @@ pub fn call_transfer(env: &mut crate::consensus::consensus_apply::ApplyEnv, args
     if args.len() != 3 { panic_any("invalid_args") }
     let receiver = args[0].as_slice();
     let amount = args[1].as_slice();
-    let amount = std::str::from_utf8(&amount).unwrap().parse::<i128>().unwrap_or_else(|_| panic_any("invalid_amount"));
+    let amount = std::str::from_utf8(&amount).ok().and_then(|s| s.parse::<i128>().ok()).unwrap_or_else(|| panic_any("invalid_amount"));
     let symbol = args[2].as_slice();
 
-    if receiver.len() != 48 { panic_any("invalid_address_pk") }
+    if receiver.len() != 48 { panic_any("invalid_receiver_pk") }
     if !(consensus::bls12_381::validate_public_key(receiver) || receiver == &BURN_ADDRESS) { panic_any("invalid_receiver_pk") }
     if amount <= 0 { panic_any("invalid_amount") }
     if amount > balance(env, env.caller_env.account_caller.as_slice(), &symbol) { panic_any("insufficient_funds") }
@@ -113,10 +113,10 @@ pub fn call_create_and_mint(env: &mut crate::consensus::consensus_apply::ApplyEn
     if symbol.len() < 1 { panic_any("symbol_too_short") }
     if symbol.len() > 32 { panic_any("symbol_too_long") }
 
-    let amount = std::str::from_utf8(&amount).unwrap().parse::<i128>().unwrap_or_else(|_| panic_any("invalid_amount"));
+    let amount = std::str::from_utf8(&amount).ok().and_then(|s| s.parse::<i128>().ok()).unwrap_or_else(|| panic_any("invalid_amount"));
     if amount <= 0 { panic_any("invalid_amount") }
 
-    if !consensus::bic::coin_symbol_reserved::is_free(&symbol, b"") { panic_any("symbol_reserved") }
+    if !consensus::bic::coin_symbol_reserved::is_free(&symbol, &env.caller_env.account_caller) { panic_any("symbol_reserved") }
     if exists(env, &symbol) { panic_any("symbol_exists") }
 
     kv_increment(env, &bcat(&[b"bic:coin:balance:", env.caller_env.account_caller.as_slice(), b":", &symbol]), amount);
@@ -136,13 +136,13 @@ pub fn call_mint(env: &mut crate::consensus::consensus_apply::ApplyEnv, args: Ve
     let symbol = args[0].as_slice();
     let amount = args[1].as_slice();
 
-    let amount = std::str::from_utf8(&amount).unwrap().parse::<i128>().unwrap_or_else(|_| panic_any("invalid_amount"));
+    let amount = std::str::from_utf8(&amount).ok().and_then(|s| s.parse::<i128>().ok()).unwrap_or_else(|| panic_any("invalid_amount"));
     if amount <= 0 { panic_any("invalid_amount") }
 
     if !exists(env, &symbol) { panic_any("symbol_doesnt_exist") }
+    if !has_permission(env, &symbol, env.caller_env.account_caller.as_slice()) { panic_any("no_permissions") }
     if !mintable(env, &symbol) { panic_any("not_mintable") }
     if paused(env, &symbol) { panic_any("paused") }
-    if !has_permission(env, &symbol, env.caller_env.account_caller.as_slice()) { panic_any("no_permissions") }
 
     kv_increment(env, &bcat(&[b"bic:coin:balance:", env.caller_env.account_caller.as_slice(), b":", symbol]), amount);
     kv_increment(env, &bcat(&[b"bic:coin:totalSupply:", symbol]), amount);
@@ -156,8 +156,8 @@ pub fn call_pause(env: &mut crate::consensus::consensus_apply::ApplyEnv, args: V
     if direction != b"true" && direction != b"false" { panic_any("invalid_direction") }
 
     if !exists(env, &symbol) { panic_any("symbol_doesnt_exist") }
-    if !pausable(env, &symbol) { panic_any("not_pausable") }
     if !has_permission(env, &symbol, env.caller_env.account_caller.as_slice()) { panic_any("no_permissions") }
+    if !pausable(env, &symbol) { panic_any("not_pausable") }
 
     kv_put(env, &bcat(&[b"bic:coin:paused:", &symbol]), &direction);
 }
@@ -167,12 +167,7 @@ pub fn burn_address() -> [u8; 48] {
     BURN_ADDRESS
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CallEnv {
-    pub account_caller: [u8; 48],
-}
-
-pub fn call(env: &mut crate::consensus::consensus_apply::ApplyEnv, function: &str, _call_env: &CallEnv, args: &[Vec<u8>]) -> Result<(), String> {
+pub fn call(env: &mut crate::consensus::consensus_apply::ApplyEnv, function: &str, args: &[Vec<u8>]) -> Result<(), String> {
     match function {
         "transfer" => { call_transfer(env, args.to_vec()); Ok(()) }
         "create_and_mint" => { call_create_and_mint(env, args.to_vec()); Ok(()) }

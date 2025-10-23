@@ -195,7 +195,7 @@ pub fn call_submit_sol(env: &mut crate::consensus::consensus_apply::ApplyEnv, ar
 
     let segment_vr_hash = kv_get(env, b"bic:epoch:segment_vr_hash").unwrap();
     let diff_bits = kv_get(env, b"bic:epoch:diff_bits").unwrap();
-    let diff_bits_int = std::str::from_utf8(&diff_bits).unwrap().parse::<u64>().unwrap_or_else(|_| panic_any("invalid_diff_bits"));
+    let diff_bits_int = std::str::from_utf8(&diff_bits).ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or_else(|| panic_any("invalid_diff_bits"));
 
     let hash_bytes: [u8; 32] = hash.into();
     if !consensus::bic::sol::verify(&sol, &hash_bytes[..], &segment_vr_hash, &env.caller_env.entry_vr_b3, diff_bits_int).unwrap_or(false) {
@@ -238,11 +238,11 @@ pub fn kv_get_trainers(env: &crate::consensus::consensus_apply::ApplyEnv, key: &
 pub fn call_slash_trainer(env: &mut crate::consensus::consensus_apply::ApplyEnv, args: Vec<Vec<u8>>) {
     if args.len() != 5 { panic_any("invalid_args") }
     let epoch = args[0].as_slice();
-    let epoch = std::str::from_utf8(&epoch).unwrap().parse::<u64>().unwrap_or_else(|_| panic_any("invalid_epoch"));
+    let epoch = std::str::from_utf8(&epoch).ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or_else(|| panic_any("invalid_epoch"));
     let malicious_pk = args[1].as_slice();
     let signature = args[2].as_slice();
     let mask_size = args[3].as_slice();
-    let mask_size = std::str::from_utf8(&mask_size).unwrap().parse::<u64>().unwrap_or_else(|_| panic_any("invalid_mask_size"));
+    let mask_size = std::str::from_utf8(&mask_size).ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or_else(|| panic_any("invalid_mask_size"));
     let mask = args[4].to_vec();
 
     if epoch != env.caller_env.entry_epoch { panic_any("invalid_epoch") }
@@ -272,33 +272,14 @@ pub fn call_slash_trainer(env: &mut crate::consensus::consensus_apply::ApplyEnv,
     kv_put(env, &bcat(&[b"bic:epoch:trainers:", epoch.to_string().as_bytes()]), term_trainers.as_slice());
 
     let height = format!("{:012}", env.caller_env.entry_height.saturating_add(1)).into_bytes();
-    kv_put(env, &bcat(&[b"bic:epoch:trainers:height", &height]), term_trainers.as_slice());
+    kv_put(env, &bcat(&[b"bic:epoch:trainers:height:", &height]), term_trainers.as_slice());
 }
 
 pub fn next(env: &mut crate::consensus::consensus_apply::ApplyEnv) {
+    //Currently handled on elixir side
 }
 
 // Compatibility wrappers for amadeus-node
-#[derive(Debug, Clone, PartialEq)]
-pub struct CallEnv {
-    pub entry_epoch: u64,
-    pub entry_height: u64,
-    pub entry_signer: [u8; 48],
-    pub entry_vr: Vec<u8>,
-    pub tx_hash: Vec<u8>,
-    pub tx_signer: [u8; 48],
-    pub account_caller: [u8; 48],
-    pub account_current: Vec<u8>,
-    pub call_counter: u64,
-    pub call_exec_points: u64,
-    pub call_exec_points_remaining: u64,
-    pub attached_symbol: Vec<u8>,
-    pub attached_amount: Vec<u8>,
-    pub seed: [u8; 32],
-    pub seedf64: f64,
-    pub readonly: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EpochCall {
     SubmitSol { sol: Vec<u8> },
@@ -323,7 +304,7 @@ pub enum EpochError {
 pub struct Epoch;
 
 impl Epoch {
-    pub fn call(&self, env: &mut crate::consensus::consensus_apply::ApplyEnv, op: EpochCall, _call_env: &CallEnv) -> Result<(), EpochError> {
+    pub fn call(&self, env: &mut crate::consensus::consensus_apply::ApplyEnv, op: EpochCall) -> Result<(), EpochError> {
         use std::panic::{catch_unwind, AssertUnwindSafe};
 
         match op {
@@ -375,7 +356,7 @@ impl Epoch {
         }
     }
 
-    pub fn next(&self, env: &mut crate::consensus::consensus_apply::ApplyEnv, _call_env: &CallEnv, _db: &amadeus_utils::rocksdb::RocksDb) {
+    pub fn next(&self, env: &mut crate::consensus::consensus_apply::ApplyEnv, _db: &amadeus_utils::rocksdb::RocksDb) {
         next(env);
     }
 }

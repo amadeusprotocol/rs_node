@@ -186,29 +186,17 @@ fn execute_transaction(
     env.muts.clear();
     env.muts_rev.clear();
 
-    let call_env = crate::bic::epoch::CallEnv {
-        entry_epoch: next_entry.header.height as u64 / 100_000,
-        entry_height: next_entry.header.height as u64,
-        entry_signer: next_entry.header.signer,
-        entry_vr: next_entry.header.vr.to_vec(),
-        tx_hash: txu.hash.to_vec(),
-        tx_signer: txu.tx.signer,
-        account_caller: txu.tx.signer,
-        account_current: vec![],
-        call_counter: 0,
-        call_exec_points: 10_000_000,
-        call_exec_points_remaining: 10_000_000,
-        attached_symbol: action.attached_symbol.clone().unwrap_or_default(),
-        attached_amount: action.attached_amount.clone().unwrap_or_default(),
-        seed: next_entry.header.dr,
-        seedf64: 0.5,
-        readonly: false,
-    };
+    // Update caller_env with transaction-specific context
+    env.caller_env.tx_hash = txu.hash.to_vec();
+    env.caller_env.tx_signer = txu.tx.signer;
+    env.caller_env.account_caller = txu.tx.signer.to_vec();
+    env.caller_env.attached_symbol = action.attached_symbol.clone().unwrap_or_default();
+    env.caller_env.attached_amount = action.attached_amount.clone().unwrap_or_default();
 
     let (error, logs) = match action.contract.as_slice() {
-        b"Epoch" => execute_epoch_call(env, &call_env, &action.function, &action.args),
-        b"Coin" => execute_coin_call(env, txu.tx.signer, &action.function, &action.args),
-        b"Contract" => execute_contract_call(env, txu.tx.signer, &action.function, &action.args),
+        b"Epoch" => execute_epoch_call(env, &action.function, &action.args),
+        b"Coin" => execute_coin_call(env, &action.function, &action.args),
+        b"Contract" => execute_contract_call(env, &action.function, &action.args),
         contract if contract.len() == 48 => {
             // TODO: Re-enable WASM after CallEnv migration
             // execute_wasm_call(env, db, &call_env, contract, &action.function, &action.args)
@@ -223,31 +211,27 @@ fn execute_transaction(
 
 fn execute_epoch_call(
     env: &mut ApplyEnv,
-    call_env: &crate::bic::epoch::CallEnv,
     function: &str,
     args: &[Vec<u8>],
 ) -> (String, Vec<String>) {
     parse_epoch_call(function, args)
-        .and_then(|call| crate::bic::epoch::Epoch.call(env, call, call_env).map_err(|e| e.to_string()))
+        .and_then(|call| crate::bic::epoch::Epoch.call(env, call).map_err(|e| e.to_string()))
         .map(|_| ("ok".to_string(), vec![]))
         .unwrap_or_else(|e| (e, vec![]))
 }
 
-fn execute_coin_call(env: &mut ApplyEnv, caller: [u8; 48], function: &str, args: &[Vec<u8>]) -> (String, Vec<String>) {
-    let call_env = crate::bic::coin::CallEnv { account_caller: caller };
-    crate::bic::coin::call(env, function, &call_env, args)
+fn execute_coin_call(env: &mut ApplyEnv, function: &str, args: &[Vec<u8>]) -> (String, Vec<String>) {
+    crate::bic::coin::call(env, function, args)
         .map(|_| ("ok".to_string(), vec![]))
         .unwrap_or_else(|e| (e.to_string(), vec![]))
 }
 
 fn execute_contract_call(
     env: &mut ApplyEnv,
-    caller: [u8; 48],
     function: &str,
     args: &[Vec<u8>],
 ) -> (String, Vec<String>) {
-    let call_env = crate::bic::contract::CallEnv { account_caller: caller };
-    crate::bic::contract::call(env, function, &call_env, args)
+    crate::bic::contract::call(env, function, args)
         .map(|_| ("ok".to_string(), vec![]))
         .unwrap_or_else(|e| (e.to_string(), vec![]))
 }
@@ -257,7 +241,6 @@ fn execute_contract_call(
 fn execute_wasm_call(
     _apply_env: &mut ApplyEnv,
     _db: &RocksDb,
-    _call_env: &crate::bic::epoch::CallEnv,
     _contract: &[u8],
     _function: &str,
     _args: &[Vec<u8>],
@@ -526,25 +509,16 @@ fn call_exit(env: &mut ApplyEnv, next_entry: &Entry, db: &RocksDb) {
 
     // Epoch transition every 100k blocks
     if next_entry.header.height % 100_000 == 99_999 {
-        let call_env = crate::bic::epoch::CallEnv {
-            entry_epoch: next_entry.header.height as u64 / 100_000,
-            entry_height: next_entry.header.height as u64,
-            entry_signer: next_entry.header.signer,
-            entry_vr: next_entry.header.vr.to_vec(),
-            tx_hash: vec![],
-            tx_signer: [0u8; 48],
-            account_caller: [0u8; 48],
-            account_current: vec![],
-            call_counter: 0,
-            call_exec_points: 0,
-            call_exec_points_remaining: 0,
-            attached_symbol: vec![],
-            attached_amount: vec![],
-            seed: [0u8; 32],
-            seedf64: 0.0,
-            readonly: true,
-        };
-        let _ = crate::bic::epoch::Epoch.next(env, &call_env, db);
+        // Update caller_env for epoch transition (readonly mode)
+        env.caller_env.readonly = true;
+        env.caller_env.tx_hash = vec![];
+        env.caller_env.tx_signer = [0u8; 48];
+        env.caller_env.account_caller = vec![];
+        env.caller_env.call_exec_points = 0;
+        env.caller_env.call_exec_points_remaining = 0;
+        env.caller_env.attached_symbol = vec![];
+        env.caller_env.attached_amount = vec![];
+        let _ = crate::bic::epoch::Epoch.next(env, db);
     }
 }
 

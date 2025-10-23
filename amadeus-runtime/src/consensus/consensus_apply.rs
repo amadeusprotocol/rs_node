@@ -20,14 +20,28 @@ pub struct ApplyEnv<'db> {
 }
 
 pub struct CallerEnv {
-    pub account_current: Vec<u8>,
-    pub account_caller: Vec<u8>,
-    pub account_origin: Vec<u8>,
-    pub entry_signer: Vec<u8>,
+    pub readonly: bool,
+    pub seed: Vec<u8>,
+    pub seedf64: f64,
+    pub entry_signer: [u8; 48],
+    pub entry_prev_hash: [u8; 32],
+    pub entry_slot: u64,
+    pub entry_prev_slot: u64,
     pub entry_height: u64,
     pub entry_epoch: u64,
     pub entry_vr: Vec<u8>,
-    pub entry_vr_b3: Vec<u8>,
+    pub entry_vr_b3: [u8; 32],
+    pub entry_dr: [u8; 32],
+    pub tx_hash: Vec<u8>,
+    pub tx_signer: [u8; 48],
+    pub account_origin: Vec<u8>,
+    pub account_caller: Vec<u8>,
+    pub account_current: Vec<u8>,
+    pub attached_symbol: Vec<u8>,
+    pub attached_amount: Vec<u8>,
+    pub call_counter: u32,
+    pub call_exec_points: u64,
+    pub call_exec_points_remaining: u64,
 }
 
 pub fn make_caller_env(
@@ -42,14 +56,28 @@ pub fn make_caller_env(
     entry_dr: &[u8; 32],
 ) -> CallerEnv {
     CallerEnv {
-        account_current: vec![],
-        account_caller: vec![],
-        account_origin: vec![],
-        entry_signer: entry_signer.to_vec(),
+        readonly: false,
+        seed: entry_dr.to_vec(),
+        seedf64: 0.5,
+        entry_signer: *entry_signer,
+        entry_prev_hash: *entry_prev_hash,
+        entry_slot,
+        entry_prev_slot,
         entry_height,
         entry_epoch,
         entry_vr: entry_vr.to_vec(),
-        entry_vr_b3: entry_vr_b3.to_vec(),
+        entry_vr_b3: *entry_vr_b3,
+        entry_dr: *entry_dr,
+        tx_hash: vec![],
+        tx_signer: [0u8; 48],
+        account_origin: vec![],
+        account_caller: vec![],
+        account_current: vec![],
+        attached_symbol: vec![],
+        attached_amount: vec![],
+        call_counter: 0,
+        call_exec_points: 10_000_000,
+        call_exec_points_remaining: 10_000_000,
     }
 }
 

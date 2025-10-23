@@ -1,5 +1,6 @@
 pub mod coin;
 pub mod coin_symbol_reserved;
+pub mod contract;
 pub mod epoch;
 pub mod protocol;
 pub mod sol;

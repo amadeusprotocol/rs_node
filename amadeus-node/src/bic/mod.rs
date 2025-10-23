@@ -1,5 +1,6 @@
 // Re-export BIC modules from amadeus-runtime
 pub use amadeus_runtime::consensus::bic::{coin, coin_symbol_reserved, epoch, sol, sol_bloom, sol_difficulty};
+// Note: contract module is defined locally below (not re-exported from runtime)
 
 // Re-export common bic functions
 pub use epoch::trainers_for_height;
