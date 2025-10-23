@@ -172,6 +172,20 @@ impl Context {
             }
         });
 
+        tokio::spawn({
+            let ctx = ctx.clone();
+            async move {
+                let mut ticker = interval(Duration::from_millis(600_000)); // 10 minutes
+                loop {
+                    ticker.tick().await;
+                    if let Err(e) = ctx.autoupdate_task().await {
+                        warn!("autoupdate task error: {e}");
+                        ctx.metrics.add_error(&e);
+                    }
+                }
+            }
+        });
+
         Ok(ctx)
     }
 

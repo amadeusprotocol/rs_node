@@ -1,3 +1,5 @@
+#![allow(unused_imports, unreachable_patterns, unused_variables, dead_code)]
+
 pub mod consensus;
 
 #[inline]

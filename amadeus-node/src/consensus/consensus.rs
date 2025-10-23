@@ -47,8 +47,6 @@ pub enum Error {
     Entry(#[from] crate::consensus::doms::entry::Error),
 }
 
-const CF_SYSCONF: &str = "sysconf";
-
 /// Consensus message holding aggregated attestation for an entry and a particular
 /// mutations_hash. Mask denotes which trainers signed the aggregate.
 #[derive(Debug, Clone, PartialEq)]
@@ -174,7 +172,7 @@ impl TxResult {
 fn execute_transaction(
     env: &mut ApplyEnv,
     _db: &RocksDb,
-    next_entry: &Entry,
+    _next_entry: &Entry,
     txu: &TxU,
 ) -> (String, Vec<String>, Vec<Mutation>, Vec<Mutation>) {
     let action = match txu.tx.actions.first() {

@@ -408,7 +408,8 @@ struct ParsedEntry {
 }
 
 impl ParsedEntry {
-    fn from_etf_bin(bin: &[u8]) -> Result<Self, Error> {
+    #[allow(dead_code)]
+    pub fn from_etf_bin(bin: &[u8]) -> Result<Self, Error> {
         let entry = Entry::unpack(bin)?;
         let term = Term::decode(bin)?;
         let map = term.get_term_map().ok_or(Error::BadEtf("entry"))?;

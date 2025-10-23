@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub mod bic;
 pub mod config;
 pub mod consensus;

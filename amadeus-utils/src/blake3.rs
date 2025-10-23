@@ -1,4 +1,3 @@
-#![allow(non_snake_case)] // for readability
 /// Translated from https://github.com/vans163/blake3
 /// Infallible implementation of Blake3 hashing algorithm
 pub struct Hasher(blake3::Hasher);
@@ -105,6 +104,8 @@ mod tests {
 use std::arch::x86_64::*;
 use std::{cell::RefCell, mem, mem::MaybeUninit, ptr, slice};
 
+// Capitalized field names match mathematical matrix notation
+#[allow(non_snake_case)]
 #[repr(C, align(4096))]
 struct AMAMatMul {
     pub A: [[u8; 50240]; 16],
@@ -221,6 +222,8 @@ pub fn freivalds_e260(tensor: &[u8], vr_b3: &[u8]) -> bool {
     freivalds_inner(&scratch.Rs, &scratch.A, &scratch.B, &scratch.C)
 }
 
+// Capitalized parameters match mathematical matrix notation
+#[allow(non_snake_case)]
 pub fn freivalds_inner(
     Rs: &[[i8; 16]; 3],
     A: &[[u8; 50_240]; 16],
@@ -274,6 +277,7 @@ unsafe fn load_i8x16_as_i32(ptr: *const i8) -> I32x16 {
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
+#[allow(non_snake_case)]
 pub unsafe fn freivalds_inner_avx2(
     Rs: &[[i8; 16]; 3],
     A: &[[u8; 50_240]; 16],
@@ -347,6 +351,7 @@ pub unsafe fn freivalds_inner_avx2(
     }
 }
 
+#[allow(non_snake_case)]
 fn freivalds_inner_scalar(
     Rs: &[[i8; 16]; 3],
     A: &[[u8; 50_240]; 16],

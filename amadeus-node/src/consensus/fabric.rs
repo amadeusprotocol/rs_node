@@ -33,7 +33,6 @@ pub enum Error {
     BadEtf(&'static str),
 }
 
-const CF_DEFAULT: &str = "default";
 const CF_ENTRY: &str = "entry";
 const CF_CONSENSUS_BY_ENTRYHASH: &str = "consensus_by_entryhash|Map<mutationshash,consensus>";
 const CF_SYSCONF: &str = "sysconf";

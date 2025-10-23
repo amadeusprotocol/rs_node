@@ -31,16 +31,11 @@ pub enum TxPoolError {
 pub struct TxPool {
     db: Arc<RocksDb>,
     pool: Arc<RwLock<HashMap<Vec<u8>, TxU>>>,
-    gifted_sol_cache: Arc<RwLock<HashMap<Vec<u8>, u64>>>,
 }
 
 impl TxPool {
     pub fn new(db: Arc<RocksDb>) -> Self {
-        Self {
-            db,
-            pool: Arc::new(RwLock::new(HashMap::new())),
-            gifted_sol_cache: Arc::new(RwLock::new(HashMap::new())),
-        }
+        Self { db, pool: Arc::new(RwLock::new(HashMap::new())) }
     }
 
     pub async fn insert(&self, tx_packed: &[u8]) -> Result<(), TxPoolError> {
