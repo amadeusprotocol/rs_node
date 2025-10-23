@@ -344,6 +344,43 @@ impl RocksDb {
         let txn = h.db.transaction_opt(&write_opts, &txn_opts);
         Ok(RocksDbTxn { inner: SimpleTransaction { txn, db: &h.db } })
     }
+
+    /// Flush write-ahead log to disk
+    pub fn flush_wal(&self, sync: bool) -> Result<(), Error> {
+        let h = &self.handles;
+        h.db.flush_wal(sync).map_err(Into::into)
+    }
+
+    /// Flush all memtables to disk
+    pub fn flush(&self) -> Result<(), Error> {
+        let h = &self.handles;
+        h.db.flush().map_err(Into::into)
+    }
+
+    /// Flush a specific column family's memtable to disk
+    pub fn flush_cf(&self, cf: &str) -> Result<(), Error> {
+        let h = &self.handles;
+        let cf_h = h.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
+        h.db.flush_cf(&cf_h).map_err(Into::into)
+    }
+
+    /// Close the database gracefully by flushing pending writes
+    /// Note: RocksDB will be properly closed when this struct is dropped
+    pub fn close(&self) -> Result<(), Error> {
+        // Flush WAL before closing
+        self.flush_wal(true)?;
+        // Flush all memtables
+        self.flush()?;
+        // Database will be closed when Arc is dropped
+        Ok(())
+    }
+
+    /// Create a checkpoint (snapshot) of the database at the given path
+    /// This is a native RocksDB checkpoint operation
+    pub fn checkpoint(&self, path: &str) -> Result<(), Error> {
+        let h = &self.handles;
+        h.db.create_checkpoint(path).map_err(Into::into)
+    }
 }
 
 impl<'a> RocksDbTxn<'a> {
