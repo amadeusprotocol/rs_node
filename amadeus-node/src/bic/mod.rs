@@ -9,7 +9,6 @@ use crate::utils::rocksdb::RocksDb;
 
 // Node-specific modules (wasmer-dependent)
 pub mod contract;
-pub mod sol_protocol;
 
 // Chain query functions
 pub fn chain_balance(db: &RocksDb, pk: &[u8; 48], symbol: &str) -> i128 {

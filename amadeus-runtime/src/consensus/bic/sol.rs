@@ -100,6 +100,12 @@ pub struct SolV0 {
     pub computor: [u8; 48],
 }
 
+impl amadeus_utils::misc::Typename for Solution {
+    fn typename(&self) -> &'static str {
+        Solution::TYPENAME
+    }
+}
+
 impl Solution {
     pub const TYPENAME: &'static str = "sol";
 
