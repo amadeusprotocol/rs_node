@@ -1,17 +1,14 @@
-# Amadeus use cases
+# Amadeus Client Library
 
-This crate shows different use cases for the Amadeus core library. It is 
-called client because it is technically as client of ama_core library.
+This crate contains client binaries for interacting with the Amadeus blockchain.
 
 ## CLI
 
-The CLI is a client that can deploy a contract or send transactions. The 
-initial version was abusing the property of the legacy MessageV2 to gossip 
-transactions directly to nodes, but after v1.1.7 all nodes are using symmetric
-encryption and require a handshake and ANR, i.e. the public IP.
+The CLI is a client that can deploy contracts and send transactions via HTTP.
+After v1.1.7, all nodes use symmetric encryption and require a handshake and ANR (public IP),
+so transactions must be sent through the HTTP API that every node exposes.
 
-Because of this, the only way to send transaction is through the HTTP API that
-every node exposes. The CLI will undergo changes to support this.
+The CLI supports transaction building and sending with the `--url` parameter.
 
 ## Node
 

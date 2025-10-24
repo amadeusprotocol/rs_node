@@ -7,26 +7,26 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct TxAction {
-    pub op: String,                       // must be "call"
-    pub contract: Vec<u8>,                // can be module name like "Epoch"/"Coin" or a 48-byte BLS public key
-    pub function: String,                 // function name string
-    pub args: Vec<Vec<u8>>,               // list of binaries
-    pub attached_symbol: Option<Vec<u8>>, // optional, 1..32 bytes
-    pub attached_amount: Option<Vec<u8>>, // optional
+    pub op: String,
+    pub contract: Vec<u8>,
+    pub function: String,
+    pub args: Vec<Vec<u8>>,
+    pub attached_symbol: Option<Vec<u8>>,
+    pub attached_amount: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Tx {
-    pub signer: [u8; 48], // 48 bytes
-    pub nonce: i128,      // integer (matches Elixir :os.system_time(:nanosecond))
+    pub signer: [u8; 48],
+    pub nonce: i128,
     pub actions: Vec<TxAction>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TxU {
     pub tx_encoded: Vec<u8>,
-    pub hash: [u8; 32],      // 32 bytes
-    pub signature: [u8; 96], // 96 bytes
+    pub hash: [u8; 32],
+    pub signature: [u8; 96],
     pub tx: Tx,
 }
 
@@ -83,34 +83,25 @@ pub enum Error {
 }
 
 impl TxU {
-    /// Normalize atoms - equivalent to Elixir TX.normalize_atoms/1
-    /// Ensures the transaction structure has the correct field types
     pub fn normalize_atoms(self) -> Self {
-        // The normalize_atoms function in Elixir mainly handles string->atom conversion
-        // In Rust, we already have the correct types, so this is mostly a no-op
-        // but we keep it for API compatibility
         self
     }
 
-    /// Compute execution cost from tx_encoded length in cents
     pub fn exec_cost_from_len(&self) -> i128 {
         let bytes = self.tx_encoded.len() + 32 + 96;
         crate::bic::coin::to_cents((1 + bytes / 1024) as i128)
     }
 
-    /// Compute execution cost in cents (epoch parameter is unused but kept for compatibility)
     pub fn exec_cost(&self, _epoch: u32) -> i128 {
         self.exec_cost_from_len()
     }
 
     pub fn from_vanilla(tx_packed: &[u8]) -> Result<TxU, Error> {
-        // decode outer map via VanillaSer
         let outer_val = vanilla_ser::decode_all(tx_packed)?;
         let outer = match &outer_val {
             Value::Map(m) => m,
             _ => return Err(Error::WrongType("outer_map")),
         };
-        // helper to get a required bytes field
         let get_bytes = |m: &BTreeMap<Value, Value>, key: &'static str| -> Result<Vec<u8>, Error> {
             match m.get(&Value::Bytes(key.as_bytes().to_vec())) {
                 Some(Value::Bytes(b)) => Ok(b.clone()),
@@ -122,7 +113,6 @@ impl TxU {
         let hash = get_bytes(outer, "hash")?.try_into().map_err(|_| Error::WrongType("hash:32"))?;
         let signature = get_bytes(outer, "signature")?.try_into().map_err(|_| Error::WrongType("signature:96"))?;
 
-        // decode inner tx map
         let inner_val = vanilla_ser::decode_all(&tx_encoded)?;
         let inner = match &inner_val {
             Value::Map(m) => m,

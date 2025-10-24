@@ -1,7 +1,7 @@
 # Amadeus Node Protocol Specification
 
 ## Overview
-This document describes the peer-to-peer messaging protocol implemented by the `NodeProto` module. Messages are encoded as Erlang maps, compressed and optionally encrypted before transmission. Each frame begins with the ASCII prefix `AMA` followed by a three-byte semantic version.
+This document describes the peer-to-peer messaging protocol implemented by types conforming to the `Protocol` trait in `amadeus-node/src/node/protocol.rs`. Messages are encoded as Erlang maps, compressed and optionally encrypted before transmission. Each frame begins with the ASCII prefix `AMA` followed by a three-byte semantic version.
 
 ## Handshake
 Peers establish connectivity with a simple handshake:

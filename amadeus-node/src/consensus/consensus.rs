@@ -91,35 +91,29 @@ impl Consensus {
     ///
     /// On success, sets self.score = Some(score) and returns Ok(())
     pub fn validate_vs_chain(&mut self, fabric: &fabric::Fabric) -> Result<(), Error> {
-        // Build message to sign: entry_hash || mutations_hash
         let mut to_sign = [0u8; 64];
         to_sign[..32].copy_from_slice(&self.entry_hash);
         to_sign[32..].copy_from_slice(&self.mutations_hash);
 
-        // Fetch entry stub (height only for now)
         let entry = fabric.get_entry_by_hash(&self.entry_hash);
         let Some(entry) = entry else { return Err(Error::InvalidEntry) };
 
-        // Ensure entry height is not in the future
         if let Ok(Some(cur_h)) = fabric.get_temporal_height()
             && entry.header.height > cur_h
         {
             return Err(Error::TooFarInFuture);
         }
 
-        // Trainers
         let trainers = fabric.trainers_for_height(entry.header.height).ok_or(Error::Missing("trainers_for_height"))?;
         if trainers.is_empty() {
             return Err(Error::Missing("trainers_for_height:empty"));
         }
 
-        // Score by mask weight (unit weights)
         let (score, signed_pks) = if let Some(mask) = &self.mask {
             let score = crate::utils::misc::get_bits_percentage(mask, trainers.len());
             let signed_pks = unmask_trainers(mask, &trainers);
             (score, signed_pks)
         } else {
-            // No mask means all trainers signed
             (1.0, trainers.clone())
         };
         let agg_pk = bls::aggregate_public_keys(&signed_pks)?;
@@ -180,11 +174,9 @@ fn execute_transaction(
         None => return ("no_actions".to_string(), vec![], vec![], vec![]),
     };
 
-    // Clear mutations before executing transaction (pre-processing mutations already saved in apply_entry)
     env.muts.clear();
     env.muts_rev.clear();
 
-    // Update caller_env with transaction-specific context
     env.caller_env.tx_hash = txu.hash.to_vec();
     env.caller_env.tx_signer = txu.tx.signer;
     env.caller_env.account_caller = txu.tx.signer.to_vec();
@@ -197,13 +189,11 @@ fn execute_transaction(
         b"Contract" => execute_contract_call(env, &action.function, &action.args),
         contract if contract.len() == 48 => {
             // TODO: Re-enable WASM after CallEnv migration
-            // execute_wasm_call(env, db, &call_env, contract, &action.function, &action.args)
             ("wasm_disabled_temporarily".to_string(), vec![])
         }
         _ => ("invalid_contract".to_string(), vec![]),
     };
 
-    // Capture all mutations after execution (including gas mutations)
     (error, logs, env.muts.clone(), env.muts_rev.clone())
 }
 
@@ -288,31 +278,24 @@ fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) {
 
     let epoch = next_entry.header.height / 100_000;
 
-    // Build keys with raw binary pubkey bytes (NOT base58!)
     let entry_signer_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &next_entry.header.signer, b":AMA"]);
     let burn_address_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &crate::bic::coin::BURN_ADDRESS, b":AMA"]);
 
     for txu in txus {
-        // Update nonce (using raw binary key with pubkey bytes)
         let nonce_key = crate::utils::misc::bcat(&[b"bic:base:nonce:", &txu.tx.signer]);
-        // unavoidable: i128 nonce needs to fit in i64 for storage
         let nonce_i64 = i64::try_from(txu.tx.nonce).unwrap_or(i64::MAX);
         consensus_kv::kv_put(env, &nonce_key, &nonce_i64.to_string().into_bytes());
 
-        // Calculate and deduct exec cost using proper unit conversion
         let bytes = txu.tx_encoded.len() + 32 + 96;
         let exec_cost = if epoch >= 295 {
-            // New formula (epoch 295+): convert from AMA units to flat coins
             crate::bic::coin::to_cents((1 + bytes / 1024) as i128)
         } else {
-            // Old formula (epoch < 295)
             crate::bic::coin::to_cents((3 + bytes / 256 * 3) as i128)
         };
 
         let signer_balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &txu.tx.signer, b":AMA"]);
         consensus_kv::kv_increment(env, &signer_balance_key, -exec_cost);
 
-        // Split cost 50/50 between entry signer and burn address (matching Elixir reference)
         consensus_kv::kv_increment(env, &entry_signer_key, exec_cost / 2);
         consensus_kv::kv_increment(env, &burn_address_key, exec_cost / 2);
     }

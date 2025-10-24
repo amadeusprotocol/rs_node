@@ -175,7 +175,7 @@ impl Context {
         tokio::spawn({
             let ctx = ctx.clone();
             async move {
-                let mut ticker = interval(Duration::from_millis(600_000)); // 10 minutes
+                let mut ticker = interval(Duration::from_millis(600_000));
                 loop {
                     ticker.tick().await;
                     if let Err(e) = ctx.autoupdate_task().await {
@@ -280,12 +280,10 @@ impl Context {
     async fn consensus_task(&self) -> Result<(), Error> {
         use consensus::consensus::{proc_consensus, proc_entries};
 
-        // Process entries for consensus - applies new entries to the chain
         if let Err(e) = proc_entries(&self.fabric, &self.config, self).await {
             warn!("proc_entries failed: {e}");
         }
 
-        // Process consensus validation - validates and roots entries
         if let Err(e) = proc_consensus(&self.fabric) {
             warn!("proc_consensus failed: {e}");
         }

@@ -251,7 +251,6 @@ impl Protocol for Entry {
         Entry::from_etf_bin_validated(bin, ENTRY_SIZE).map_err(Into::into)
     }
     fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        // encode entry using ETF deterministic format
         let entry_bin: Vec<u8> = self.pack().map_err(|_| protocol::Error::BadEtf("entry"))?;
 
         let mut m = HashMap::new();
@@ -307,7 +306,6 @@ impl Entry {
     pub const TYPENAME: &'static str = "event_entry";
 
     pub fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        // encode entry using ETF deterministic format
         let entry_bin: Vec<u8> = self.pack().map_err(|_| protocol::Error::BadEtf("entry"))?;
 
         let mut m = HashMap::new();

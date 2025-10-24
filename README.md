@@ -3,12 +3,11 @@
 This initiative aims to create a Rust implementation of
 the [Amadeus Node](https://github.com/amadeus-robot/node.git).
 
-- [core (ama_core)](./core/README.md): Core library, needed by every project in
-  Amadeus ecosystem
-- [client](./client/README.md): The library with examples of using the core
-  library (cli, node, etc.)
-- [http](./http/README.md): Web dashboard of the Amadeus Node, by default runs
-  on port 3000
+- [amadeus-node](./amadeus-node/): Core library with networking protocol and consensus logic
+- [amadeus-utils](./amadeus-utils/): Utility library with cryptography, serialization, and data persistence
+- [amadeus-runtime](./amadeus-runtime/): Consensus library with WASM execution and BIC contracts
+- [client](./client/): Client library with binaries (cli, node, etc.)
+- [http](./http/): Web dashboard of the Amadeus Node, by default runs on port 3000
 
 ## Prerequisites
 
@@ -212,9 +211,9 @@ mutexes, and instead to use channels for communication between the threads.
 
 ## Adding core library to other project
 
-```bash
-# [dependencies]
-# amadeus-node = { package = "amadeus-node", git = "https://github.com/valentynfaychuk/rs_node", branch = "main" }
+```toml
+[dependencies]
+amadeus-node = { git = "https://github.com/valentynfaychuk/rs_node", branch = "main" }
 ```
 
 ## Contributing

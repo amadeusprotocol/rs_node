@@ -60,32 +60,6 @@ async fn init_kvdb(base: &str) -> Result<RocksDb, Error> {
     Ok(db)
 }
 
-/// Insert the genesis entry and initial state markers if not present yet
-// pub fn insert_genesis() -> Result<(), Error> {
-//     let genesis_entry = genesis::get_gen_entry();
-//     if rocksdb::get(CF_DEFAULT, &genesis_entry.hash)?.is_some() {
-//         return Ok(()); // already inserted, no-op
-//     }
-//
-//     println!("🌌  Ahhh... Fresh Fabric. Marking genesis..");
-//
-//     let hash = genesis_entry.hash;
-//     let height = genesis_entry.header.height;
-//     let slot = genesis_entry.header.slot;
-//     let entry_bin: Vec<u8> = genesis_entry.try_into()?;
-//     insert_entry(&hash, height, slot, &entry_bin, get_unix_millis_now())?;
-//
-//     // insert genesis attestation aggregate (no-op until full trainers implemented)
-//     let att = genesis::attestation();
-//     aggregate_attestation(&att)?;
-//
-//     // set rooted_tip = genesis.hash and temporal_height = 0
-//     set_rooted_tip(&hash)?;
-//     rocksdb::put(CF_SYSCONF, b"temporal_height", &height.to_be_bytes())?;
-//
-//     Ok(())
-// }
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredConsensus {
     pub mask: BitVec<u8, Msb0>,
