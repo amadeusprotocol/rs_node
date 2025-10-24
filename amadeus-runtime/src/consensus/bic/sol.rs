@@ -1,3 +1,4 @@
+use crate::Result;
 use amadeus_utils::blake3;
 use std::convert::TryInto;
 
@@ -41,7 +42,7 @@ pub fn verify(
     segment_vr_hash: &[u8],
     vr_b3: &[u8],
     diff_bits: u64,
-) -> Result<bool, &'static str> {
+) -> Result<bool> {
     let usol = unpack(sol);
     if segment_vr_hash != &usol.segment_vr_hash {
         return Err("segment_vr_hash");
@@ -102,7 +103,7 @@ pub struct SolV0 {
 impl Solution {
     pub const TYPENAME: &'static str = "sol";
 
-    pub fn from_etf_validated(bin: &[u8]) -> Result<Self, Error> {
+    pub fn from_etf_validated(bin: &[u8]) -> std::result::Result<Self, Error> {
         if bin.len() >= SOL_SIZE {
             // V2 solution
             let sol = unpack(bin[..SOL_SIZE].try_into().unwrap());

@@ -38,13 +38,8 @@ pub fn pk_hex(pk: &[u8]) -> String {
 /// Concatenate multiple byte slices into a single Vec<u8>
 /// Example: bcat(&[b"bic:coin:balance:", pk, b":AMA"])
 #[inline]
-pub fn bcat(parts: &[&[u8]]) -> Vec<u8> {
-    let total: usize = parts.iter().map(|p| p.len()).sum();
-    let mut v = Vec::with_capacity(total);
-    for p in parts {
-        v.extend_from_slice(p);
-    }
-    v
+pub fn bcat(slices: &[&[u8]]) -> Vec<u8> {
+    slices.iter().flat_map(|&s| s).copied().collect()
 }
 
 /// Produce a hex dump similar to `hexdump -C` for a binary slice.

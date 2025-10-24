@@ -463,3 +463,146 @@ fn verify_time_sync() -> bool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::any::type_name_of_val;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Guard that creates a per-test directory under /tmp and deletes it on drop.
+    struct TmpTestDir {
+        path: PathBuf,
+    }
+
+    impl TmpTestDir {
+        /// Create a tmp directory named "/tmp/<fully-qualified-test-path><seconds-since-epoch>".
+        /// Pass a reference to the test function item, e.g., `TmpTestDir::for_test(&my_test_fn)`.
+        fn for_test<F: ?Sized>(f: &F) -> std::io::Result<Self> {
+            let fq = type_name_of_val(f);
+            let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+            let dir_name = format!("{}{}", fq, secs);
+            let path = std::path::Path::new("/tmp").join(dir_name);
+            std::fs::create_dir_all(&path)?;
+            Ok(Self { path })
+        }
+
+        /// Convenience to get &str path.
+        fn to_str(&self) -> &str {
+            self.path.to_str().unwrap_or("")
+        }
+    }
+
+    impl Drop for TmpTestDir {
+        fn drop(&mut self) {
+            // best-effort cleanup
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_config_from_env() {
+        // per-test tmp dir
+        let tmp = TmpTestDir::for_test(&test_config_from_env).unwrap();
+        // set up test environment
+        unsafe {
+            std::env::set_var("WORKFOLDER", tmp.to_str());
+            std::env::set_var("HTTP_PORT", "8080");
+            std::env::set_var("OTHERNODES", "192.168.1.1,192.168.1.2");
+            std::env::set_var("TRUSTFACTOR", "0.9");
+            std::env::set_var("MAX_PEERS", "500");
+            std::env::set_var("ARCHIVALNODE", "true");
+            std::env::set_var("AUTOUPDATE", "yes");
+            std::env::set_var("COMPUTOR", "trainer");
+            std::env::set_var("SNAPSHOT_HEIGHT", "12345678");
+            std::env::set_var("ANR_NAME", "TestNode");
+            std::env::set_var("ANR_DESC", "Test Description");
+        }
+
+        let config = Config::from_fs(Some(tmp.to_str()), None).await.unwrap();
+
+        // verify filesystem paths from test setup
+        assert_eq!(config.work_folder, tmp.to_str());
+
+        // verify network configuration from env
+        assert_eq!(config.http_port, 8080);
+        assert_eq!(config.other_nodes, vec!["192.168.1.1", "192.168.1.2"]);
+        assert_eq!(config.trust_factor, 0.9);
+        assert_eq!(config.max_peers, 500);
+
+        // verify generated trainer keys exist
+        assert_eq!(config.trainer_sk.len(), 64);
+        assert_eq!(config.trainer_pk.len(), 48);
+        assert!(!config.trainer_pk_b58.is_empty());
+        assert_eq!(config.trainer_pop.len(), 96);
+
+        // verify runtime settings from env
+        assert!(config.archival_node);
+        assert!(config.autoupdate);
+        assert_eq!(config.computor_type, Some(ComputorType::Trainer));
+        assert_eq!(config.snapshot_height, 12345678);
+
+        // verify anr configuration from env
+        assert_eq!(config.anr_name, Some("TestNode".to_string()));
+        assert_eq!(config.anr_desc, Some("Test Description".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_config_from_sk() {
+        let sk = [42u8; 64];
+        let config = Config::new_daemonless(sk);
+
+        // verify the provided sk is used
+        assert_eq!(config.trainer_sk, sk);
+
+        // verify keys are generated correctly
+        assert_eq!(config.trainer_pk.len(), 48);
+        assert!(!config.trainer_pk_b58.is_empty());
+        assert_eq!(config.trainer_pop.len(), 96);
+    }
+
+    #[tokio::test]
+    async fn test_config_env_parsing() {
+        // per-test tmp dir
+        let tmp = TmpTestDir::for_test(&test_config_env_parsing).unwrap();
+        // explicitly set and verify computor type parsing to avoid env races
+        unsafe {
+            std::env::set_var("COMPUTOR", "trainer");
+        }
+        let config = Config::from_fs(Some(tmp.to_str()), None).await.unwrap();
+        assert_eq!(config.computor_type, Some(ComputorType::Trainer));
+
+        unsafe {
+            std::env::set_var("COMPUTOR", "default");
+        }
+        let config = Config::from_fs(Some(tmp.to_str()), None).await.unwrap();
+        assert_eq!(config.computor_type, Some(ComputorType::Default));
+    }
+
+    #[tokio::test]
+    async fn test_config_version_methods() {
+        // per-test tmp dir
+        let tmp = TmpTestDir::for_test(&test_config_version_methods).unwrap();
+        let config = Config::from_fs(Some(tmp.to_str()), None).await.unwrap();
+
+        // Test that get_ver() returns a string and get_ver_3b() returns consistent tuple
+        let version_str = config.get_ver().to_string();
+        let version_3b = config.get_ver_3b();
+
+        // Parse the string version and compare with tuple
+        let parts: Vec<&str> = version_str.split('.').collect();
+        assert_eq!(parts.len(), 3, "Version string should have 3 parts");
+
+        let expected_major = parts[0].parse::<u8>().unwrap();
+        let expected_minor = parts[1].parse::<u8>().unwrap();
+        let expected_patch = parts[2].parse::<u8>().unwrap();
+
+        assert_eq!(version_3b.0, expected_major);
+        assert_eq!(version_3b.1, expected_minor);
+        assert_eq!(version_3b.2, expected_patch);
+
+        // Verify it matches the version field directly
+        assert_eq!(version_3b, (config.version.major(), config.version.minor(), config.version.patch()));
+    }
+}

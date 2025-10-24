@@ -1,6 +1,6 @@
 use crate::consensus::consensus_apply::ApplyEnv;
 use crate::consensus::consensus_kv::{kv_get, kv_increment, kv_put};
-use crate::{bcat, consensus};
+use crate::{Result, bcat, consensus};
 
 pub const DECIMALS: u32 = 9;
 pub const BURN_ADDRESS: [u8; 48] = [0u8; 48];
@@ -21,11 +21,11 @@ pub fn from_flat(coins: i128) -> f64 {
     (x * 1e9).round() / 1e9
 }
 
-pub fn balance_burnt(env: &ApplyEnv, symbol: &[u8]) -> Result<i128, &'static str> {
+pub fn balance_burnt(env: &ApplyEnv, symbol: &[u8]) -> Result<i128> {
     balance(env, &BURN_ADDRESS, symbol)
 }
 
-pub fn balance(env: &ApplyEnv, address: &[u8], symbol: &[u8]) -> Result<i128, &'static str> {
+pub fn balance(env: &ApplyEnv, address: &[u8], symbol: &[u8]) -> Result<i128> {
     match kv_get(env, &bcat(&[b"bic:coin:balance:", address, b":", symbol]))? {
         Some(amount) => {
             let s = std::str::from_utf8(&amount).map_err(|_| "invalid_utf8")?;
@@ -36,28 +36,28 @@ pub fn balance(env: &ApplyEnv, address: &[u8], symbol: &[u8]) -> Result<i128, &'
     }
 }
 
-pub fn mintable(env: &ApplyEnv, symbol: &[u8]) -> Result<bool, &'static str> {
+pub fn mintable(env: &ApplyEnv, symbol: &[u8]) -> Result<bool> {
     match kv_get(env, &bcat(&[b"bic:coin:mintable:", symbol]))?.as_deref() {
         Some(b"true") => Ok(true),
         _ => Ok(false),
     }
 }
 
-pub fn pausable(env: &ApplyEnv, symbol: &[u8]) -> Result<bool, &'static str> {
+pub fn pausable(env: &ApplyEnv, symbol: &[u8]) -> Result<bool> {
     match kv_get(env, &bcat(&[b"bic:coin:pausable:", symbol]))?.as_deref() {
         Some(b"true") => Ok(true),
         _ => Ok(false),
     }
 }
 
-pub fn paused(env: &ApplyEnv, symbol: &[u8]) -> Result<bool, &'static str> {
+pub fn paused(env: &ApplyEnv, symbol: &[u8]) -> Result<bool> {
     match kv_get(env, &bcat(&[b"bic:coin:paused:", symbol]))?.as_deref() {
         Some(b"true") => pausable(env, symbol),
         _ => Ok(false),
     }
 }
 
-pub fn total_supply(env: &ApplyEnv, symbol: &[u8]) -> Result<i128, &'static str> {
+pub fn total_supply(env: &ApplyEnv, symbol: &[u8]) -> Result<i128> {
     match kv_get(env, &bcat(&[b"bic:coin:totalSupply:", symbol]))? {
         Some(amount) => {
             let s = std::str::from_utf8(&amount).map_err(|_| "invalid_utf8")?;
@@ -68,14 +68,14 @@ pub fn total_supply(env: &ApplyEnv, symbol: &[u8]) -> Result<i128, &'static str>
     }
 }
 
-pub fn exists(env: &ApplyEnv, symbol: &[u8]) -> Result<bool, &'static str> {
+pub fn exists(env: &ApplyEnv, symbol: &[u8]) -> Result<bool> {
     match kv_get(env, &bcat(&[b"bic:coin:totalSupply:", symbol]))? {
         Some(_) => Ok(true),
         None => Ok(false),
     }
 }
 
-pub fn has_permission(env: &ApplyEnv, symbol: &[u8], signer: &[u8]) -> Result<bool, &'static str> {
+pub fn has_permission(env: &ApplyEnv, symbol: &[u8], signer: &[u8]) -> Result<bool> {
     match kv_get(env, &bcat(&[b"bic:coin:permission:", symbol]))? {
         None => Ok(false),
         Some(permission_list) => {
@@ -92,7 +92,7 @@ pub fn has_permission(env: &ApplyEnv, symbol: &[u8], signer: &[u8]) -> Result<bo
     }
 }
 
-pub fn call_transfer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), &'static str> {
+pub fn call_transfer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()> {
     if args.len() != 3 {
         return Err("invalid_args");
     }
@@ -123,7 +123,7 @@ pub fn call_transfer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), &'sta
     Ok(())
 }
 
-pub fn call_create_and_mint(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), &'static str> {
+pub fn call_create_and_mint(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()> {
     if args.len() != 4 {
         return Err("invalid_args");
     }
@@ -172,7 +172,7 @@ pub fn call_create_and_mint(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()
     Ok(())
 }
 
-pub fn call_mint(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), &'static str> {
+pub fn call_mint(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()> {
     if args.len() != 2 {
         return Err("invalid_args");
     }
@@ -202,7 +202,7 @@ pub fn call_mint(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), &'static 
     Ok(())
 }
 
-pub fn call_pause(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), &'static str> {
+pub fn call_pause(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()> {
     if args.len() != 2 {
         return Err("invalid_args");
     }
@@ -232,7 +232,7 @@ pub fn burn_address() -> [u8; 48] {
     BURN_ADDRESS
 }
 
-pub fn call(env: &mut ApplyEnv, function: &str, args: &[Vec<u8>]) -> Result<(), &'static str> {
+pub fn call(env: &mut ApplyEnv, function: &str, args: &[Vec<u8>]) -> Result<()> {
     match function {
         "transfer" => call_transfer(env, args.to_vec()),
         "create_and_mint" => call_create_and_mint(env, args.to_vec()),

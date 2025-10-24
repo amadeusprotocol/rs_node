@@ -1,3 +1,4 @@
+use crate::Result;
 use crate::consensus::bic::coin;
 use crate::consensus::consensus_apply::ApplyEnv;
 use crate::consensus::consensus_kv;
@@ -10,7 +11,7 @@ pub fn tx_cost_per_byte(_epoch: u64, tx_encoded_len: usize) -> i128 {
     coin::to_cents(cost_units as i128)
 }
 
-pub fn pay_cost(env: &mut ApplyEnv, cost: i128) -> Result<(), &'static str> {
+pub fn pay_cost(env: &mut ApplyEnv, cost: i128) -> Result<()> {
     // Deduct tx cost
     consensus_kv::kv_increment(
         env,

@@ -2,7 +2,7 @@
 
 pub mod consensus;
 
-#[inline]
-pub fn bcat(slices: &[&[u8]]) -> Vec<u8> {
-    slices.iter().flat_map(|&s| s).copied().collect()
-}
+pub type Result<T> = std::result::Result<T, &'static str>;
+
+// re-export bcat from amadeus-utils
+pub use amadeus_utils::misc::bcat;

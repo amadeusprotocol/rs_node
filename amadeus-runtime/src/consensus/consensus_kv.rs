@@ -1,7 +1,8 @@
+use crate::Result;
 use crate::consensus::consensus_apply::ApplyEnv;
 use crate::consensus::consensus_muts::Mutation;
 
-pub fn kv_put(env: &mut ApplyEnv, key: &[u8], value: &[u8]) -> Result<(), &'static str> {
+pub fn kv_put(env: &mut ApplyEnv, key: &[u8], value: &[u8]) -> Result<()> {
     let old_value = env.txn.get_cf(&env.cf, key).map_err(|_| "kv_get_failed")?;
     env.txn.put_cf(&env.cf, key, value).map_err(|_| "kv_put_failed")?;
 
@@ -13,7 +14,7 @@ pub fn kv_put(env: &mut ApplyEnv, key: &[u8], value: &[u8]) -> Result<(), &'stat
     Ok(())
 }
 
-pub fn kv_increment(env: &mut ApplyEnv, key: &[u8], value: i128) -> Result<i128, &'static str> {
+pub fn kv_increment(env: &mut ApplyEnv, key: &[u8], value: i128) -> Result<i128> {
     match env.txn.get_cf(&env.cf, key).map_err(|_| "kv_get_failed")? {
         None => {
             env.muts.push(Mutation::Put {
@@ -39,7 +40,7 @@ pub fn kv_increment(env: &mut ApplyEnv, key: &[u8], value: i128) -> Result<i128,
     }
 }
 
-pub fn kv_delete(env: &mut ApplyEnv, key: &[u8]) -> Result<(), &'static str> {
+pub fn kv_delete(env: &mut ApplyEnv, key: &[u8]) -> Result<()> {
     match env.txn.get_cf(&env.cf, key).map_err(|_| "kv_get_failed")? {
         None => (),
         Some(old) => {
@@ -51,7 +52,7 @@ pub fn kv_delete(env: &mut ApplyEnv, key: &[u8]) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub fn kv_set_bit(env: &mut ApplyEnv, key: &[u8], bit_idx: u64) -> Result<bool, &'static str> {
+pub fn kv_set_bit(env: &mut ApplyEnv, key: &[u8], bit_idx: u64) -> Result<bool> {
     let (mut old, exists) = match env.txn.get_cf(&env.cf, key).map_err(|_| "kv_get_failed")? {
         None => (vec![0u8; crate::consensus::bic::sol_bloom::PAGE_SIZE as usize], false),
         Some(value) => (value, true),
@@ -83,11 +84,11 @@ pub fn kv_set_bit(env: &mut ApplyEnv, key: &[u8], bit_idx: u64) -> Result<bool, 
     }
 }
 
-pub fn kv_exists(env: &mut ApplyEnv, key: &[u8]) -> Result<bool, &'static str> {
+pub fn kv_exists(env: &mut ApplyEnv, key: &[u8]) -> Result<bool> {
     Ok(env.txn.get_cf(&env.cf, key).map_err(|_| "kv_get_failed")?.is_some())
 }
 
-pub fn kv_get(env: &ApplyEnv, key: &[u8]) -> Result<Option<Vec<u8>>, &'static str> {
+pub fn kv_get(env: &ApplyEnv, key: &[u8]) -> Result<Option<Vec<u8>>> {
     env.txn.get_cf(&env.cf, key).map_err(|_| "kv_get_failed")
 }
 
@@ -149,7 +150,7 @@ pub fn kv_get_prev(env: &mut ApplyEnv, prefix: &[u8], key: &[u8]) -> Option<(Vec
     }
 }
 
-pub fn revert(env: &mut ApplyEnv) -> Result<(), &'static str> {
+pub fn revert(env: &mut ApplyEnv) -> Result<()> {
     for m in env.muts_rev.clone() {
         match m {
             Mutation::Put { op: _, key, value } => {
