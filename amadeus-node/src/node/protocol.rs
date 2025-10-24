@@ -1,11 +1,10 @@
 use crate::Context;
 #[cfg(test)]
 use crate::Ver;
-use crate::bic::sol;
-use crate::bic::sol::{SOL_SIZE, Solution};
 use crate::consensus::consensus::{self, Consensus};
 use crate::consensus::doms::attestation::EventAttestation;
 use crate::consensus::doms::entry::Entry;
+use crate::consensus::doms::sol::Solution;
 use crate::consensus::doms::{Attestation, EntrySummary};
 use crate::consensus::fabric::Fabric;
 use crate::node::anr::Anr;
@@ -74,7 +73,7 @@ pub enum Error {
     #[error(transparent)]
     Fabric(#[from] crate::consensus::fabric::Error),
     #[error(transparent)]
-    Sol(#[from] sol::Error),
+    Sol(#[from] crate::consensus::doms::sol::Error),
     #[error(transparent)]
     Att(#[from] crate::consensus::doms::attestation::Error),
     #[error(transparent)]
@@ -927,59 +926,6 @@ impl Protocol for SpecialBusinessReply {
 
 impl SpecialBusinessReply {
     pub const TYPENAME: &'static str = "special_business_reply";
-}
-
-#[async_trait::async_trait]
-impl Protocol for Solution {
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let bin = map.get_binary("sol").ok_or(Error::BadEtf("sol"))?;
-        Solution::from_etf_validated(bin).map_err(Into::into)
-    }
-
-    fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
-        let sol_bin = match self {
-            Solution::V2(v2) => {
-                let mut buf = Vec::with_capacity(SOL_SIZE);
-                buf.extend_from_slice(&v2.epoch.to_le_bytes());
-                buf.extend_from_slice(&v2.segment_vr_hash);
-                buf.extend_from_slice(&v2.pk);
-                buf.extend_from_slice(&v2.pop);
-                buf.extend_from_slice(&v2.computor);
-                buf.extend_from_slice(&v2.nonce);
-                buf.extend_from_slice(&v2.tensor_c);
-                buf
-            }
-            Solution::V1(v1) => {
-                let mut buf = Vec::with_capacity(320);
-                buf.extend_from_slice(&v1.epoch.to_le_bytes());
-                buf.extend_from_slice(&v1.pk);
-                buf.extend_from_slice(&v1.pop);
-                buf.extend_from_slice(&v1.computor);
-                buf.extend_from_slice(&v1.segment_vr);
-                buf.resize(320, 0);
-                buf
-            }
-            Solution::V0(v0) => {
-                let mut buf = Vec::with_capacity(256);
-                buf.extend_from_slice(&v0.epoch.to_le_bytes());
-                buf.extend_from_slice(&v0.pk);
-                buf.extend_from_slice(&v0.pop);
-                buf.extend_from_slice(&v0.computor);
-                buf.resize(256, 0);
-                buf
-            }
-        };
-
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Solution::TYPENAME)));
-        m.insert(Term::Atom(Atom::from("sol")), Term::from(Binary { bytes: sol_bin }));
-        let term = Term::from(Map { map: m });
-        Ok(encode_safe(&term))
-    }
-
-    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
-        Ok(vec![Instruction::ReceivedSol { sol: self.clone() }])
-    }
 }
 
 #[cfg(test)]
