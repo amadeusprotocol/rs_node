@@ -1,9 +1,8 @@
 use crate::consensus::aggsig::DST_MOTION;
+use crate::consensus::consensus_apply::ApplyEnv;
+use crate::consensus::consensus_kv::{kv_exists, kv_get, kv_increment, kv_put, kv_set_bit};
 use crate::{bcat, consensus};
 use amadeus_utils::blake3;
-use std::panic::panic_any;
-
-use crate::consensus::consensus_kv::{kv_exists, kv_get, kv_increment, kv_put, kv_set_bit};
 
 pub const EPOCH_EMISSION_BASE: i128 = 1_000_000_000_000_000;
 pub const EPOCH_INTERVAL: i128 = 100_000;
@@ -437,73 +436,73 @@ pub const PEDDLEBIKE67: &[[u8; 48]; 67] = &[
     ],
 ];
 
-pub fn call_set_emission_address(env: &mut crate::consensus::consensus_apply::ApplyEnv, args: Vec<Vec<u8>>) {
+pub fn call_set_emission_address(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), &'static str> {
     if args.len() != 1 {
-        panic_any("invalid_args")
+        return Err("invalid_args");
     }
     let address = args[0].as_slice();
     if address.len() != 48 {
-        panic_any("invalid_address_pk")
+        return Err("invalid_address_pk");
     }
-    kv_put(env, &bcat(&[b"bic:epoch:emission_address:", env.caller_env.account_caller.as_slice()]), address);
+    kv_put(env, &bcat(&[b"bic:epoch:emission_address:", env.caller_env.account_caller.as_slice()]), address)?;
+    Ok(())
 }
 
-pub fn call_submit_sol(env: &mut crate::consensus::consensus_apply::ApplyEnv, args: Vec<Vec<u8>>) {
+pub fn call_submit_sol(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), &'static str> {
     if args.len() != 1 {
-        panic_any("invalid_args")
+        return Err("invalid_args");
     }
     let sol = args[0].as_slice();
     if sol.len() != consensus::bic::sol::SOL_SIZE {
-        panic_any("invalid_sol_seed_size")
+        return Err("invalid_sol_seed_size");
     }
-    let sol: [u8; consensus::bic::sol::SOL_SIZE] = sol.try_into().unwrap();
+    let sol: [u8; consensus::bic::sol::SOL_SIZE] = sol.try_into().map_err(|_| "invalid_sol_size")?;
 
     let hash = blake3::hash(&sol);
     let mut flips = 0;
     for seg in consensus::bic::sol_bloom::segs_from_digest(&hash) {
         let key = format!("bic:epoch:solbloom:{}", seg.page).into_bytes();
-        if kv_set_bit(env, &key, seg.bit_offset) {
+        if kv_set_bit(env, &key, seg.bit_offset)? {
             flips += 1
         }
     }
     if flips == 0 {
-        panic_any("sol_exists")
+        return Err("sol_exists");
     }
 
     let usol = consensus::bic::sol::unpack(&sol);
     if env.caller_env.entry_epoch != usol.epoch {
-        panic_any("invalid_epoch")
+        return Err("invalid_epoch");
     }
 
-    let segment_vr_hash = kv_get(env, b"bic:epoch:segment_vr_hash").unwrap();
-    let diff_bits = kv_get(env, b"bic:epoch:diff_bits").unwrap();
-    let diff_bits_int = std::str::from_utf8(&diff_bits)
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or_else(|| panic_any("invalid_diff_bits"));
+    let segment_vr_hash = kv_get(env, b"bic:epoch:segment_vr_hash")?.ok_or("missing_segment_vr_hash")?;
+    let diff_bits = kv_get(env, b"bic:epoch:diff_bits")?.ok_or("missing_diff_bits")?;
+    let diff_bits_int =
+        std::str::from_utf8(&diff_bits).ok().and_then(|s| s.parse::<u64>().ok()).ok_or("invalid_diff_bits")?;
 
     let hash_bytes: [u8; 32] = hash.into();
     if !consensus::bic::sol::verify(&sol, &hash_bytes[..], &segment_vr_hash, &env.caller_env.entry_vr_b3, diff_bits_int)
         .unwrap_or(false)
     {
-        panic_any("invalid_sol");
+        return Err("invalid_sol");
     }
 
-    if !kv_exists(env, &bcat(&[b"bic:epoch:pop:", usol.pk.as_slice()])) {
+    if !kv_exists(env, &bcat(&[b"bic:epoch:pop:", usol.pk.as_slice()]))? {
         match consensus::bls12_381::verify(&usol.pk, &usol.pop, &usol.pk, consensus::aggsig::DST_POP) {
-            Ok(()) => kv_put(env, &bcat(&[b"bic:epoch:pop:", usol.pk.as_slice()]), &usol.pop),
-            Err(_) => panic_any("invalid_pop"),
+            Ok(()) => kv_put(env, &bcat(&[b"bic:epoch:pop:", usol.pk.as_slice()]), &usol.pop)?,
+            Err(_) => return Err("invalid_pop"),
         }
     }
-    kv_increment(env, &bcat(&[b"bic:epoch:solutions_count:", usol.pk.as_slice()]), 1);
+    kv_increment(env, &bcat(&[b"bic:epoch:solutions_count:", usol.pk.as_slice()]), 1)?;
+    Ok(())
 }
 
-pub fn kv_get_trainers(env: &crate::consensus::consensus_apply::ApplyEnv, key: &[u8]) -> Vec<Vec<u8>> {
-    match kv_get(env, key) {
-        None => Vec::new(),
+pub fn kv_get_trainers(env: &ApplyEnv, key: &[u8]) -> Result<Vec<Vec<u8>>, &'static str> {
+    match kv_get(env, key)? {
+        None => Ok(Vec::new()),
         Some(trainer_list) => {
             let cursor = std::io::Cursor::new(trainer_list.as_slice());
-            let term_trainer_list = eetf::Term::decode(cursor).unwrap();
+            let term_trainer_list = eetf::Term::decode(cursor).map_err(|_| "invalid_eetf")?;
             match term_trainer_list {
                 eetf::Term::List(term_permission_list) => {
                     let mut out = Vec::with_capacity(term_permission_list.elements.len());
@@ -511,79 +510,76 @@ pub fn kv_get_trainers(env: &crate::consensus::consensus_apply::ApplyEnv, key: &
                         if let eetf::Term::Binary(b) = el {
                             out.push(b.bytes); // move, no clone
                         } else {
-                            panic_any("invalid_trainer_list_term");
+                            return Err("invalid_trainer_list_term");
                         }
                     }
-                    out
+                    Ok(out)
                 }
-                _ => panic_any("invalid_trainer_list_term"),
+                _ => Err("invalid_trainer_list_term"),
             }
         }
     }
 }
 
-pub fn call_slash_trainer(env: &mut crate::consensus::consensus_apply::ApplyEnv, args: Vec<Vec<u8>>) {
+pub fn call_slash_trainer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), &'static str> {
     if args.len() != 5 {
-        panic_any("invalid_args")
+        return Err("invalid_args");
     }
     let epoch = args[0].as_slice();
-    let epoch = std::str::from_utf8(&epoch)
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or_else(|| panic_any("invalid_epoch"));
+    let epoch = std::str::from_utf8(&epoch).ok().and_then(|s| s.parse::<u64>().ok()).ok_or("invalid_epoch")?;
     let malicious_pk = args[1].as_slice();
     let signature = args[2].as_slice();
     let mask_size = args[3].as_slice();
-    let mask_size = std::str::from_utf8(&mask_size)
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or_else(|| panic_any("invalid_mask_size"));
+    let mask_size =
+        std::str::from_utf8(&mask_size).ok().and_then(|s| s.parse::<u64>().ok()).ok_or("invalid_mask_size")?;
     let mask = args[4].to_vec();
 
     if epoch != env.caller_env.entry_epoch {
-        panic_any("invalid_epoch")
+        return Err("invalid_epoch");
     }
 
-    let mut trainers = kv_get_trainers(env, &bcat(&[b"bic:epoch:trainers:", epoch.to_string().as_bytes()]));
+    let mut trainers = kv_get_trainers(env, &bcat(&[b"bic:epoch:trainers:", epoch.to_string().as_bytes()]))?;
     if !trainers.iter().any(|v| v.as_slice() == malicious_pk) {
-        panic_any("invalid_trainer_pk")
+        return Err("invalid_trainer_pk");
     }
 
     let signers = consensus::aggsig::unmask_trainers(&trainers, &mask, mask_size as usize);
     let consensus_pct = signers.len() as f64 / trainers.len() as f64;
     if consensus_pct < 0.67 {
-        panic_any("invalid_amount_of_signatures")
+        return Err("invalid_amount_of_signatures");
     }
 
-    let apk = consensus::bls12_381::aggregate_public_keys(signers).unwrap_or_else(|_| panic_any("invalid_aggregation"));
+    let apk = consensus::bls12_381::aggregate_public_keys(signers).map_err(|_| "invalid_aggregation")?;
     let msg = bcat(&[b"slash_trainer", (epoch as u32).to_le_bytes().as_slice(), malicious_pk]);
     let signature_valid = match consensus::bls12_381::verify(&apk, signature, msg.as_slice(), DST_MOTION) {
         Ok(()) => true,
         _ => false,
     };
     if !signature_valid {
-        panic_any("invalid_signature")
+        return Err("invalid_signature");
     }
 
     let mut trainers_removed =
-        kv_get_trainers(env, &bcat(&[b"bic:epoch:trainers:removed:", epoch.to_string().as_bytes()]));
+        kv_get_trainers(env, &bcat(&[b"bic:epoch:trainers:removed:", epoch.to_string().as_bytes()]))?;
     trainers_removed.push(malicious_pk.to_vec());
-    let term_trainers_removed = consensus::bic::eetf_list_of_binaries(trainers_removed).unwrap();
+    let term_trainers_removed =
+        consensus::bic::eetf_list_of_binaries(trainers_removed).map_err(|_| "eetf_encoding_failed")?;
     kv_put(
         env,
         &bcat(&[b"bic:epoch:trainers:removed:", epoch.to_string().as_bytes()]),
         term_trainers_removed.as_slice(),
-    );
+    )?;
 
     trainers.retain(|pk| pk.as_slice() != malicious_pk);
-    let term_trainers = consensus::bic::eetf_list_of_binaries(trainers).unwrap();
-    kv_put(env, &bcat(&[b"bic:epoch:trainers:", epoch.to_string().as_bytes()]), term_trainers.as_slice());
+    let term_trainers = consensus::bic::eetf_list_of_binaries(trainers).map_err(|_| "eetf_encoding_failed")?;
+    kv_put(env, &bcat(&[b"bic:epoch:trainers:", epoch.to_string().as_bytes()]), term_trainers.as_slice())?;
 
     let height = format!("{:012}", env.caller_env.entry_height.saturating_add(1)).into_bytes();
-    kv_put(env, &bcat(&[b"bic:epoch:trainers:height:", &height]), term_trainers.as_slice());
+    kv_put(env, &bcat(&[b"bic:epoch:trainers:height:", &height]), term_trainers.as_slice())?;
+    Ok(())
 }
 
-pub fn next(env: &mut crate::consensus::consensus_apply::ApplyEnv) {
+pub fn next(env: &mut ApplyEnv) {
     //Currently handled on elixir side
 }
 
@@ -622,41 +618,20 @@ pub enum EpochError {
 pub struct Epoch;
 
 impl Epoch {
-    pub fn call(&self, env: &mut crate::consensus::consensus_apply::ApplyEnv, op: EpochCall) -> Result<(), EpochError> {
-        use std::panic::{AssertUnwindSafe, catch_unwind};
-
+    pub fn call(&self, env: &mut ApplyEnv, op: EpochCall) -> Result<(), EpochError> {
         match op {
-            EpochCall::SubmitSol { sol } => match catch_unwind(AssertUnwindSafe(|| call_submit_sol(env, vec![sol]))) {
-                Ok(_) => Ok(()),
-                Err(e) => {
-                    if let Some(s) = e.downcast_ref::<&str>() {
-                        match *s {
-                            "sol_exists" => Err(EpochError::SolExists),
-                            "invalid_sol" | "invalid_sol_seed_size" => Err(EpochError::InvalidSol),
-                            "invalid_epoch" => Err(EpochError::InvalidEpoch),
-                            "invalid_pop" => Err(EpochError::InvalidPop),
-                            _ => Err(EpochError::InvalidSol),
-                        }
-                    } else {
-                        Err(EpochError::InvalidSol)
-                    }
-                }
-            },
-            EpochCall::SetEmissionAddress { address } => {
-                match catch_unwind(AssertUnwindSafe(|| call_set_emission_address(env, vec![address.to_vec()]))) {
-                    Ok(_) => Ok(()),
-                    Err(e) => {
-                        if let Some(s) = e.downcast_ref::<&str>() {
-                            match *s {
-                                "invalid_address_pk" => Err(EpochError::InvalidAddressPk),
-                                _ => Err(EpochError::InvalidAddressPk),
-                            }
-                        } else {
-                            Err(EpochError::InvalidAddressPk)
-                        }
-                    }
-                }
-            }
+            EpochCall::SubmitSol { sol } => call_submit_sol(env, vec![sol]).map_err(|e| match e {
+                "sol_exists" => EpochError::SolExists,
+                "invalid_sol" | "invalid_sol_seed_size" | "invalid_sol_size" => EpochError::InvalidSol,
+                "invalid_epoch" => EpochError::InvalidEpoch,
+                "invalid_pop" => EpochError::InvalidPop,
+                _ => EpochError::InvalidSol,
+            }),
+            EpochCall::SetEmissionAddress { address } => call_set_emission_address(env, vec![address.to_vec()])
+                .map_err(|e| match e {
+                    "invalid_address_pk" => EpochError::InvalidAddressPk,
+                    _ => EpochError::InvalidAddressPk,
+                }),
             EpochCall::SlashTrainer { epoch, malicious_pk, signature, mask, trainers } => {
                 let mut args = vec![epoch.to_le_bytes().to_vec(), malicious_pk.to_vec(), signature];
                 let mask_bytes = mask.into_vec();
@@ -667,15 +642,12 @@ impl Epoch {
                             .unwrap_or_default(),
                     );
                 }
-                match catch_unwind(AssertUnwindSafe(|| call_slash_trainer(env, args))) {
-                    Ok(_) => Ok(()),
-                    Err(_) => Err(EpochError::InvalidEpoch),
-                }
+                call_slash_trainer(env, args).map_err(|_| EpochError::InvalidEpoch)
             }
         }
     }
 
-    pub fn next(&self, env: &mut crate::consensus::consensus_apply::ApplyEnv, _db: &amadeus_utils::rocksdb::RocksDb) {
+    pub fn next(&self, env: &mut ApplyEnv, _db: &amadeus_utils::rocksdb::RocksDb) {
         next(env);
     }
 }

@@ -11,6 +11,8 @@ pub enum ContractError {
     InvalidFunction(String),
     #[error("invalid arguments")]
     InvalidArgs,
+    #[error("runtime error: {0}")]
+    Runtime(&'static str),
 }
 
 /// Minimal validation for a contract WASM binary.
@@ -47,7 +49,7 @@ pub fn call(
             validate(wasmbytes)?;
 
             // Call runtime's deploy function
-            call_deploy(env, args.to_vec());
+            call_deploy(env, args.to_vec()).map_err(ContractError::Runtime)?;
             Ok(())
         }
         other => Err(ContractError::InvalidFunction(other.to_string())),

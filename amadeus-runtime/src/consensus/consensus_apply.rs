@@ -1,7 +1,6 @@
 // Consensus application environment and entry processing
 use amadeus_utils::rocksdb::{BoundColumnFamily, MultiThreaded, Transaction, TransactionDB};
 use std::collections::HashMap;
-use std::panic::panic_any;
 use std::sync::Arc;
 
 use crate::consensus::consensus_muts;
@@ -96,7 +95,8 @@ pub fn make_apply_env<'db>(
 ) -> ApplyEnv<'db> {
     // Extract inner transaction and get column family handle
     let inner = txn_wrapper.inner();
-    let cf_handle = inner.db.cf_handle(&cf_name).expect(&format!("Column family '{}' not found", cf_name));
+    // note: if column family is not found, this will panic during initialization (acceptable for database setup)
+    let cf_handle = inner.db.cf_handle(&cf_name).unwrap();
 
     // SAFETY: We're extracting the transaction from the wrapper
     // The wrapper must be consumed/leaked to avoid double-free

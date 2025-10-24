@@ -31,6 +31,8 @@ pub enum Error {
     InvalidSignature,
     #[error("not implemented: {0}")]
     NotImplemented(&'static str),
+    #[error("runtime error: {0}")]
+    Runtime(&'static str),
     #[error(transparent)]
     EtfDecode(#[from] eetf::DecodeError),
     #[error(transparent)]
@@ -273,7 +275,7 @@ fn parse_epoch_call(function: &str, args: &[Vec<u8>]) -> Result<crate::bic::epoc
 }
 
 /// Pre-process transactions: update nonces, deduct gas
-fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) {
+fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) -> Result<(), &'static str> {
     // DON'T reset here - we want to accumulate mutations from the entire entry processing
 
     let epoch = next_entry.header.height / 100_000;
@@ -284,7 +286,7 @@ fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) {
     for txu in txus {
         let nonce_key = crate::utils::misc::bcat(&[b"bic:base:nonce:", &txu.tx.signer]);
         let nonce_i64 = i64::try_from(txu.tx.nonce).unwrap_or(i64::MAX);
-        consensus_kv::kv_put(env, &nonce_key, &nonce_i64.to_string().into_bytes());
+        consensus_kv::kv_put(env, &nonce_key, &nonce_i64.to_string().into_bytes())?;
 
         let bytes = txu.tx_encoded.len() + 32 + 96;
         let exec_cost = if epoch >= 295 {
@@ -294,11 +296,12 @@ fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) {
         };
 
         let signer_balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &txu.tx.signer, b":AMA"]);
-        consensus_kv::kv_increment(env, &signer_balance_key, -exec_cost);
+        consensus_kv::kv_increment(env, &signer_balance_key, -exec_cost)?;
 
-        consensus_kv::kv_increment(env, &entry_signer_key, exec_cost / 2);
-        consensus_kv::kv_increment(env, &burn_address_key, exec_cost / 2);
+        consensus_kv::kv_increment(env, &entry_signer_key, exec_cost / 2)?;
+        consensus_kv::kv_increment(env, &burn_address_key, exec_cost / 2)?;
     }
+    Ok(())
 }
 
 // Helper functions for Mutation type
@@ -474,12 +477,12 @@ fn mutations_from_etf(bin: &[u8]) -> Result<Vec<Mutation>, Error> {
 }
 
 /// Exit logic: segment VR updates and epoch transitions
-fn call_exit(env: &mut ApplyEnv, next_entry: &Entry, db: &RocksDb) {
+fn call_exit(env: &mut ApplyEnv, next_entry: &Entry, db: &RocksDb) -> Result<(), &'static str> {
     // DON'T reset here - we want to accumulate mutations from the entire entry processing
 
     // Update segment VR hash every 1000 blocks
     if next_entry.header.height % 1000 == 0 {
-        consensus_kv::kv_put(env, b"bic:epoch:segment_vr_hash", &crate::utils::blake3::hash(&next_entry.header.vr));
+        consensus_kv::kv_put(env, b"bic:epoch:segment_vr_hash", &crate::utils::blake3::hash(&next_entry.header.vr))?;
     }
 
     // Epoch transition every 100k blocks
@@ -495,6 +498,7 @@ fn call_exit(env: &mut ApplyEnv, next_entry: &Entry, db: &RocksDb) {
         env.caller_env.attached_amount = vec![];
         let _ = crate::bic::epoch::Epoch.next(env, db);
     }
+    Ok(())
 }
 
 pub fn apply_entry(
@@ -538,7 +542,7 @@ pub fn apply_entry(
     );
 
     // pre-process transactions (nonce updates, gas deduction)
-    call_txs_pre(&mut env, next_entry, &txus);
+    call_txs_pre(&mut env, next_entry, &txus).map_err(Error::Runtime)?;
     // Collect mutations from pre-processing AFTER call_txs_pre
     let mut muts = env.muts.clone();
     let mut muts_rev = env.muts_rev.clone();
@@ -574,7 +578,7 @@ pub fn apply_entry(
     env.muts_rev.clear();
 
     // call exit logic (segment VR updates, epoch transitions)
-    call_exit(&mut env, next_entry, db);
+    call_exit(&mut env, next_entry, db).map_err(Error::Runtime)?;
 
     // get exit mutations and combine
     let muts_exit = env.muts.clone();
@@ -616,7 +620,13 @@ pub fn apply_entry(
 
     // store entry itself and index it (fabric.insert_entry handles both)
     let entry_bin = next_entry.pack()?;
-    fabric.insert_entry(&next_entry.hash, next_entry.header.height, next_entry.header.slot, &entry_bin, seen_time_ms)?;
+    fabric.insert_entry(
+        &next_entry.hash,
+        next_entry.header.height,
+        next_entry.header.slot,
+        &entry_bin,
+        seen_time_ms,
+    )?;
 
     // store transactions with results
     for (tx_packed, result) in next_entry.txs.iter().zip(tx_results.iter()) {
