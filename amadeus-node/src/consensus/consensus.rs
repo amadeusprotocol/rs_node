@@ -601,9 +601,8 @@ pub fn apply_entry(
     let trainers = fabric.trainers_for_height(next_entry.header.height).ok_or(Error::Missing("trainers_for_height"))?;
     let is_trainer = trainers.iter().any(|t| t == &pk);
 
-    // record seen time
-    let seen_time = get_unix_millis_now();
-    let seen_time_bin = encode_safe_deterministic(&Term::from(eetf::BigInteger { value: seen_time.into() }));
+    let seen_time_ms = get_unix_millis_now();
+    let seen_time_bin = encode_safe_deterministic(&Term::from(eetf::BigInteger { value: seen_time_ms.into() }));
     fabric.put_seen_time(&next_entry.hash, &seen_time_bin)?;
 
     // update chain tip
@@ -617,7 +616,7 @@ pub fn apply_entry(
 
     // store entry itself and index it (fabric.insert_entry handles both)
     let entry_bin = next_entry.pack()?;
-    fabric.insert_entry(&next_entry.hash, next_entry.header.height, next_entry.header.slot, &entry_bin, seen_time)?;
+    fabric.insert_entry(&next_entry.hash, next_entry.header.height, next_entry.header.slot, &entry_bin, seen_time_ms)?;
 
     // store transactions with results
     for (tx_packed, result) in next_entry.txs.iter().zip(tx_results.iter()) {

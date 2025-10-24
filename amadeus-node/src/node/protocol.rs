@@ -833,15 +833,13 @@ impl Protocol for NewPhoneWhoDisReply {
             return Err(Error::BadEtf("anr_ip_mismatch"));
         }
 
-        // Check if ANR timestamp is fresh (within 60 seconds like Elixir)
-        let now = crate::utils::misc::get_unix_secs_now();
-        let age_secs = now.saturating_sub(self.anr.ts);
+        let now_s = crate::utils::misc::get_unix_secs_now();
+        let age_secs = now_s.saturating_sub(self.anr.ts);
         if age_secs > 60 {
             warn!("new_phone_who_dis_reply ANR too old: {} seconds", age_secs);
             return Err(Error::BadEtf("anr_too_old"));
         }
 
-        // Insert ANR and mark as handshaked
         ctx.node_anrs.insert(self.anr.clone()).await;
         ctx.node_anrs.set_handshaked(&self.anr.pk).await;
         ctx.update_peer_from_anr(src, &self.anr.pk, &self.anr.version, Some(HandshakeStatus::Completed)).await;
@@ -1002,8 +1000,7 @@ mod tests {
         let ip = Ipv4Addr::new(127, 0, 0, 1);
         let _my_anr = anr::Anr::build(&sk, &pk, &pop, ip, Ver::new(1, 0, 0)).expect("anr");
 
-        // construct message
-        let _challenge = get_unix_secs_now();
+        let _challenge_s = get_unix_secs_now();
         let msg = NewPhoneWhoDis::new();
 
         // roundtrip serialize/deserialize
@@ -1027,7 +1024,7 @@ mod tests {
         let pop = bls_sign(&sk, &pk, crate::consensus::DST_POP).expect("pop");
         let ip = Ipv4Addr::new(127, 0, 0, 1);
         let _my_anr = anr::Anr::build(&sk, &pk, &pop, ip, Ver::new(1, 0, 0)).expect("anr");
-        let _challenge = get_unix_secs_now();
+        let _challenge_s = get_unix_secs_now();
         let _msg = NewPhoneWhoDis::new();
 
         // Test with mismatched source ip - should be handled internally now

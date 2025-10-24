@@ -543,15 +543,15 @@ impl NodePeers {
     }
 
     pub async fn update_peer_from_tip(&self, _ctx: &Context, ip: Ipv4Addr, tip: &EventTip) {
-        let current_time = get_unix_millis_now();
+        let current_time_ms = get_unix_millis_now();
         let temporal: TipInfo = tip.temporal.clone().into();
         let rooted: TipInfo = tip.rooted.clone().into();
 
         let updated = self
             .peers
             .update(&ip, |_key, peer| {
-                peer.last_seen_ms = current_time;
-                peer.last_msg = current_time;
+                peer.last_seen_ms = current_time_ms;
+                peer.last_msg = current_time_ms;
                 peer.last_msg_type = Some(tip.typename().to_string());
                 peer.temporal = Some(temporal.clone());
                 peer.rooted = Some(rooted.clone());
@@ -565,8 +565,8 @@ impl NodePeers {
                 pk: None, // Will be set during handshake
                 version: None,
                 latency: None,
-                last_msg: current_time,
-                last_seen_ms: current_time,
+                last_msg: current_time_ms,
+                last_seen_ms: current_time_ms,
                 last_ping: None,
                 last_pong: None,
                 shared_secret: None,
@@ -580,16 +580,16 @@ impl NodePeers {
     }
 
     pub async fn update_peer_from_pong(&self, ip: Ipv4Addr, pong: &PingReply) {
-        let current_time = get_unix_millis_now();
-        let latency = current_time.saturating_sub(pong.ts_m);
+        let current_time_ms = get_unix_millis_now();
+        let latency = current_time_ms.saturating_sub(pong.ts_m);
 
         let updated = self
             .peers
             .update(&ip, |_key, peer| {
                 peer.latency = Some(latency);
-                peer.last_pong = Some(current_time);
-                peer.last_seen_ms = current_time;
-                peer.last_msg = current_time;
+                peer.last_pong = Some(current_time_ms);
+                peer.last_seen_ms = current_time_ms;
+                peer.last_msg = current_time_ms;
                 peer.last_msg_type = Some("pong".to_string());
             })
             .await
@@ -602,13 +602,13 @@ impl NodePeers {
                 pk: None,
                 version: None,
                 latency: Some(latency),
-                last_msg: current_time,
+                last_msg: current_time_ms,
                 last_ping: None,
-                last_pong: Some(current_time),
+                last_pong: Some(current_time_ms),
                 shared_secret: None,
                 temporal: None,
                 rooted: None,
-                last_seen_ms: current_time,
+                last_seen_ms: current_time_ms,
                 last_msg_type: Some("pong".to_string()),
                 handshake_status: HandshakeStatus::None,
             };
@@ -618,14 +618,13 @@ impl NodePeers {
 
     /// Update peer activity and last message type
     pub async fn update_peer_from_proto(&self, ip: Ipv4Addr, last_msg_type: &str) {
-        let current_time = get_unix_millis_now();
+        let current_time_ms = get_unix_millis_now();
 
-        // Try to update existing peer first
         let updated = self
             .peers
             .update(&ip, |_key, peer| {
-                peer.last_seen_ms = current_time;
-                peer.last_msg = current_time;
+                peer.last_seen_ms = current_time_ms;
+                peer.last_msg = current_time_ms;
                 peer.last_msg_type = Some(last_msg_type.to_string());
             })
             .await
@@ -638,13 +637,13 @@ impl NodePeers {
                 pk: None,
                 version: None,
                 latency: None,
-                last_msg: current_time,
+                last_msg: current_time_ms,
                 last_ping: None,
                 last_pong: None,
                 shared_secret: None,
                 temporal: None,
                 rooted: None,
-                last_seen_ms: current_time,
+                last_seen_ms: current_time_ms,
                 last_msg_type: Some(last_msg_type.to_string()),
                 handshake_status: HandshakeStatus::None,
             };
@@ -670,14 +669,14 @@ impl NodePeers {
         version: &Ver,
         status: Option<HandshakeStatus>,
     ) {
-        let current_time = get_unix_millis_now();
+        let current_time_ms = get_unix_millis_now();
 
         let updated = self
             .peers
             .update(&ip, |_key, peer| {
                 peer.pk = Some(*pk);
                 peer.version = Some(*version);
-                peer.last_seen_ms = current_time;
+                peer.last_seen_ms = current_time_ms;
                 if let Some(status) = &status {
                     peer.handshake_status = status.clone();
                 }
@@ -692,13 +691,13 @@ impl NodePeers {
                 pk: Some(*pk),
                 version: Some(*version),
                 latency: None,
-                last_msg: current_time,
+                last_msg: current_time_ms,
                 last_ping: None,
                 last_pong: None,
                 shared_secret: None,
                 temporal: None,
                 rooted: None,
-                last_seen_ms: current_time,
+                last_seen_ms: current_time_ms,
                 last_msg_type: None,
                 handshake_status: status.unwrap_or(HandshakeStatus::None),
             };
@@ -711,11 +710,11 @@ impl NodePeers {
         let mut online_trainers = Vec::new();
         let mut online_nontrainers = Vec::new();
 
-        let now = get_unix_millis_now();
+        let now_ms = get_unix_millis_now();
         self.peers
             .scan(|_, peer| {
                 if let Some(pk) = peer.pk
-                    && peer.last_seen_ms > now - 30_000
+                    && peer.last_seen_ms > now_ms - 30_000
                 {
                     if trainer_pks.contains(&pk) {
                         online_trainers.push(peer.clone());

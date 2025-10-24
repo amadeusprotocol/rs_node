@@ -133,9 +133,8 @@ impl Anr {
         anr_name: Option<String>,
         anr_desc: Option<String>,
     ) -> Result<Self, Error> {
-        let ts = get_unix_secs_now();
+        let ts_s = get_unix_secs_now();
 
-        // Compute Blake3 hash fields for indexing (v1.1.8 compatibility)
         let pk_b3 = blake3::hash(pk);
         let mut pk_b3_f4 = [0u8; 4];
         pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
@@ -145,7 +144,7 @@ impl Anr {
             pk: *pk,
             pop: pop.to_vec(),
             port: 36969,
-            ts,
+            ts: ts_s,
             version,
             anr_name,
             anr_desc,
@@ -154,7 +153,7 @@ impl Anr {
             hasChainPop: false,
             error: None,
             error_tries: 0,
-            next_check: ts + 3,
+            next_check: ts_s + 3,
             pk_b3,
             pk_b3_f4,
         };
@@ -246,9 +245,8 @@ impl Anr {
 
     // verify and unpack anr from untrusted source
     pub fn verify_and_unpack(anr: Anr) -> Result<Anr, Error> {
-        // check not wound into future (60 min tolerance)
-        let now_ts = get_unix_secs_now();
-        if (anr.ts as i64) - (now_ts as i64) > 3600 {
+        let now_s = get_unix_secs_now();
+        if (anr.ts as i64) - (now_s as i64) > 3600 {
             return Err(Error::InvalidTimestamp);
         }
 
@@ -641,12 +639,10 @@ mod tests {
         // create test keys with unique pk to avoid conflicts
         let _sk = [1; 32];
         let mut pk = [2; 48];
-        // make pk unique per test run to avoid collision with parallel tests
         let pid_bytes = std::process::id().to_le_bytes();
-        let time_bytes =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos().to_le_bytes();
+        let now_ns_bytes = crate::utils::misc::get_unix_nanos_now().to_le_bytes();
         pk[..4].copy_from_slice(&pid_bytes);
-        pk[4..12].copy_from_slice(&time_bytes[..8]);
+        pk[4..12].copy_from_slice(&now_ns_bytes[..8]);
 
         let pop = vec![3; 96];
         let ip4 = Ipv4Addr::new(127, 0, 0, 1);
@@ -719,10 +715,9 @@ mod tests {
         // create unique pk for this test
         let mut pk = [1; 48];
         let pid_bytes = std::process::id().to_le_bytes();
-        let time_bytes =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos().to_le_bytes();
+        let now_ns_bytes = crate::utils::misc::get_unix_nanos_now().to_le_bytes();
         pk[..4].copy_from_slice(&pid_bytes);
-        pk[4..12].copy_from_slice(&time_bytes[..8]);
+        pk[4..12].copy_from_slice(&now_ns_bytes[..8]);
         let pop = vec![2; 96];
         let ip4 = Ipv4Addr::new(192, 168, 1, 1);
         let version = Ver::new(1, 0, 0);
@@ -846,10 +841,8 @@ mod tests {
         // Create 5 unique not-handshaked ANRs
         for i in 1..=5 {
             let mut pk = [i as u8; 48];
-            // Make unique by adding time component
-            let time_bytes =
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos().to_le_bytes();
-            pk[40..48].copy_from_slice(&time_bytes[..8]);
+            let now_ns_bytes = crate::utils::misc::get_unix_nanos_now().to_le_bytes();
+            pk[40..48].copy_from_slice(&now_ns_bytes[..8]);
 
             // compute Blake3 fields for this pk
             let pk_b3 = blake3::hash(&pk);

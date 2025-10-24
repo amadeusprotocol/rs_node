@@ -389,10 +389,7 @@ pub fn build(
     // choose nonce: Elixir uses :os.system_time(:nanosecond)
     let nonce_val: i128 = match nonce {
         Some(n) => n as i128,
-        None => {
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-            now.as_nanos() as i128
-        }
+        None => crate::utils::misc::get_unix_nanos_now() as i128,
     };
 
     // Build action map

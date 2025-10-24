@@ -674,9 +674,7 @@ impl Context {
             }
 
             Instruction::ReceivedEntry { entry } => {
-                // Handle received blockchain entry (from catchup)
-                // info!("received entry, height: {}", entry.header.height);
-                let seen_time = get_unix_millis_now();
+                let seen_time_ms = get_unix_millis_now();
                 match entry.pack() {
                     Ok(entry_bin) => {
                         if let Err(e) = self.fabric.insert_entry(
@@ -684,7 +682,7 @@ impl Context {
                             entry.header.height,
                             entry.header.slot,
                             &entry_bin,
-                            seen_time,
+                            seen_time_ms,
                         ) {
                             warn!("Failed to insert entry at height {}: {}", entry.header.height, e);
                         } else {

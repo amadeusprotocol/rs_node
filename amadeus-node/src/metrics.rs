@@ -242,8 +242,8 @@ impl Metrics {
 
     // Small convenience function to get uptime
     pub fn get_uptime(&self) -> u32 {
-        let now = get_unix_secs_now();
-        now.saturating_sub(self.start_time)
+        let now_s = get_unix_secs_now();
+        now_s.saturating_sub(self.start_time)
     }
 
     fn get_udp_stats(&self, uptime_seconds: u32) -> (UdpStats, UdpStats) {
