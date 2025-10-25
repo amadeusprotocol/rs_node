@@ -1,7 +1,7 @@
+use crate::Context;
 use crate::node::protocol::{self, Protocol};
 use crate::utils::misc::{TermMap, Typename};
 use crate::utils::safe_etf::encode_safe;
-use crate::Context;
 use amadeus_runtime::consensus::bic::sol::SOL_SIZE;
 use eetf::{Atom, Binary, Map, Term};
 use std::collections::HashMap;
@@ -147,11 +147,7 @@ impl Protocol for Solution {
         Ok(encode_safe(&term))
     }
 
-    async fn handle(
-        &self,
-        _ctx: &Context,
-        _src: Ipv4Addr,
-    ) -> Result<Vec<protocol::Instruction>, protocol::Error> {
+    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
         Ok(vec![protocol::Instruction::ReceivedSol { sol: self.clone() }])
     }
 }

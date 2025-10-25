@@ -84,6 +84,12 @@ mod tests {
         test_apply_entry_at_height(34076432, hash.try_into().map_err(|_| "invalid hash")?).await
     }
 
+    #[tokio::test]
+    async fn test_apply_entry_34099999() -> Result<(), Box<dyn std::error::Error>> {
+        let hash = bs58::decode("fR28rtEYFfm6iwWDrJXvQjEBJNT1NZNak52NTwFuiU3").into_vec()?;
+        test_apply_entry_at_height(34099998, hash.try_into().map_err(|_| "invalid hash")?).await
+    }
+
     async fn test_apply_entry_at_height(
         height: u32,
         expected_muts_hash: [u8; 32],

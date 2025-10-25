@@ -150,6 +150,58 @@ pub fn kv_get_prev(env: &mut ApplyEnv, prefix: &[u8], key: &[u8]) -> Option<(Vec
     }
 }
 
+/// Get all key-value pairs with the given prefix
+/// Returns vector of (key_without_prefix, value_bytes)
+pub fn kv_get_prefix(env: &ApplyEnv, prefix: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut results = Vec::new();
+    let mut iter = env.txn.raw_iterator_cf(&env.cf);
+    iter.seek(prefix);
+
+    while iter.valid() {
+        if let (Some(key), Some(value)) = (iter.key(), iter.value())
+            && key.starts_with(prefix)
+        {
+            // extract key without prefix
+            let key_without_prefix = key[prefix.len()..].to_vec();
+            results.push((key_without_prefix, value.to_vec()));
+
+            iter.next();
+        } else {
+            break;
+        }
+    }
+
+    results
+}
+
+/// Clear all keys with the given prefix, tracking mutations for revert
+pub fn kv_clear_prefix(env: &mut ApplyEnv, prefix: &[u8]) -> Result<()> {
+    // collect all keys with this prefix in a separate scope to drop the iterator
+    let mut keys_to_delete = Vec::new();
+    let mut iter = env.txn.raw_iterator_cf(&env.cf);
+    iter.seek(prefix);
+
+    while iter.valid() {
+        if let Some(key) = iter.key()
+            && key.starts_with(prefix)
+        {
+            keys_to_delete.push(key.to_vec());
+            iter.next();
+        } else {
+            break;
+        }
+    }
+
+    drop(iter); // must explicitly go out of scope before modifying env
+
+    // now we can delete each key and track mutations
+    for key in keys_to_delete {
+        let _ = kv_delete(env, &key)?;
+    }
+
+    Ok(())
+}
+
 pub fn revert(env: &mut ApplyEnv) -> Result<()> {
     for m in env.muts_rev.clone() {
         match m {

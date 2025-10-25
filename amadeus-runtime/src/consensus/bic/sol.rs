@@ -52,4 +52,3 @@ pub fn verify(
     }
     Ok(verify_hash_diff(usol.epoch, solhash, diff_bits) && blake3::freivalds_e260(sol, vr_b3))
 }
-

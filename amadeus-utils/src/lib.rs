@@ -4,6 +4,7 @@ pub mod bls12_381;
 pub mod compression;
 pub mod constants;
 pub mod database;
+pub mod exsss;
 pub mod ip_resolver;
 pub mod misc;
 pub mod reed_solomon;

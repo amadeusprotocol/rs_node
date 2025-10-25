@@ -478,7 +478,13 @@ fn mutations_from_etf(bin: &[u8]) -> Result<Vec<Mutation>, Error> {
 
 /// Exit logic: segment VR updates and epoch transitions
 fn call_exit(env: &mut ApplyEnv, next_entry: &Entry, db: &RocksDb) -> Result<(), &'static str> {
-    // DON'T reset here - we want to accumulate mutations from the entire entry processing
+    // seed random (matches Elixir: seed_random(env.entry_vr, "", "", ""))
+    let vr = next_entry.header.vr.to_vec();
+    let seed_hash = crate::utils::blake3::hash(&vr);
+    env.caller_env.seed = seed_hash.to_vec();
+    // extract f64 from first 8 bytes of seed_hash in little-endian
+    let seedf64 = f64::from_le_bytes(seed_hash[0..8].try_into().unwrap_or([0u8; 8]));
+    env.caller_env.seedf64 = seedf64;
 
     // Update segment VR hash every 1000 blocks
     if next_entry.header.height % 1000 == 0 {
