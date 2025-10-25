@@ -563,7 +563,7 @@ pub fn call_slash_trainer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), 
         kv_get_trainers(env, &bcat(&[b"bic:epoch:trainers:removed:", epoch.to_string().as_bytes()]))?;
     trainers_removed.push(malicious_pk.to_vec());
     let term_trainers_removed =
-        consensus::bic::eetf_list_of_binaries(trainers_removed).map_err(|_| "eetf_encoding_failed")?;
+        amadeus_utils::misc::eetf_list_of_binaries(trainers_removed).map_err(|_| "eetf_encoding_failed")?;
     kv_put(
         env,
         &bcat(&[b"bic:epoch:trainers:removed:", epoch.to_string().as_bytes()]),
@@ -571,7 +571,7 @@ pub fn call_slash_trainer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), 
     )?;
 
     trainers.retain(|pk| pk.as_slice() != malicious_pk);
-    let term_trainers = consensus::bic::eetf_list_of_binaries(trainers).map_err(|_| "eetf_encoding_failed")?;
+    let term_trainers = amadeus_utils::misc::eetf_list_of_binaries(trainers).map_err(|_| "eetf_encoding_failed")?;
     kv_put(env, &bcat(&[b"bic:epoch:trainers:", epoch.to_string().as_bytes()]), term_trainers.as_slice())?;
 
     let height = format!("{:012}", env.caller_env.entry_height.saturating_add(1)).into_bytes();
@@ -582,7 +582,6 @@ pub fn call_slash_trainer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), 
 pub fn next(env: &mut ApplyEnv) {
     let epoch_cur = env.caller_env.entry_epoch;
 
-    // use next_420 logic for epochs >= 295 (but not >= 420)
     if epoch_cur >= 295 && epoch_cur < 420 {
         next_420(env);
     } else {
@@ -590,130 +589,12 @@ pub fn next(env: &mut ApplyEnv) {
     }
 }
 
-fn next_pre_420(env: &mut ApplyEnv) {
-    use crate::consensus::consensus_kv::{kv_clear_prefix, kv_get_prefix, kv_put};
-    use amadeus_utils::exsss::Exsss;
-    use amadeus_utils::misc::TermExt;
-
-    let epoch_cur = env.caller_env.entry_epoch;
-    let epoch_next = epoch_cur + 1;
-
-    // get removed trainers
-    let removed_key = bcat(&[b"bic:epoch:trainers:removed:", &epoch_cur.to_string().as_bytes()]);
-    let removed_trainers: Vec<Vec<u8>> = kv_get(env, &removed_key)
-        .ok()
-        .flatten()
-        .and_then(|bytes| {
-            let term = eetf::Term::decode(&bytes[..]).ok()?;
-            let list = term.get_list()?;
-            Some(list.iter().filter_map(|t| t.get_binary()).map(|b| b.to_vec()).collect())
-        })
-        .unwrap_or_default();
-
-    // get all solution counts
-    let leaders_raw = kv_get_prefix(env, b"bic:epoch:solutions_count:");
-    let mut leaders: Vec<(Vec<u8>, i128)> = leaders_raw
-        .into_iter()
-        .filter_map(|(pk_bytes, value_bytes)| {
-            if removed_trainers.contains(&pk_bytes) {
-                return None;
-            }
-            atoi::atoi::<i128>(&value_bytes).map(|count| (pk_bytes, count))
-        })
-        .collect();
-
-    leaders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
-
-    // get current trainers
-    let trainers_key = bcat(&[b"bic:epoch:trainers:", &epoch_cur.to_string().as_bytes()]);
-    let trainers: Vec<Vec<u8>> = kv_get_trainers(env, &trainers_key).unwrap_or_default();
-
-    // filter leaders to only current trainers
-    let trainers_to_recv_emissions: Vec<_> =
-        leaders.iter().filter(|(pk, _)| trainers.iter().any(|t| t == pk)).take(99).collect();
-
-    let epoch_total_emission = epoch_emission(epoch_cur);
-    let total_sols: i128 = trainers_to_recv_emissions.iter().map(|(_, count)| count).sum();
-
-    if total_sols > 0 {
-        for (trainer, trainer_sols) in &trainers_to_recv_emissions {
-            let coins = (trainer_sols * epoch_total_emission) / total_sols;
-            let emission_addr_key = bcat(&[b"bic:epoch:emission_address:", trainer]);
-            let emission_address = kv_get(env, &emission_addr_key).ok().flatten();
-
-            let balance_key = if let Some(addr) = emission_address {
-                bcat(&[b"bic:coin:balance:", &addr, b":AMA"])
-            } else {
-                bcat(&[b"bic:coin:balance:", trainer, b":AMA"])
-            };
-
-            let _ = kv_increment(env, &balance_key, coins);
-        }
-    }
-
-    let _ = kv_clear_prefix(env, b"bic:epoch:solbloom:");
-    let _ = kv_clear_prefix(env, b"bic:epoch:solutions_count:");
-
-    // build new validators
-    let leader_pks: Vec<Vec<u8>> = leaders.iter().map(|(pk, _)| pk.clone()).collect();
-    let filtered_leaders: Vec<Vec<u8>> =
-        leader_pks.into_iter().filter(|pk| !PEDDLEBIKE67.iter().any(|p| p.as_slice() == pk.as_slice())).collect();
-
-    let mut new_validators: Vec<Vec<u8>> = PEDDLEBIKE67.iter().map(|p| p.to_vec()).collect();
-    new_validators.extend(filtered_leaders);
-    new_validators.truncate(99);
-
-    // Shuffle using exsss RNG (matching Elixir Enum.shuffle)
-    let seed_bytes = &env.caller_env.seed;
-    let seed_array: [u8; 32] = seed_bytes.get(..32).and_then(|s| s.try_into().ok()).unwrap_or([0u8; 32]);
-    let mut rng = Exsss::from_seed(&seed_array);
-    rng.shuffle(&mut new_validators);
-
-    let term = crate::consensus::bic::eetf_list_of_binaries(new_validators).unwrap_or_default();
-
-    let trainers_next_key = bcat(&[b"bic:epoch:trainers:", &epoch_next.to_string().as_bytes()]);
-    let _ = kv_put(env, &trainers_next_key, &term);
-
-    let height = format!("{:012}", env.caller_env.entry_height + 1);
-    let trainers_height_key = bcat(&[b"bic:epoch:trainers:height:", height.as_bytes()]);
-    let _ = kv_put(env, &trainers_height_key, &term);
-}
-
 fn next_420(env: &mut ApplyEnv) {
-    use crate::consensus::consensus_kv::{kv_clear_prefix, kv_get_prefix, kv_put};
-    use amadeus_utils::exsss::Exsss;
-    use amadeus_utils::misc::TermExt;
-
     let epoch_cur = env.caller_env.entry_epoch;
     let epoch_next = epoch_cur + 1;
 
-    // get removed trainers
-    let removed_key = bcat(&[b"bic:epoch:trainers:removed:", &epoch_cur.to_string().as_bytes()]);
-    let removed_trainers: Vec<Vec<u8>> = kv_get(env, &removed_key)
-        .ok()
-        .flatten()
-        .and_then(|bytes| {
-            let term = eetf::Term::decode(&bytes[..]).ok()?;
-            let list = term.get_list()?;
-            Some(list.iter().filter_map(|t| t.get_binary()).map(|b| b.to_vec()).collect())
-        })
-        .unwrap_or_default();
+    let leaders = get_sorted_leaders_excluding_removed(env, epoch_cur);
 
-    // get all solution counts
-    let leaders_raw = kv_get_prefix(env, b"bic:epoch:solutions_count:");
-    let mut leaders: Vec<(Vec<u8>, i128)> = leaders_raw
-        .into_iter()
-        .filter_map(|(pk_bytes, value_bytes)| {
-            if removed_trainers.contains(&pk_bytes) {
-                return None;
-            }
-            atoi::atoi::<i128>(&value_bytes).map(|count| (pk_bytes, count))
-        })
-        .collect();
-
-    leaders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
-
-    // get current trainers
     let trainers_key = bcat(&[b"bic:epoch:trainers:", &epoch_cur.to_string().as_bytes()]);
     let trainers: Vec<Vec<u8>> = kv_get_trainers(env, &trainers_key).unwrap_or_default();
 
@@ -730,14 +611,139 @@ fn next_420(env: &mut ApplyEnv) {
     let epoch_early_adopter_emission = epoch_total_emission / 7;
     let epoch_communityfund_emission = epoch_total_emission - epoch_early_adopter_emission;
 
-    // distribute community fund to peddlebike67
+    distribute_peddlebike67_community_fund(env, epoch_communityfund_emission);
+
+    let total_sols: i128 = trainers_to_recv_emissions.iter().map(|(_, count)| count).sum();
+    distribute_emissions_to_trainers(env, &trainers_to_recv_emissions, epoch_early_adopter_emission, total_sols);
+
+    let new_validators = build_and_shuffle_new_validators(env, &leaders);
+    store_new_trainers_for_next_epoch(env, epoch_next, new_validators);
+
+    update_difficulty_and_log_sols(env, epoch_cur, epoch_next, total_sols);
+    clear_epoch_data(env);
+}
+
+fn next_pre_420(env: &mut ApplyEnv) {
+    let epoch_cur = env.caller_env.entry_epoch;
+    let epoch_next = epoch_cur + 1;
+
+    let leaders = get_sorted_leaders_excluding_removed(env, epoch_cur);
+
+    let trainers_key = bcat(&[b"bic:epoch:trainers:", &epoch_cur.to_string().as_bytes()]);
+    let trainers: Vec<Vec<u8>> = kv_get_trainers(env, &trainers_key).unwrap_or_default();
+
+    let trainers_to_recv_emissions: Vec<_> =
+        leaders.iter().filter(|(pk, _)| trainers.iter().any(|t| t == pk)).take(99).collect();
+
+    let epoch_total_emission = epoch_emission(epoch_cur);
+    let total_sols: i128 = trainers_to_recv_emissions.iter().map(|(_, count)| count).sum();
+
+    distribute_emissions_to_trainers(env, &trainers_to_recv_emissions, epoch_total_emission, total_sols);
+
+    let new_validators = build_and_shuffle_new_validators(env, &leaders);
+    store_new_trainers_for_next_epoch(env, epoch_next, new_validators);
+    clear_epoch_data(env);
+}
+
+fn get_sorted_leaders_excluding_removed(env: &ApplyEnv, epoch: u64) -> Vec<(Vec<u8>, i128)> {
+    use crate::consensus::consensus_kv::kv_get_prefix;
+    use amadeus_utils::misc::TermExt;
+
+    let removed_key = bcat(&[b"bic:epoch:trainers:removed:", &epoch.to_string().as_bytes()]);
+    let removed_trainers: Vec<Vec<u8>> = kv_get(env, &removed_key)
+        .ok()
+        .flatten()
+        .and_then(|bytes| {
+            let term = eetf::Term::decode(&bytes[..]).ok()?;
+            let list = term.get_list()?;
+            Some(list.iter().filter_map(|t| t.get_binary()).map(|b| b.to_vec()).collect())
+        })
+        .unwrap_or_default();
+
+    let leaders_raw = kv_get_prefix(env, b"bic:epoch:solutions_count:");
+    let mut leaders: Vec<(Vec<u8>, i128)> = leaders_raw
+        .into_iter()
+        .filter_map(|(pk_bytes, value_bytes)| {
+            if removed_trainers.contains(&pk_bytes) {
+                return None;
+            }
+            atoi::atoi::<i128>(&value_bytes).map(|count| (pk_bytes, count))
+        })
+        .collect();
+
+    leaders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
+    leaders
+}
+
+fn distribute_emissions_to_trainers(
+    env: &mut ApplyEnv,
+    trainers_to_recv: &[&(Vec<u8>, i128)],
+    total_emission: i128,
+    total_sols: i128,
+) {
+    if total_sols == 0 {
+        return;
+    }
+
+    for (trainer, trainer_sols) in trainers_to_recv {
+        let coins = (trainer_sols * total_emission) / total_sols;
+        let emission_addr_key = bcat(&[b"bic:epoch:emission_address:", trainer]);
+        let emission_address = kv_get(env, &emission_addr_key).ok().flatten();
+
+        let balance_key = if let Some(addr) = emission_address {
+            bcat(&[b"bic:coin:balance:", &addr, b":AMA"])
+        } else {
+            bcat(&[b"bic:coin:balance:", trainer, b":AMA"])
+        };
+
+        let _ = kv_increment(env, &balance_key, coins);
+    }
+}
+
+fn build_and_shuffle_new_validators(env: &ApplyEnv, leaders: &[(Vec<u8>, i128)]) -> Vec<Vec<u8>> {
+    use amadeus_utils::exsss::Exsss;
+
+    let leader_pks: Vec<Vec<u8>> = leaders.iter().map(|(pk, _)| pk.clone()).collect();
+    let filtered_leaders: Vec<Vec<u8>> =
+        leader_pks.into_iter().filter(|pk| !PEDDLEBIKE67.iter().any(|p| p.as_slice() == pk.as_slice())).collect();
+
+    let mut new_validators: Vec<Vec<u8>> = PEDDLEBIKE67.iter().map(|p| p.to_vec()).collect();
+    new_validators.extend(filtered_leaders);
+    new_validators.truncate(99);
+
+    let seed_bytes = &env.caller_env.seed;
+    let seed_array: [u8; 32] = seed_bytes.get(..32).and_then(|s| s.try_into().ok()).unwrap_or([0u8; 32]);
+    let mut rng = Exsss::from_seed(&seed_array);
+    rng.shuffle(&mut new_validators);
+
+    new_validators
+}
+
+fn store_new_trainers_for_next_epoch(env: &mut ApplyEnv, epoch_next: u64, new_validators: Vec<Vec<u8>>) {
+    use crate::consensus::consensus_kv::kv_put;
+    let term = amadeus_utils::misc::eetf_list_of_binaries(new_validators).unwrap_or_default();
+
+    let trainers_next_key = bcat(&[b"bic:epoch:trainers:", &epoch_next.to_string().as_bytes()]);
+    let _ = kv_put(env, &trainers_next_key, &term);
+
+    let height = format!("{:012}", env.caller_env.entry_height + 1);
+    let trainers_height_key = bcat(&[b"bic:epoch:trainers:height:", height.as_bytes()]);
+    let _ = kv_put(env, &trainers_height_key, &term);
+}
+
+fn clear_epoch_data(env: &mut ApplyEnv) {
+    use crate::consensus::consensus_kv::kv_clear_prefix;
+    let _ = kv_clear_prefix(env, b"bic:epoch:solbloom:");
+    let _ = kv_clear_prefix(env, b"bic:epoch:solutions_count:");
+}
+
+fn distribute_peddlebike67_community_fund(env: &mut ApplyEnv, total_emission: i128) {
     let n_count = PEDDLEBIKE67.len() as i128;
-    let q = epoch_communityfund_emission / n_count;
-    let r = epoch_communityfund_emission % n_count;
+    let q = total_emission / n_count;
+    let r = total_emission % n_count;
 
     for (i, peddle_pk) in PEDDLEBIKE67.iter().enumerate() {
         let coins = if (i as i128) < r { q + 1 } else { q };
-
         let emission_addr_key = bcat(&[b"bic:epoch:emission_address:", peddle_pk.as_slice()]);
         let emission_address = kv_get(env, &emission_addr_key).ok().flatten();
 
@@ -749,67 +755,21 @@ fn next_420(env: &mut ApplyEnv) {
 
         let _ = kv_increment(env, &balance_key, coins);
     }
+}
 
-    // distribute early adopter emission to trainers with sols
-    let total_sols: i128 = trainers_to_recv_emissions.iter().map(|(_, count)| count).sum();
-
-    if total_sols > 0 {
-        for (trainer, trainer_sols) in &trainers_to_recv_emissions {
-            let coins = (trainer_sols * epoch_early_adopter_emission) / total_sols;
-
-            let emission_addr_key = bcat(&[b"bic:epoch:emission_address:", trainer]);
-            let emission_address = kv_get(env, &emission_addr_key).ok().flatten();
-
-            let balance_key = if let Some(addr) = emission_address {
-                bcat(&[b"bic:coin:balance:", &addr, b":AMA"])
-            } else {
-                bcat(&[b"bic:coin:balance:", trainer, b":AMA"])
-            };
-
-            let _ = kv_increment(env, &balance_key, coins);
-        }
-    }
-
-    // build new validators
-    let leader_pks: Vec<Vec<u8>> = leaders.iter().map(|(pk, _)| pk.clone()).collect();
-    let filtered_leaders: Vec<Vec<u8>> =
-        leader_pks.into_iter().filter(|pk| !PEDDLEBIKE67.iter().any(|p| p.as_slice() == pk.as_slice())).collect();
-
-    let mut new_validators: Vec<Vec<u8>> = PEDDLEBIKE67.iter().map(|p| p.to_vec()).collect();
-    new_validators.extend(filtered_leaders);
-    new_validators.truncate(99);
-
-    // Shuffle using exsss RNG (matching Elixir Enum.shuffle)
-    let seed_bytes = &env.caller_env.seed;
-    let seed_array: [u8; 32] = seed_bytes.get(..32).and_then(|s| s.try_into().ok()).unwrap_or([0u8; 32]);
-    let mut rng = Exsss::from_seed(&seed_array);
-    rng.shuffle(&mut new_validators);
-
-    let term = crate::consensus::bic::eetf_list_of_binaries(new_validators).unwrap_or_default();
-
-    let trainers_next_key = bcat(&[b"bic:epoch:trainers:", &epoch_next.to_string().as_bytes()]);
-    let _ = kv_put(env, &trainers_next_key, &term);
-
-    let height = format!("{:012}", env.caller_env.entry_height + 1);
-    let trainers_height_key = bcat(&[b"bic:epoch:trainers:height:", height.as_bytes()]);
-    let _ = kv_put(env, &trainers_height_key, &term);
-
-    // new difficulty handling
+fn update_difficulty_and_log_sols(env: &mut ApplyEnv, epoch_cur: u64, epoch_next: u64, total_sols: i128) {
+    use crate::consensus::consensus_kv::kv_put;
     let old_diff_bits =
         kv_get(env, b"bic:epoch:diff_bits").ok().flatten().and_then(|bytes| atoi::atoi::<u32>(&bytes)).unwrap_or(24);
 
     let next_diff_bits = crate::consensus::bic::sol_difficulty::next(old_diff_bits, total_sols as u64);
     let _ = kv_put(env, b"bic:epoch:diff_bits", next_diff_bits.to_string().as_bytes());
 
-    // log for analysis
     let diff_key = format!("bic:epoch:diff_bits:{}", epoch_next);
     let _ = kv_put(env, diff_key.as_bytes(), next_diff_bits.to_string().as_bytes());
 
     let sols_key = format!("bic:epoch:total_sols:{}", epoch_cur);
     let _ = kv_put(env, sols_key.as_bytes(), total_sols.to_string().as_bytes());
-
-    let _ = kv_clear_prefix(env, b"bic:epoch:solbloom:");
-    let _ = kv_clear_prefix(env, b"bic:epoch:solutions_count:");
 }
 
 // Compatibility wrappers for amadeus-node
@@ -867,7 +827,7 @@ impl Epoch {
                 args.push(mask_bytes);
                 if let Some(t) = trainers {
                     args.push(
-                        crate::consensus::bic::eetf_list_of_binaries(t.into_iter().map(|pk| pk.to_vec()).collect())
+                        amadeus_utils::misc::eetf_list_of_binaries(t.into_iter().map(|pk| pk.to_vec()).collect())
                             .unwrap_or_default(),
                     );
                 }

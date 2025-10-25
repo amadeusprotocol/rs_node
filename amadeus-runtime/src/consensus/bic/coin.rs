@@ -160,7 +160,7 @@ pub fn call_create_and_mint(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()
 
     let mut admin = Vec::new();
     admin.push(env.caller_env.account_caller.to_vec());
-    let term_admins = consensus::bic::eetf_list_of_binaries(admin).map_err(|_| "eetf_encoding_failed")?;
+    let term_admins = amadeus_utils::misc::eetf_list_of_binaries(admin).map_err(|_| "eetf_encoding_failed")?;
     kv_put(env, &bcat(&[b"bic:coin:permission:", &symbol]), &term_admins)?;
 
     if mintable == b"true" {

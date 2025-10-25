@@ -231,6 +231,15 @@ impl TermMap {
     }
 }
 
+/// Encode a list of binary values as ETF term
+pub fn eetf_list_of_binaries(list_of_binaries: Vec<Vec<u8>>) -> Result<Vec<u8>, eetf::EncodeError> {
+    let elements: Vec<Term> = list_of_binaries.into_iter().map(|bytes| Term::from(Binary { bytes })).collect();
+    let term = Term::from(List::from(elements));
+    let mut out = Vec::new();
+    term.encode(&mut out)?;
+    Ok(out)
+}
+
 pub fn bitvec_to_bin(mask: &BitVec<u8, Msb0>) -> Vec<u8> {
     mask.as_raw_slice().to_vec()
 }
