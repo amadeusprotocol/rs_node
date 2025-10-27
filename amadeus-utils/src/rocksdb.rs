@@ -57,7 +57,7 @@ pub struct DbHandles {
 /// Instance-oriented wrapper to be used from Context
 #[derive(Clone)]
 pub struct RocksDb {
-    handles: std::sync::Arc<DbHandles>,
+    pub handles: std::sync::Arc<DbHandles>,
 }
 
 impl std::fmt::Debug for RocksDb {
@@ -93,14 +93,14 @@ pub fn init_for_test(base: &str) -> Result<TestDbGuard, Error> {
 
     let block_cache = Cache::new_lru_cache(2 * 1024 * 1024 * 1024);
     let wbm =
-        WriteBufferManager::new_write_buffer_manager_with_cache(1 * 1024 * 1024 * 1024, true, block_cache.clone());
+        WriteBufferManager::new_write_buffer_manager_with_cache(4 * 1024 * 1024 * 1024, false, block_cache.clone());
 
     let mut db_opts = Options::default();
     db_opts.create_if_missing(true);
     db_opts.create_missing_column_families(true);
     db_opts.set_max_open_files(30000);
-    db_opts.increase_parallelism(4);
-    db_opts.set_max_background_jobs(8);
+    db_opts.increase_parallelism(8);
+    db_opts.set_max_background_jobs(32);
     db_opts.set_write_buffer_manager(&wbm);
     db_opts.set_max_total_wal_size(2 * 1024 * 1024 * 1024);
     db_opts.set_target_file_size_base(8 * 1024 * 1024 * 1024);
@@ -148,9 +148,9 @@ pub fn init_for_test(base: &str) -> Result<TestDbGuard, Error> {
             cf_opts.set_write_buffer_size(64 * 1024 * 1024);
             cf_opts.set_max_write_buffer_number(6);
             cf_opts.set_min_write_buffer_number_to_merge(2);
-            cf_opts.set_level_zero_file_num_compaction_trigger(20);
-            cf_opts.set_level_zero_slowdown_writes_trigger(40);
-            cf_opts.set_level_zero_stop_writes_trigger(100);
+            cf_opts.set_level_zero_file_num_compaction_trigger(40);
+            cf_opts.set_level_zero_slowdown_writes_trigger(80);
+            cf_opts.set_level_zero_stop_writes_trigger(200);
             cf_opts.set_max_subcompactions(2);
             ColumnFamilyDescriptor::new(name, cf_opts)
         })
@@ -188,14 +188,14 @@ impl RocksDb {
 
         let block_cache = Cache::new_lru_cache(2 * 1024 * 1024 * 1024);
         let wbm =
-            WriteBufferManager::new_write_buffer_manager_with_cache(1 * 1024 * 1024 * 1024, true, block_cache.clone());
+            WriteBufferManager::new_write_buffer_manager_with_cache(4 * 1024 * 1024 * 1024, false, block_cache.clone());
 
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
         db_opts.set_max_open_files(30000);
-        db_opts.increase_parallelism(4);
-        db_opts.set_max_background_jobs(8);
+        db_opts.increase_parallelism(8);
+        db_opts.set_max_background_jobs(32);
         db_opts.set_write_buffer_manager(&wbm);
 
         db_opts.set_max_total_wal_size(2 * 1024 * 1024 * 1024); // 2GB

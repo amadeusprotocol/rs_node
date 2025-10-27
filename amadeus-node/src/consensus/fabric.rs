@@ -151,6 +151,36 @@ mod tests {
 
         println!("height/slot indexing test passed");
     }
+
+    #[tokio::test]
+    async fn test_clean_muts_rev_range() {
+        let test_path = format!("target/test_clean_muts_{}", std::process::id());
+        let fab = Fabric::new(&test_path).await.unwrap();
+
+        let h0: [u8; 32] = [0; 32];
+        let h1: [u8; 32] = [1; 32];
+        let h2: [u8; 32] = [2; 32];
+        let h3: [u8; 32] = [3; 32];
+        let h4: [u8; 32] = [4; 32];
+        fab.insert_entry(&h0, 99, 999, &[0], 0).unwrap();
+        fab.insert_entry(&h1, 100, 1000, &[1], 0).unwrap();
+        fab.insert_entry(&h2, 101, 1001, &[2], 0).unwrap();
+        fab.insert_entry(&h3, 102, 1002, &[3], 0).unwrap();
+        fab.insert_entry(&h4, 103, 1003, &[4], 0).unwrap();
+        fab.db.put("muts_rev", &h0, b"data0").unwrap();
+        fab.db.put("muts_rev", &h1, b"data1").unwrap();
+        fab.db.put("muts_rev", &h2, b"data2").unwrap();
+        fab.db.put("muts_rev", &h3, b"data3").unwrap();
+        fab.db.put("muts_rev", &h4, b"data4").unwrap();
+
+        fab.clean_muts_rev_range(100, 102).unwrap();
+
+        assert!(fab.db.get("muts_rev", &h0).unwrap().is_some());
+        assert!(fab.db.get("muts_rev", &h1).unwrap().is_none());
+        assert!(fab.db.get("muts_rev", &h2).unwrap().is_none());
+        assert!(fab.db.get("muts_rev", &h3).unwrap().is_none());
+        assert!(fab.db.get("muts_rev", &h4).unwrap().is_some());
+    }
 }
 
 // New Fabric struct that owns the RocksDb handle
@@ -608,27 +638,33 @@ impl Fabric {
         Ok(self.db.get(entry_cf, hash)?)
     }
 
-    // Helper used by Fabric::cleanup to remove muts_rev keys for entries within a height range
     fn clean_muts_rev_range(&self, start: u64, end: u64) -> Result<(), crate::utils::rocksdb::Error> {
-        // Use a transaction for batching if available
+        use amadeus_utils::rocksdb::{Direction, IteratorMode, ReadOptions};
+
+        let start_key = format!("{}:", start).into_bytes();
+        let end_key = format!("{}:", end + 1).into_bytes();
+
+        let h = &self.db.handles;
+        let cf_h =
+            h.db.cf_handle(CF_ENTRY_BY_HEIGHT)
+                .ok_or_else(|| crate::utils::rocksdb::Error::ColumnFamilyNotFound(CF_ENTRY_BY_HEIGHT.to_string()))?;
+
+        let mut opts = ReadOptions::default();
+        opts.set_total_order_seek(true);
+        let iter = h.db.iterator_cf_opt(&cf_h, opts, IteratorMode::From(&start_key, Direction::Forward));
+
         let txn = self.db.begin_transaction()?;
-        let mut ops = 0usize;
-        for height in start..=end {
-            // Match Elixir format: "#{height}:" with no padding
-            let mut height_prefix = height.to_string().into_bytes();
-            height_prefix.push(b':');
-            let kvs = match self.db.iter_prefix(CF_ENTRY_BY_HEIGHT, &height_prefix) {
-                Ok(k) => k,
-                Err(_) => continue,
-            };
-            for (_k, entry_hash) in kvs {
-                // entry_hash is the value stored in entry_by_height index
-                let _ = txn.delete("muts_rev", &entry_hash);
-                ops += 1;
+        let mut ops = 0;
+        for item in iter {
+            let (k, v) = item?;
+            if k.as_ref() >= end_key.as_slice() {
+                break;
             }
+            let _ = txn.delete("muts_rev", &v);
+            ops += 1;
         }
         if ops > 0 {
-            let _ = txn.commit();
+            txn.commit()?;
         }
         Ok(())
     }

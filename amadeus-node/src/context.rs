@@ -7,7 +7,6 @@ use crate::socket::UdpSocketExt;
 use crate::utils::misc::Typename;
 use crate::utils::misc::{format_duration, get_unix_millis_now};
 use crate::{SystemStats, Ver, config, consensus, get_system_stats, metrics, node, utils};
-use bitvec::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -53,7 +52,6 @@ impl Typename for Error {
     }
 }
 
-/// Runtime container for config, metrics, reassembler, and node state.
 pub struct Context {
     pub(crate) config: config::Config,
     pub(crate) metrics: metrics::Metrics,
@@ -150,9 +148,8 @@ impl Context {
                 let mut ticker = interval(Duration::from_millis(CONSENSUS_PERIOD_MILLIS));
                 loop {
                     ticker.tick().await;
-                    if let Err(e) = ctx.consensus_task().await {
-                        warn!("consensus task error: {e}");
-                        //ctx.metrics.add_error(&e);
+                    if let Err(e) = ctx.entries_task().await {
+                        warn!("entries task error: {e}");
                     }
                 }
             }
@@ -161,12 +158,27 @@ impl Context {
         tokio::spawn({
             let ctx = ctx.clone();
             async move {
-                let mut ticker = interval(Duration::from_millis(CATCHUP_PERIOD_MILLIS));
+                let mut ticker = interval(Duration::from_millis(CONSENSUS_PERIOD_MILLIS));
                 loop {
                     ticker.tick().await;
-                    if let Err(e) = ctx.catchup_task().await {
-                        warn!("catchup task error: {e}");
-                        //ctx.metrics.add_error(&e);
+                    if let Err(e) = ctx.consensus_task().await {
+                        warn!("consensus task error: {e}");
+                    }
+                }
+            }
+        });
+
+        tokio::spawn({
+            let ctx = ctx.clone();
+            async move {
+                let mut is_syncing = false;
+                loop {
+                    let tick_ms = if is_syncing { 100 } else { CATCHUP_PERIOD_MILLIS };
+                    tokio::time::sleep(Duration::from_millis(tick_ms)).await;
+
+                    match ctx.catchup_task().await {
+                        Ok(syncing) => is_syncing = syncing,
+                        Err(e) => warn!("catchup task error: {e}"),
                     }
                 }
             }
@@ -276,23 +288,26 @@ impl Context {
         Ok(())
     }
 
-    #[instrument(skip(self), name = "consensus_task")]
-    async fn consensus_task(&self) -> Result<(), Error> {
-        use consensus::consensus::{proc_consensus, proc_entries};
-
+    #[instrument(skip(self), name = "entries_task")]
+    async fn entries_task(&self) -> Result<(), Error> {
+        use consensus::consensus::proc_entries;
         if let Err(e) = proc_entries(&self.fabric, &self.config, self).await {
             warn!("proc_entries failed: {e}");
         }
+        Ok(())
+    }
 
+    #[instrument(skip(self), name = "consensus_task")]
+    async fn consensus_task(&self) -> Result<(), Error> {
+        use consensus::consensus::proc_consensus;
         if let Err(e) = proc_consensus(&self.fabric) {
             warn!("proc_consensus failed: {e}");
         }
-
         Ok(())
     }
 
     #[instrument(skip(self), name = "catchup_task")]
-    async fn catchup_task(&self) -> Result<(), Error> {
+    async fn catchup_task(&self) -> Result<bool, Error> {
         let temporal_height = match self.fabric.get_temporal_height() {
             Ok(Some(h)) => h,
             Ok(None) => 0,
@@ -307,13 +322,17 @@ impl Context {
         let behind_temporal = peers_temporal.saturating_sub(temporal_height);
         let behind_rooted = peers_rooted.saturating_sub(rooted_height);
         let behind_bft = peers_bft.saturating_sub(temporal_height);
+        let rooting_stuck = (temporal_height - rooted_height) > 1000;
 
         if (temporal_height - rooted_height) > 1000 {
-            // For some reason the node stopped rooting entries
-            // This is corner case that must be handled immediately!
-            info!("Stopped syncing: getting {} consensuses starting {}", behind_rooted, rooted_height + 1);
-            let online_trainer_ips = self.node_peers.get_trainer_ips_above_rooted(peers_rooted, &trainer_pks).await?;
-            let heights: Vec<u64> = (rooted_height + 1..=peers_rooted).take(1000).collect();
+            warn!(
+                "Stopped syncing: getting {} consensuses starting {}",
+                temporal_height - rooted_height,
+                rooted_height + 1
+            );
+            let online_trainer_ips =
+                self.node_peers.get_trainer_ips_above_temporal(temporal_height, &trainer_pks).await?;
+            let heights: Vec<u64> = (rooted_height + 1..=temporal_height).take(1000).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
                 .map(|height| CatchupHeight { height, c: Some(true), e: None, a: None, hashes: None })
@@ -321,14 +340,14 @@ impl Context {
                 .chunks(200)
                 .map(|chunk| chunk.to_vec())
                 .collect();
-            self.fetch_chunks(chunks, online_trainer_ips).await?;
-            return Ok(());
+            self.fetch_heights(chunks, online_trainer_ips).await?;
+            return Ok(true);
         }
 
         if behind_bft > 0 {
             info!("Behind BFT: Syncing {} entries", behind_bft);
-            let online_trainer_ips = self.node_peers.get_trainer_ips_above_rooted(peers_bft, &trainer_pks).await?;
-            let heights: Vec<u64> = (rooted_height + 1..=peers_bft).take(1000).collect();
+            let online_trainer_ips = self.node_peers.get_trainer_ips_above_temporal(peers_bft, &trainer_pks).await?;
+            let heights: Vec<u64> = (temporal_height + 1..=peers_bft).take(1000).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
                 .map(|height| CatchupHeight { height, c: Some(true), e: Some(true), a: None, hashes: None })
@@ -336,8 +355,8 @@ impl Context {
                 .chunks(20)
                 .map(|chunk| chunk.to_vec())
                 .collect();
-            self.fetch_chunks(chunks, online_trainer_ips).await?;
-            return Ok(());
+            self.fetch_heights(chunks, online_trainer_ips).await?;
+            return Ok(true);
         }
 
         if behind_rooted > 0 {
@@ -348,15 +367,15 @@ impl Context {
                 .into_iter()
                 .map(|height| {
                     let entries = self.fabric.entries_by_height(height).unwrap_or_default();
-                    let hashes = entries; // entries_by_height returns Vec<Vec<u8>> which are already hashes
+                    let hashes = entries;
                     CatchupHeight { height, c: Some(true), e: Some(true), a: None, hashes: Some(hashes) }
                 })
                 .collect::<Vec<_>>()
                 .chunks(20)
                 .map(|chunk| chunk.to_vec())
                 .collect();
-            self.fetch_chunks(chunks, online_trainer_ips).await?;
-            return Ok(());
+            self.fetch_heights(chunks, online_trainer_ips).await?;
+            return Ok(true);
         }
 
         if behind_temporal > 0 {
@@ -368,15 +387,15 @@ impl Context {
                 .into_iter()
                 .map(|height| {
                     let entries = self.fabric.entries_by_height(height).unwrap_or_default();
-                    let hashes = entries; // entries_by_height returns Vec<Vec<u8>> which are already hashes
+                    let hashes = entries;
                     CatchupHeight { height, c: None, e: Some(true), a: Some(true), hashes: Some(hashes) }
                 })
                 .collect::<Vec<_>>()
                 .chunks(10)
                 .map(|chunk| chunk.to_vec())
                 .collect();
-            self.fetch_chunks(chunks, online_trainer_ips).await?;
-            return Ok(());
+            self.fetch_heights(chunks, online_trainer_ips).await?;
+            return Ok(true);
         }
 
         if behind_temporal == 0 {
@@ -392,17 +411,18 @@ impl Context {
                 a: Some(true),
                 hashes: Some(hashes),
             }];
-            self.fetch_chunks(vec![chunk], online_trainer_ips).await?;
+            self.fetch_heights(vec![chunk], online_trainer_ips).await?;
         }
 
-        Ok(())
+        Ok(behind_temporal > 0 || behind_rooted > 0 || behind_bft > 0 || rooting_stuck)
     }
 
-    /// Send catchup requests to peers based on fabric_sync_gen.ex fetch_chunks implementation
-    async fn fetch_chunks(&self, chunks: Vec<Vec<CatchupHeight>>, peers: Vec<std::net::Ipv4Addr>) -> Result<(), Error> {
+    async fn fetch_heights(
+        &self,
+        chunks: Vec<Vec<CatchupHeight>>,
+        peers: Vec<std::net::Ipv4Addr>,
+    ) -> Result<(), Error> {
         use rand::seq::SliceRandom;
-
-        // Shuffle peers before entering async context to avoid Send issues
         let mut shuffled_peers = peers;
         {
             let mut rng = rand::rng();
@@ -410,12 +430,8 @@ impl Context {
         }
 
         for (chunk, peer_ip) in chunks.into_iter().zip(shuffled_peers.into_iter().cycle()) {
-            let catchup_msg = Catchup { heights: chunk };
-            if let Err(e) = catchup_msg.send_to_with_metrics(self, peer_ip).await {
-                warn!("Failed to send catchup to {}: {}", peer_ip, e);
-            }
+            Catchup { heights: chunk }.send_to_with_metrics(self, peer_ip).await?;
         }
-
         Ok(())
     }
 
@@ -704,44 +720,15 @@ impl Context {
             }
 
             Instruction::ReceivedConsensus { consensus } => {
-                // Handle received consensus (from catchup)
-                debug!(
-                    "received consensus for entry {}, mutations_hash {}, score {:?}",
-                    bs58::encode(&consensus.entry_hash).into_string(),
-                    bs58::encode(&consensus.mutations_hash).into_string(),
-                    consensus.score
-                );
-                // When mask is None, it means all trainers signed (100% consensus in Elixir)
-                // We need to create a full mask with all bits set to true
-                let mask = match consensus.mask.clone() {
-                    Some(m) => m,
-                    None => {
-                        // Get entry to determine height and trainers
-                        if let Some(entry) = self.fabric.get_entry_by_hash(&consensus.entry_hash) {
-                            if let Some(trainers) = self.fabric.trainers_for_height(entry.header.height) {
-                                // Create full mask: all trainers signed
-                                bitvec![u8, Msb0; 1; trainers.len()]
-                            } else {
-                                warn!("No trainers found for height {}, skipping consensus", entry.header.height);
-                                return Ok(());
-                            }
-                        } else {
-                            warn!("Entry not found for consensus, skipping");
-                            return Ok(());
-                        }
-                    }
-                };
-                let score = consensus.score.unwrap_or(1.0);
-                if let Err(e) = self.fabric.insert_consensus(
-                    consensus.entry_hash,
-                    consensus.mutations_hash,
-                    mask,
-                    consensus.agg_sig,
-                    score,
-                ) {
-                    warn!("Failed to insert consensus: {}", e);
-                } else {
-                    debug!("Successfully inserted consensus with score {}", score);
+                let mut c = consensus.clone();
+                if c.validate_vs_chain(&self.fabric).is_ok() {
+                    let _ = self.fabric.insert_consensus(
+                        c.entry_hash,
+                        c.mutations_hash,
+                        c.mask.unwrap(),
+                        c.agg_sig,
+                        c.score.unwrap(),
+                    );
                 }
             }
 

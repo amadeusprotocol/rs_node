@@ -116,6 +116,7 @@ impl Consensus {
             let signed_pks = unmask_trainers(mask, &trainers);
             (score, signed_pks)
         } else {
+            self.mask = Some(bitvec![u8, Msb0; 1; trainers.len()]);
             (1.0, trainers.clone())
         };
         let agg_pk = bls::aggregate_public_keys(&signed_pks)?;
@@ -889,7 +890,7 @@ pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {
 
         // nothing more to process
         if height_root >= height_temp {
-            warn!(
+            debug!(
                 "proc_consensus: rooted_height {} >= temporal_height {}, nothing to process",
                 height_root, height_temp
             );
@@ -1101,7 +1102,7 @@ pub async fn proc_entries(fabric: &Fabric, config: &crate::config::Config, ctx: 
         let attestation_packed = apply_entry(fabric, config, entry)?;
 
         // TODO: FabricEventGen.event_applied(entry, mutations_hash, muts, logs)
-        info!("Applied entry {} at height {}", bs58::encode(&entry.hash).into_string(), entry.header.height);
+        debug!("Applied entry {} at height {}", bs58::encode(&entry.hash).into_string(), entry.header.height);
 
         // broadcast attestation if synced and we're a trainer
         if let Some(attestation_packed) = attestation_packed {

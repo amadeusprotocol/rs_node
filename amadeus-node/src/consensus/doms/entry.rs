@@ -279,12 +279,13 @@ impl Protocol for Entry {
 
         if height >= rooted_height {
             let hash = self.hash;
-            let epoch = self.get_epoch();
-            let slot = self.header.slot; // height is the same as slot in amadeus
+            let slot = self.header.slot;
             let bin: Vec<u8> = self.clone().try_into()?;
 
             ctx.fabric.insert_entry(&hash, height, slot, &bin, get_unix_millis_now())?;
-            archiver::store(bin, format!("epoch-{}", epoch), format!("entry-{}", height)).await?;
+
+            //let epoch = self.get_epoch();
+            //archiver::store(bin, format!("epoch-{}", epoch), format!("entry-{}", height)).await?;
         }
 
         Ok(vec![protocol::Instruction::Noop { why: "entry handling not implemented".to_string() }])
