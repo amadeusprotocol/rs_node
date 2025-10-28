@@ -104,7 +104,7 @@ pub fn call_transfer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()> {
     if receiver.len() != 48 {
         return Err("invalid_receiver_pk");
     }
-    if !(consensus::bls12_381::validate_public_key(receiver) || receiver == &BURN_ADDRESS) {
+    if !(amadeus_utils::bls12_381::validate_public_key(receiver).is_ok() || receiver == &BURN_ADDRESS) {
         return Err("invalid_receiver_pk");
     }
     if amount <= 0 {

@@ -1,4 +1,3 @@
-use crate::consensus::agg_sig::{DST_ATT, DST_VRF};
 use crate::consensus::doms::attestation::Attestation;
 use crate::consensus::doms::entry::Entry;
 use crate::consensus::doms::tx::TxU;
@@ -12,6 +11,8 @@ use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
 use amadeus_runtime::consensus::consensus_apply::ApplyEnv;
 use amadeus_runtime::consensus::consensus_kv;
 use amadeus_runtime::consensus::consensus_muts::Mutation;
+use amadeus_runtime::consensus::unmask_trainers;
+use amadeus_utils::constants::{DST_ATT, DST_ENTRY, DST_VRF};
 use bitvec::prelude::*;
 use eetf::{Atom, Binary, Term};
 use std::collections::HashMap;
@@ -125,10 +126,6 @@ impl Consensus {
         self.score = Some(score);
         Ok(())
     }
-}
-
-fn unmask_trainers(mask: &BitVec<u8, Msb0>, trainers: &[[u8; 48]]) -> Vec<[u8; 48]> {
-    mask.iter().zip(trainers.iter()).filter_map(|(bit, pk)| if *bit { Some(*pk) } else { None }).collect()
 }
 
 pub fn chain_muts_rev(fabric: &fabric::Fabric, hash: &[u8; 32]) -> Option<Vec<Mutation>> {
@@ -688,7 +685,7 @@ pub fn produce_entry(fabric: &fabric::Fabric, config: &crate::config::Config, sl
     // sign the header
     let header_bin = header.to_etf_bin()?;
     let header_hash = crate::utils::blake3::hash(&header_bin);
-    let signature = bls::sign(&sk, &header_hash, crate::consensus::agg_sig::DST_ENTRY)?;
+    let signature = bls::sign(&sk, &header_hash, DST_ENTRY)?;
 
     // compute entry hash
     let entry = Entry {

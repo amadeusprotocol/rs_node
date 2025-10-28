@@ -1,8 +1,10 @@
-use crate::consensus::aggsig::DST_MOTION;
 use crate::consensus::consensus_apply::ApplyEnv;
 use crate::consensus::consensus_kv::{kv_exists, kv_get, kv_increment, kv_put, kv_set_bit};
 use crate::{bcat, consensus};
-use amadeus_utils::blake3;
+use amadeus_utils::constants::DST_MOTION;
+use amadeus_utils::{blake3, bls12_381};
+use bitvec::order::Msb0;
+use bitvec::prelude::BitVec;
 
 pub const EPOCH_EMISSION_BASE: i128 = 1_000_000_000_000_000;
 pub const EPOCH_INTERVAL: i128 = 100_000;
@@ -418,7 +420,7 @@ pub fn call_submit_sol(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), &'s
     }
 
     if !kv_exists(env, &bcat(&[b"bic:epoch:pop:", usol.pk.as_slice()]))? {
-        match consensus::bls12_381::verify(&usol.pk, &usol.pop, &usol.pk, consensus::aggsig::DST_POP) {
+        match bls12_381::verify(&usol.pk, &usol.pop, &usol.pk, amadeus_utils::constants::DST_POP) {
             Ok(()) => kv_put(env, &bcat(&[b"bic:epoch:pop:", usol.pk.as_slice()]), &usol.pop)?,
             Err(_) => return Err("invalid_pop"),
         }
@@ -473,15 +475,29 @@ pub fn call_slash_trainer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), 
         return Err("invalid_trainer_pk");
     }
 
-    let signers = consensus::aggsig::unmask_trainers(&trainers, &mask, mask_size as usize);
+    let trainers_48: Vec<[u8; 48]> = trainers
+        .iter()
+        .filter_map(|pk| {
+            if pk.len() == 48 {
+                let mut arr = [0u8; 48];
+                arr.copy_from_slice(pk);
+                Some(arr)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mask_bitvec = BitVec::from_vec(mask);
+    let signers = unmask_trainers(&mask_bitvec, &trainers_48);
     let consensus_pct = signers.len() as f64 / trainers.len() as f64;
     if consensus_pct < 0.67 {
         return Err("invalid_amount_of_signatures");
     }
 
-    let apk = consensus::bls12_381::aggregate_public_keys(signers).map_err(|_| "invalid_aggregation")?;
+    let apk = bls12_381::aggregate_public_keys(signers).map_err(|_| "invalid_aggregation")?;
     let msg = bcat(&[b"slash_trainer", (epoch as u32).to_le_bytes().as_slice(), malicious_pk]);
-    let signature_valid = match consensus::bls12_381::verify(&apk, signature, msg.as_slice(), DST_MOTION) {
+    let signature_valid = match bls12_381::verify(&apk, signature, msg.as_slice(), DST_MOTION) {
         Ok(()) => true,
         _ => false,
     };
@@ -803,4 +819,8 @@ pub fn trainers_for_height(db: &amadeus_utils::rocksdb::RocksDb, height: u64) ->
         out.push(arr);
     }
     Some(out)
+}
+
+pub fn unmask_trainers(mask: &BitVec<u8, Msb0>, trainers: &[[u8; 48]]) -> Vec<[u8; 48]> {
+    mask.iter().zip(trainers.iter()).filter_map(|(bit, pk)| if *bit { Some(*pk) } else { None }).collect()
 }

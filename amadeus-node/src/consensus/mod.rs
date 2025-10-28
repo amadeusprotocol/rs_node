@@ -1,13 +1,13 @@
 #![allow(clippy::module_inception)]
-pub mod agg_sig;
 pub mod consensus;
 pub mod doms;
 pub mod fabric;
 pub mod genesis;
 pub mod kv;
 
-pub use agg_sig::{
-    AggSig, DST, DST_ANR, DST_ANR_CHALLENGE, DST_ATT, DST_ENTRY, DST_MOTION, DST_NODE, DST_POP, DST_TX, DST_VRF,
+// Re-export DST constants from amadeus_utils
+pub use amadeus_utils::constants::{
+    DST, DST_ANR, DST_ANR_CHALLENGE, DST_ATT, DST_ENTRY, DST_MOTION, DST_NODE, DST_POP, DST_TX, DST_VRF,
 };
 
 use crate::utils::misc::TermExt;
@@ -274,7 +274,7 @@ mod tests {
     fn create_test_config() -> crate::config::Config {
         let sk = crate::config::gen_sk();
         let pk = crate::config::get_pk(&sk);
-        let pop = crate::utils::bls12_381::sign(&sk, &pk, crate::consensus::agg_sig::DST_POP)
+        let pop = crate::utils::bls12_381::sign(&sk, &pk, amadeus_utils::constants::DST_POP)
             .map(|sig| sig.to_vec())
             .unwrap_or_else(|_| vec![0u8; 96]);
         crate::config::Config {

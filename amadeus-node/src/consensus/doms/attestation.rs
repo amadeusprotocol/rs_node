@@ -1,11 +1,11 @@
 use crate::Context;
-use crate::consensus::agg_sig::DST_ATT;
 use crate::node::protocol;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381 as bls;
 use crate::utils::bls12_381::Error as BlsError;
 use crate::utils::misc::{TermExt, TermMap};
 use crate::utils::safe_etf::encode_safe;
+use amadeus_utils::constants::DST_ATT;
 use eetf::DecodeError as EtfDecodeError;
 use eetf::EncodeError as EtfEncodeError;
 use eetf::{Atom, Binary, Term};

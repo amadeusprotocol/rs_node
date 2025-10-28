@@ -1,7 +1,5 @@
 use crate::Context;
 use crate::config::ENTRY_SIZE;
-/// Entry is a consensus block in Amadeus
-use crate::consensus::agg_sig::{DST_ENTRY, DST_VRF};
 use crate::consensus::doms::tx::TxU;
 use crate::consensus::fabric;
 use crate::node::protocol;
@@ -10,6 +8,8 @@ use crate::utils::bls12_381;
 use crate::utils::misc::{TermExt, TermMap, bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
 use crate::utils::safe_etf::{encode_safe, encode_safe_deterministic, i64_to_term, u64_to_term};
 use crate::utils::{archiver, blake3};
+/// Entry is a consensus block in Amadeus
+use amadeus_utils::constants::{DST_ENTRY, DST_VRF};
 use bitvec::prelude::*;
 use eetf::{Atom, Binary, Map, Term};
 use std::collections::HashMap;
