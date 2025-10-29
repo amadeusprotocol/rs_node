@@ -775,13 +775,13 @@ pub fn best_by_weight(
 }
 
 #[derive(Debug, Clone)]
-pub struct BestEntry {
+pub struct ScoredEntry {
     pub entry: Entry,
     pub mutations_hash: Option<[u8; 32]>,
     pub score: Option<f64>,
 }
 
-pub fn best_entry_for_height(fabric: &fabric::Fabric, height: u64) -> Result<Vec<BestEntry>, Error> {
+pub fn best_entry_for_height(fabric: &fabric::Fabric, height: u64) -> Result<Vec<ScoredEntry>, Error> {
     let rooted_tip = fabric.get_rooted_hash()?.unwrap_or([0u8; 32]);
 
     // get entries by height
@@ -803,7 +803,7 @@ pub fn best_entry_for_height(fabric: &fabric::Fabric, height: u64) -> Result<Vec
         let (mutations_hash, score, _consensus) = fabric.best_consensus_by_entryhash(&trainers, &entry.hash)?;
 
         if mutations_hash.is_some() {
-            entries.push(BestEntry { entry, mutations_hash, score });
+            entries.push(ScoredEntry { entry, mutations_hash, score });
         }
     }
 

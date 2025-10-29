@@ -8,7 +8,6 @@ use bitvec::prelude::*;
 use eetf::{Atom, BigInteger, Binary, Term};
 use std::collections::HashMap;
 use tracing::{Instrument, debug, info};
-// TODO: make the database trait that the fabric will use
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -59,129 +58,6 @@ async fn init_kvdb(base: &str) -> Result<RocksDb, Error> {
     long_init_hint.abort();
 
     Ok(db)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredConsensus {
-    pub mask: BitVec<u8, Msb0>,
-    pub agg_sig: [u8; 96],
-}
-
-fn pack_consensus_map(map: &HashMap<[u8; 32], StoredConsensus>) -> Result<Vec<u8>, Error> {
-    // Encode as ETF map: key: mutations_hash (binary 32); val: map{mask: bitstring, aggsig: binary}
-    let mut outer = HashMap::<Term, Term>::new();
-    for (mut_hash, v) in map.iter() {
-        let key = Term::from(Binary { bytes: mut_hash.to_vec() });
-        // pack mask into bytes (bitstring, MSB first)
-        let mask_bytes = bitvec_to_bin(&v.mask);
-        let mut inner = HashMap::new();
-        inner.insert(Term::Atom(Atom::from("mask")), Term::from(Binary { bytes: mask_bytes }));
-        inner.insert(Term::Atom(Atom::from("aggsig")), Term::from(Binary { bytes: v.agg_sig.to_vec() }));
-        outer.insert(key, Term::from(eetf::Map { map: inner }));
-    }
-    let term = Term::from(eetf::Map { map: outer });
-    let out = encode_safe_deterministic(&term);
-    Ok(out)
-}
-
-fn unpack_consensus_map(bin: &[u8]) -> Result<HashMap<[u8; 32], StoredConsensus>, Error> {
-    let term = Term::decode(bin)?;
-    let Some(map) = TermExt::get_term_map(&term) else { return Ok(HashMap::new()) };
-
-    let mut out: HashMap<[u8; 32], StoredConsensus> = HashMap::new();
-    for (k, v) in map.0.into_iter() {
-        // key: mutations_hash (binary 32)
-        let mh_bytes = TermExt::get_binary(&k).ok_or(Error::BadEtf("mutations_hash"))?;
-        let mh: [u8; 32] = mh_bytes.try_into().map_err(|_| Error::KvCell("mutations_hash"))?;
-
-        // value: map with keys mask (bitstring), agg_sig (binary)
-        let inner = TermExt::get_term_map(&v).ok_or(Error::BadEtf("consensus_inner"))?;
-        let mask = inner.get_binary("mask").map(bin_to_bitvec).ok_or(Error::BadEtf("mask"))?;
-        let agg_sig = inner.get_binary("aggsig").ok_or(Error::BadEtf("aggsig"))?;
-
-        out.insert(mh, StoredConsensus { mask, agg_sig });
-    }
-    Ok(out)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_height_slot_indexing() {
-        // initialize db for testing
-        let test_path = format!("target/test_fabric_{}", std::process::id());
-        let fab = Fabric::new(&test_path).await.unwrap();
-
-        // create test entry data
-        let entry_hash1: [u8; 32] = [1; 32];
-        let entry_hash2: [u8; 32] = [2; 32];
-        let entry_bin1 = vec![1, 2, 3, 4];
-        let entry_bin2 = vec![5, 6, 7, 8];
-        let height = 12345;
-        let slot1 = 67890;
-        let slot2 = 67891;
-        let seen_time = 1234567890;
-
-        // insert two entries with same height but different slots
-        fab.insert_entry(&entry_hash1, height, slot1, &entry_bin1, seen_time).unwrap();
-        fab.insert_entry(&entry_hash2, height, slot2, &entry_bin2, seen_time).unwrap();
-
-        // test querying by height should return both entries
-        let entries = fab.entries_by_height(height as u64).unwrap();
-        assert_eq!(entries.len(), 2);
-        assert!(entries.contains(&entry_bin1));
-        assert!(entries.contains(&entry_bin2));
-
-        // test querying by slot should return one entry each
-        let entries_slot1 = fab.entries_by_slot(slot1).unwrap();
-        assert_eq!(entries_slot1.len(), 1);
-        assert_eq!(entries_slot1[0], entry_bin1);
-
-        let entries_slot2 = fab.entries_by_slot(slot2).unwrap();
-        assert_eq!(entries_slot2.len(), 1);
-        assert_eq!(entries_slot2[0], entry_bin2);
-
-        // test querying non-existent height/slot returns empty
-        let empty_entries = fab.entries_by_height(99999).unwrap();
-        assert!(empty_entries.is_empty());
-
-        let empty_slot = fab.entries_by_slot(99999).unwrap();
-        assert!(empty_slot.is_empty());
-
-        println!("height/slot indexing test passed");
-    }
-
-    #[tokio::test]
-    async fn test_clean_muts_rev_range() {
-        let test_path = format!("target/test_clean_muts_{}", std::process::id());
-        let fab = Fabric::new(&test_path).await.unwrap();
-
-        let h0: [u8; 32] = [0; 32];
-        let h1: [u8; 32] = [1; 32];
-        let h2: [u8; 32] = [2; 32];
-        let h3: [u8; 32] = [3; 32];
-        let h4: [u8; 32] = [4; 32];
-        fab.insert_entry(&h0, 99, 999, &[0], 0).unwrap();
-        fab.insert_entry(&h1, 100, 1000, &[1], 0).unwrap();
-        fab.insert_entry(&h2, 101, 1001, &[2], 0).unwrap();
-        fab.insert_entry(&h3, 102, 1002, &[3], 0).unwrap();
-        fab.insert_entry(&h4, 103, 1003, &[4], 0).unwrap();
-        fab.db.put("muts_rev", &h0, b"data0").unwrap();
-        fab.db.put("muts_rev", &h1, b"data1").unwrap();
-        fab.db.put("muts_rev", &h2, b"data2").unwrap();
-        fab.db.put("muts_rev", &h3, b"data3").unwrap();
-        fab.db.put("muts_rev", &h4, b"data4").unwrap();
-
-        fab.clean_muts_rev_range(100, 102).unwrap();
-
-        assert!(fab.db.get("muts_rev", &h0).unwrap().is_some());
-        assert!(fab.db.get("muts_rev", &h1).unwrap().is_none());
-        assert!(fab.db.get("muts_rev", &h2).unwrap().is_none());
-        assert!(fab.db.get("muts_rev", &h3).unwrap().is_none());
-        assert!(fab.db.get("muts_rev", &h4).unwrap().is_some());
-    }
 }
 
 // New Fabric struct that owns the RocksDb handle
@@ -259,12 +135,9 @@ impl Fabric {
         entry_bin: &[u8],
         seen_millis: u64,
     ) -> Result<(), Error> {
-        // store entry if not already present
         let entry_cf = CF_ENTRY;
         if self.db.get(entry_cf, hash)?.is_none() {
             self.db.put(entry_cf, hash, entry_bin)?;
-
-            // Store seen time using ETF deterministic format like Elixir
             let seen_time_term = Term::from(BigInteger { value: seen_millis.into() });
             let seen_time_bin = encode_safe_deterministic(&seen_time_term);
             self.db.put(CF_MY_SEEN_TIME_FOR_ENTRY, hash, &seen_time_bin)?;
@@ -287,7 +160,6 @@ impl Fabric {
     }
 
     pub fn entries_by_height(&self, height: u64) -> Result<Vec<Vec<u8>>, Error> {
-        // Match Elixir format: "#{height}:" with no padding
         let mut height_prefix = height.to_string().into_bytes();
         height_prefix.push(b':');
         let kvs = self.db.iter_prefix(CF_ENTRY_BY_HEIGHT, &height_prefix)?;
@@ -302,7 +174,6 @@ impl Fabric {
     }
 
     pub fn entries_by_slot(&self, slot: u64) -> Result<Vec<Vec<u8>>, Error> {
-        // Match Elixir format: "#{slot}:" with no padding
         let mut slot_prefix = slot.to_string().into_bytes();
         slot_prefix.push(b':');
         let kvs = self.db.iter_prefix(CF_ENTRY_BY_SLOT, &slot_prefix)?;
@@ -435,43 +306,23 @@ impl Fabric {
         entry_hash: &[u8],
     ) -> Result<(Option<[u8; 32]>, Option<f64>, Option<StoredConsensus>), Error> {
         let Some(bin) = self.db.get(CF_CONSENSUS_BY_ENTRYHASH, entry_hash)? else {
-            debug!(
-                "best_consensus_by_entryhash: no consensus data found for entry {}",
-                bs58::encode(entry_hash).into_string()
-            );
+            debug!("no consensus found for entry {}", bs58::encode(entry_hash).into_string());
             return Ok((None, None, None));
         };
+
         let map = unpack_consensus_map(&bin)?;
-        debug!("best_consensus_by_entryhash: unpacked consensus map with {} entries", map.len());
-        let max_score = trainers.len() as f64;
-        let mut best: Option<([u8; 32], f64, StoredConsensus)> = None;
-        for (k, v) in map.into_iter() {
-            let mut score_units = 0f64;
-            for (i, bit) in v.mask.iter().enumerate() {
-                if i < trainers.len() && *bit {
-                    score_units += 1.0;
-                }
-            }
-            let score = if max_score > 0.0 { score_units / max_score } else { 0.0 };
-            debug!(
-                "best_consensus_by_entryhash: mutations_hash={}, score={:.2}, mask_len={}",
-                bs58::encode(&k).into_string(),
-                score,
-                v.mask.len()
-            );
-            match &mut best {
-                None => best = Some((k, score, v)),
-                Some((_bk, bs, _bv)) if score > *bs => best = Some((k, score, v)),
-                _ => {}
-            }
-        }
-        if let Some((k, s, v)) = best {
-            debug!("best_consensus_by_entryhash: returning best with score {:.2}", s);
-            Ok((Some(k), Some(s), Some(v)))
-        } else {
-            debug!("best_consensus_by_entryhash: no best found, returning None");
-            Ok((None, None, None))
-        }
+        debug!("unpacked {} consensus entries", map.len());
+
+        let best = map
+            .into_iter()
+            .map(|(hash, consensus)| {
+                let score = get_bits_percentage(&consensus.mask, trainers.len());
+                debug!("mutations_hash={}, score={:.2}", bs58::encode(&hash).into_string(), score);
+                (hash, score, consensus)
+            })
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        Ok(best.map_or((None, None, None), |(h, s, c)| (Some(h), Some(s), Some(c))))
     }
 
     /// Sets temporal entry hash and height
@@ -806,10 +657,159 @@ impl Fabric {
             Some(_) if entry.mask.is_some() => {
                 // aggregate signature path - check if score >= 0.67
                 let trainers = self.trainers_for_height(entry.header.height).unwrap_or_default();
-                let score = crate::utils::misc::get_bits_percentage(entry.mask.as_ref().unwrap(), trainers.len());
+                let score = get_bits_percentage(entry.mask.as_ref().unwrap(), trainers.len());
                 score >= 0.67
             }
             _ => false,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredConsensus {
+    pub mask: BitVec<u8, Msb0>,
+    pub agg_sig: [u8; 96],
+}
+
+fn pack_consensus_map(map: &HashMap<[u8; 32], StoredConsensus>) -> Result<Vec<u8>, Error> {
+    // Encode as ETF map: key: mutations_hash (binary 32); val: map{mask: bitstring, aggsig: binary}
+    let mut outer = HashMap::<Term, Term>::new();
+    for (mut_hash, v) in map.iter() {
+        let key = Term::from(Binary { bytes: mut_hash.to_vec() });
+        // pack mask into bytes (bitstring, MSB first)
+        let mask_bytes = bitvec_to_bin(&v.mask);
+        let mut inner = HashMap::new();
+        inner.insert(Term::Atom(Atom::from("mask")), Term::from(Binary { bytes: mask_bytes }));
+        inner.insert(Term::Atom(Atom::from("aggsig")), Term::from(Binary { bytes: v.agg_sig.to_vec() }));
+        outer.insert(key, Term::from(eetf::Map { map: inner }));
+    }
+    let term = Term::from(eetf::Map { map: outer });
+    let out = encode_safe_deterministic(&term);
+    Ok(out)
+}
+
+fn unpack_consensus_map(bin: &[u8]) -> Result<HashMap<[u8; 32], StoredConsensus>, Error> {
+    let term = Term::decode(bin)?;
+    let Some(map) = TermExt::get_term_map(&term) else { return Ok(HashMap::new()) };
+
+    let mut out: HashMap<[u8; 32], StoredConsensus> = HashMap::new();
+    for (k, v) in map.0.into_iter() {
+        // key: mutations_hash (binary 32)
+        let mh_bytes = TermExt::get_binary(&k).ok_or(Error::BadEtf("mutations_hash"))?;
+        let mh: [u8; 32] = mh_bytes.try_into().map_err(|_| Error::KvCell("mutations_hash"))?;
+
+        // value: map with keys mask (bitstring), agg_sig (binary)
+        let inner = TermExt::get_term_map(&v).ok_or(Error::BadEtf("consensus_inner"))?;
+        let mask = inner.get_binary("mask").map(bin_to_bitvec).ok_or(Error::BadEtf("mask"))?;
+        let agg_sig = inner.get_binary("aggsig").ok_or(Error::BadEtf("aggsig"))?;
+
+        out.insert(mh, StoredConsensus { mask, agg_sig });
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_height_slot_indexing() {
+        // initialize db for testing
+        let test_path = format!("target/test_fabric_{}", std::process::id());
+        let fab = Fabric::new(&test_path).await.unwrap();
+
+        // create test entry data
+        let entry_hash1: [u8; 32] = [1; 32];
+        let entry_hash2: [u8; 32] = [2; 32];
+        let entry_bin1 = vec![1, 2, 3, 4];
+        let entry_bin2 = vec![5, 6, 7, 8];
+        let height = 12345;
+        let slot1 = 67890;
+        let slot2 = 67891;
+        let seen_time = 1234567890;
+
+        // insert two entries with same height but different slots
+        fab.insert_entry(&entry_hash1, height, slot1, &entry_bin1, seen_time).unwrap();
+        fab.insert_entry(&entry_hash2, height, slot2, &entry_bin2, seen_time).unwrap();
+
+        // test querying by height should return both entries
+        let entries = fab.entries_by_height(height as u64).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.contains(&entry_bin1));
+        assert!(entries.contains(&entry_bin2));
+
+        // test querying by slot should return one entry each
+        let entries_slot1 = fab.entries_by_slot(slot1).unwrap();
+        assert_eq!(entries_slot1.len(), 1);
+        assert_eq!(entries_slot1[0], entry_bin1);
+
+        let entries_slot2 = fab.entries_by_slot(slot2).unwrap();
+        assert_eq!(entries_slot2.len(), 1);
+        assert_eq!(entries_slot2[0], entry_bin2);
+
+        // test querying non-existent height/slot returns empty
+        let empty_entries = fab.entries_by_height(99999).unwrap();
+        assert!(empty_entries.is_empty());
+
+        let empty_slot = fab.entries_by_slot(99999).unwrap();
+        assert!(empty_slot.is_empty());
+
+        println!("height/slot indexing test passed");
+    }
+
+    #[tokio::test]
+    async fn test_clean_muts_rev_range() {
+        let test_path = format!("target/test_clean_muts_{}", std::process::id());
+        let fab = Fabric::new(&test_path).await.unwrap();
+
+        let h0: [u8; 32] = [0; 32];
+        let h1: [u8; 32] = [1; 32];
+        let h2: [u8; 32] = [2; 32];
+        let h3: [u8; 32] = [3; 32];
+        let h4: [u8; 32] = [4; 32];
+        fab.insert_entry(&h0, 99, 999, &[0], 0).unwrap();
+        fab.insert_entry(&h1, 100, 1000, &[1], 0).unwrap();
+        fab.insert_entry(&h2, 101, 1001, &[2], 0).unwrap();
+        fab.insert_entry(&h3, 102, 1002, &[3], 0).unwrap();
+        fab.insert_entry(&h4, 103, 1003, &[4], 0).unwrap();
+        fab.db.put("muts_rev", &h0, b"data0").unwrap();
+        fab.db.put("muts_rev", &h1, b"data1").unwrap();
+        fab.db.put("muts_rev", &h2, b"data2").unwrap();
+        fab.db.put("muts_rev", &h3, b"data3").unwrap();
+        fab.db.put("muts_rev", &h4, b"data4").unwrap();
+
+        fab.clean_muts_rev_range(100, 102).unwrap();
+
+        assert!(fab.db.get("muts_rev", &h0).unwrap().is_some());
+        assert!(fab.db.get("muts_rev", &h1).unwrap().is_none());
+        assert!(fab.db.get("muts_rev", &h2).unwrap().is_none());
+        assert!(fab.db.get("muts_rev", &h3).unwrap().is_none());
+        assert!(fab.db.get("muts_rev", &h4).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_pack_unpack_consensus_map() {
+        let mut map = HashMap::new();
+        map.insert([1; 32], StoredConsensus {
+            mask: bitvec![u8, Msb0; 1, 0, 1, 1, 0, 1, 0, 0],
+            agg_sig: [10; 96]
+        });
+        map.insert([2; 32], StoredConsensus {
+            mask: bitvec![u8, Msb0; 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0],
+            agg_sig: [20; 96]
+        });
+        map.insert([3; 32], StoredConsensus {
+            mask: bitvec![u8, Msb0; 0, 0, 0, 0, 1, 1, 1, 1],
+            agg_sig: [30; 96]
+        });
+
+        let packed = pack_consensus_map(&map).unwrap();
+        let unpacked = unpack_consensus_map(&packed).unwrap();
+
+        assert_eq!(unpacked.len(), 3);
+        assert_eq!(unpacked[&[1; 32]].agg_sig, [10; 96]);
+        assert_eq!(unpacked[&[2; 32]].agg_sig, [20; 96]);
+        assert_eq!(unpacked[&[3; 32]].agg_sig, [30; 96]);
+        assert_eq!(map, unpacked);
     }
 }
