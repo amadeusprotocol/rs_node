@@ -720,16 +720,7 @@ impl Context {
             }
 
             Instruction::ReceivedConsensus { consensus } => {
-                let mut c = consensus.clone();
-                if c.validate_vs_chain(&self.fabric).is_ok() {
-                    let _ = self.fabric.insert_consensus(
-                        c.entry_hash,
-                        c.mutations_hash,
-                        c.mask.unwrap(),
-                        c.agg_sig,
-                        c.score.unwrap(),
-                    );
-                }
+                let _ = self.fabric.insert_consensus(&consensus);
             }
 
             Instruction::ConsensusesPacked { packed: _ } => {

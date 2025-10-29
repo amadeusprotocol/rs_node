@@ -12,7 +12,7 @@ use amadeus_runtime::consensus::consensus_apply::ApplyEnv;
 use amadeus_runtime::consensus::consensus_kv;
 use amadeus_runtime::consensus::consensus_muts::Mutation;
 use amadeus_runtime::consensus::unmask_trainers;
-use amadeus_utils::constants::{DST_ATT, DST_ENTRY, DST_VRF};
+use amadeus_utils::constants::{DST_ENTRY, DST_VRF};
 use bitvec::prelude::*;
 use eetf::{Atom, Binary, Term};
 use std::collections::HashMap;
@@ -56,9 +56,8 @@ pub enum Error {
 pub struct Consensus {
     pub entry_hash: [u8; 32],
     pub mutations_hash: [u8; 32],
-    pub mask: Option<BitVec<u8, Msb0>>,
+    pub mask: BitVec<u8, Msb0>,
     pub agg_sig: [u8; 96],
-    pub score: Option<f64>,
 }
 
 impl Consensus {
@@ -67,10 +66,10 @@ impl Consensus {
         let map = Term::decode(bin)?.get_term_map().ok_or(Error::WrongType("consensus map"))?;
         let entry_hash = map.get_binary("entry_hash").ok_or(Error::Missing("entry_hash"))?;
         let mutations_hash = map.get_binary("mutations_hash").ok_or(Error::Missing("mutations_hash"))?;
-        // Empty mask binary (0 bytes) means None (all trainers signed), not Some(empty vec)
-        let mask = map.get_binary::<Vec<u8>>("mask").map(|bytes| bin_to_bitvec(bytes)).filter(|mask| !mask.is_empty());
+        // No mask binary means all trainers have signed - we make it as empty bitvec
+        let mask = map.get_binary::<Vec<u8>>("mask").map(|bytes| bin_to_bitvec(bytes)).unwrap_or(BitVec::new());
         let agg_sig = map.get_binary("aggsig").ok_or(Error::Missing("aggsig"))?;
-        Ok(Self { entry_hash, mutations_hash, mask, agg_sig, score: None })
+        Ok(Self { entry_hash, mutations_hash, mask, agg_sig })
     }
 
     /// Encode into an ETF map with deterministic field set (Elixir Map.take and term_to_binary)
@@ -78,53 +77,14 @@ impl Consensus {
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("entry_hash")), Term::from(Binary { bytes: self.entry_hash.to_vec() }));
         m.insert(Term::Atom(Atom::from("mutations_hash")), Term::from(Binary { bytes: self.mutations_hash.to_vec() }));
-        if let Some(mask) = &self.mask {
-            m.insert(Term::Atom(Atom::from("mask")), Term::from(Binary { bytes: bitvec_to_bin(mask) }));
+        if self.mask.count_ones() < self.mask.len() {
+            m.insert(Term::Atom(Atom::from("mask")), Term::from(Binary { bytes: bitvec_to_bin(&self.mask) }));
         }
         m.insert(Term::Atom(Atom::from("aggsig")), Term::from(Binary { bytes: self.agg_sig.to_vec() }));
         let term = Term::from(eetf::Map { map: m });
         let mut out = Vec::new();
         term.encode(&mut out)?;
         Ok(out)
-    }
-
-    /// Validate this consensus vs chain state:
-    /// - Entry must exist and not be in the future vs current temporal_height
-    /// - Aggregate signature must verify against the set of trainers unmasked by `mask`
-    ///
-    /// On success, sets self.score = Some(score) and returns Ok(())
-    pub fn validate_vs_chain(&mut self, fabric: &fabric::Fabric) -> Result<(), Error> {
-        let mut to_sign = [0u8; 64];
-        to_sign[..32].copy_from_slice(&self.entry_hash);
-        to_sign[32..].copy_from_slice(&self.mutations_hash);
-
-        let entry = fabric.get_entry_by_hash(&self.entry_hash);
-        let Some(entry) = entry else { return Err(Error::InvalidEntry) };
-
-        if let Ok(Some(cur_h)) = fabric.get_temporal_height()
-            && entry.header.height > cur_h
-        {
-            return Err(Error::TooFarInFuture);
-        }
-
-        let trainers = fabric.trainers_for_height(entry.header.height).ok_or(Error::Missing("trainers_for_height"))?;
-        if trainers.is_empty() {
-            return Err(Error::Missing("trainers_for_height:empty"));
-        }
-
-        let (score, signed_pks) = if let Some(mask) = &self.mask {
-            let score = crate::utils::misc::get_bits_percentage(mask, trainers.len());
-            let signed_pks = unmask_trainers(mask, &trainers);
-            (score, signed_pks)
-        } else {
-            self.mask = Some(bitvec![u8, Msb0; 1; trainers.len()]);
-            (1.0, trainers.clone())
-        };
-        let agg_pk = bls::aggregate_public_keys(&signed_pks)?;
-        bls::verify(&agg_pk, &self.agg_sig, &to_sign, DST_ATT)?;
-
-        self.score = Some(score);
-        Ok(())
     }
 }
 
@@ -793,8 +753,7 @@ pub fn best_by_weight(
 
     for (k, v) in consensuses.iter() {
         // calculate weighted score
-        let trainers_signed =
-            if let Some(mask) = &v.mask { unmask_trainers(mask, trainers) } else { trainers.to_vec() };
+        let trainers_signed = if v.mask.is_empty() { trainers.to_vec() } else { unmask_trainers(&v.mask, trainers) };
         let mut score = 0.0;
         for _pk in trainers_signed {
             // TODO: implement ConsensusWeight.count(pk) - for now use unit weight

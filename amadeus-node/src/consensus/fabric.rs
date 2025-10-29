@@ -3,6 +3,7 @@ use crate::consensus::doms::entry::Entry;
 use crate::utils::misc::{TermExt, bin_to_bitvec, bitvec_to_bin};
 use crate::utils::rocksdb::{self, RocksDb};
 use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
+use amadeus_utils::misc::get_bits_percentage;
 use bitvec::prelude::*;
 use eetf::{Atom, BigInteger, Binary, Term};
 use std::collections::HashMap;
@@ -362,35 +363,70 @@ impl Fabric {
         Ok(Some(new_a))
     }
 
-    pub fn insert_consensus(
-        &self,
-        entry_hash: [u8; 32],
-        mutations_hash: [u8; 32],
-        consensus_mask: BitVec<u8, Msb0>,
-        consensus_agg_sig: [u8; 96],
-        score: f64,
-    ) -> Result<(), Error> {
-        if score < 0.67 {
-            return Ok(());
-        }
-
-        let mut map = match self.db.get(CF_CONSENSUS_BY_ENTRYHASH, &entry_hash)? {
+    pub fn insert_consensus(&self, consensus: &crate::consensus::consensus::Consensus) -> Result<(), Error> {
+        let mut map = match self.db.get(CF_CONSENSUS_BY_ENTRYHASH, &consensus.entry_hash)? {
             Some(bin) => unpack_consensus_map(&bin)?,
             None => HashMap::new(),
         };
 
-        if let Some(existing) = map.get(&mutations_hash) {
-            let old_cnt = existing.mask.iter().filter(|b| **b).count();
-            let new_cnt = consensus_mask.iter().filter(|b| **b).count();
-            if new_cnt <= old_cnt {
+        if let Some(existing) = map.get(&consensus.mutations_hash) {
+            if existing.mask.count_ones() >= consensus.mask.count_ones() {
                 return Ok(());
             }
         }
 
-        map.insert(mutations_hash, StoredConsensus { mask: consensus_mask, agg_sig: consensus_agg_sig });
+        // mask in the consensus is optimized away if all trainers signed
+        let mask = self.validate_consensus(&consensus)?;
+
+        map.insert(consensus.mutations_hash, StoredConsensus { mask, agg_sig: consensus.agg_sig });
         let packed = pack_consensus_map(&map)?;
-        self.db.put(CF_CONSENSUS_BY_ENTRYHASH, &entry_hash, &packed)?;
+        self.db.put(CF_CONSENSUS_BY_ENTRYHASH, &consensus.entry_hash, &packed)?;
+
         Ok(())
+    }
+
+    /// Validate consensus vs chain state:
+    /// - Entry must exist and not be in the future vs current temporal_height
+    /// - Aggregate signature must verify against the set of trainers unmasked by `mask`
+    ///
+    /// On success, sets consensus.score = Some(score) and returns Ok(())
+    pub fn validate_consensus(
+        &self,
+        consensus: &crate::consensus::consensus::Consensus,
+    ) -> Result<BitVec<u8, Msb0>, Error> {
+        use crate::utils::bls12_381 as bls;
+        use amadeus_runtime::consensus::unmask_trainers;
+        use amadeus_utils::constants::DST_ATT;
+
+        let mut to_sign = [0u8; 64];
+        to_sign[..32].copy_from_slice(&consensus.entry_hash);
+        to_sign[32..].copy_from_slice(&consensus.mutations_hash);
+
+        let entry = self.get_entry_by_hash(&consensus.entry_hash).ok_or(Error::BadEtf("invalid_entry"))?;
+        let curr_h = self.get_temporal_height()?.ok_or(Error::KvCell("temporal_height_missing"))?;
+
+        if entry.header.height > curr_h {
+            return Err(Error::BadEtf("too_far_in_future"));
+        }
+
+        let trainers = self.trainers_for_height(entry.header.height).ok_or(Error::KvCell("trainers_for_height"))?;
+        if trainers.is_empty() {
+            return Err(Error::KvCell("trainers_for_height:empty"));
+        }
+
+        let mask =
+            if consensus.mask.is_empty() { bitvec![u8, Msb0; 1; trainers.len()] } else { consensus.mask.clone() };
+
+        let score = get_bits_percentage(&mask, trainers.len());
+        if score < 0.67 {
+            return Err(Error::BadEtf("consensus_too_low"));
+        }
+
+        let signed_pks = unmask_trainers(&consensus.mask, &trainers);
+        let agg_pk = bls::aggregate_public_keys(&signed_pks).map_err(|_| Error::BadEtf("bls_aggregate_failed"))?;
+        bls::verify(&agg_pk, &consensus.agg_sig, &to_sign, DST_ATT).map_err(|_| Error::BadEtf("invalid_signature"))?;
+
+        Ok(mask)
     }
 
     pub fn best_consensus_by_entryhash(

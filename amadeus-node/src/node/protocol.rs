@@ -1277,9 +1277,8 @@ mod tests {
         let consensus1 = Consensus {
             entry_hash: [10; 32],
             mutations_hash: [11; 32],
-            mask: Some(bitvec![u8, Msb0; 1, 0, 1]),
+            mask: bitvec![u8, Msb0; 1, 0, 1],
             agg_sig: [12; 96],
-            score: Some(0.95),
         };
 
         let trie1 = CatchupHeightReply {
