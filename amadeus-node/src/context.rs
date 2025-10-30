@@ -107,7 +107,7 @@ impl Context {
                 let mut ticker = interval(Duration::from_millis(CLEANUP_PERIOD_MILLIS));
                 loop {
                     ticker.tick().await;
-                    ctx.cleanup_task(CLEANUP_PERIOD_MILLIS / 1000).await;
+                    ctx.cleanup_task().await;
                 }
             }
         });
@@ -173,7 +173,7 @@ impl Context {
             async move {
                 let mut is_syncing = false;
                 loop {
-                    let tick_ms = if is_syncing { 100 } else { CATCHUP_PERIOD_MILLIS };
+                    let tick_ms = if is_syncing { 30 } else { CATCHUP_PERIOD_MILLIS };
                     tokio::time::sleep(Duration::from_millis(tick_ms)).await;
 
                     match ctx.catchup_task().await {
@@ -225,8 +225,9 @@ impl Context {
     }
 
     #[instrument(skip(self), name = "cleanup_task")]
-    async fn cleanup_task(&self, cleanup_secs: u64) {
-        let cleared_shards = self.reassembler.clear_stale(cleanup_secs).await;
+    async fn cleanup_task(&self) {
+        self.node_anrs.update_rate_limiting_counters().await;
+        let cleared_shards = self.reassembler.clear_stale().await;
         let cleared_peers = self.node_peers.clear_stale(&self.fabric, &self.node_anrs).await;
         if cleared_shards > 0 || cleared_peers > 0 {
             debug!("cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
@@ -291,23 +292,31 @@ impl Context {
     #[instrument(skip(self), name = "entries_task")]
     async fn entries_task(&self) -> Result<(), Error> {
         use consensus::consensus::proc_entries;
+        self.fabric.start_proc_entries();
         if let Err(e) = proc_entries(&self.fabric, &self.config, self).await {
             warn!("proc_entries failed: {e}");
         }
+        self.fabric.stop_proc_entries();
         Ok(())
     }
 
     #[instrument(skip(self), name = "consensus_task")]
     async fn consensus_task(&self) -> Result<(), Error> {
         use consensus::consensus::proc_consensus;
+        self.fabric.start_proc_consensus();
         if let Err(e) = proc_consensus(&self.fabric) {
             warn!("proc_consensus failed: {e}");
         }
+        self.fabric.stop_proc_consensus();
         Ok(())
     }
 
     #[instrument(skip(self), name = "catchup_task")]
     async fn catchup_task(&self) -> Result<bool, Error> {
+        if self.fabric.is_proc_consensus_or_entries() {
+            return Ok(true);
+        }
+
         let temporal_height = match self.fabric.get_temporal_height() {
             Ok(Some(h)) => h,
             Ok(None) => 0,
@@ -324,7 +333,7 @@ impl Context {
         let behind_bft = peers_bft.saturating_sub(temporal_height);
         let rooting_stuck = (temporal_height - rooted_height) > 1000;
 
-        if (temporal_height - rooted_height) > 1000 {
+        if rooting_stuck {
             warn!(
                 "Stopped syncing: getting {} consensuses starting {}",
                 temporal_height - rooted_height,
@@ -337,26 +346,26 @@ impl Context {
                 .into_iter()
                 .map(|height| CatchupHeight { height, c: Some(true), e: None, a: None, hashes: None })
                 .collect::<Vec<_>>()
-                .chunks(200)
+                .chunks(100)
                 .map(|chunk| chunk.to_vec())
                 .collect();
             self.fetch_heights(chunks, online_trainer_ips).await?;
-            return Ok(true);
+            return Ok(false);
         }
 
         if behind_bft > 0 {
             info!("Behind BFT: Syncing {} entries", behind_bft);
             let online_trainer_ips = self.node_peers.get_trainer_ips_above_temporal(peers_bft, &trainer_pks).await?;
-            let heights: Vec<u64> = (temporal_height + 1..=peers_bft).take(1000).collect();
+            let heights: Vec<u64> = (rooted_height + 1..=peers_bft).take(1000).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
                 .map(|height| CatchupHeight { height, c: Some(true), e: Some(true), a: None, hashes: None })
                 .collect::<Vec<_>>()
-                .chunks(20)
+                .chunks(100)
                 .map(|chunk| chunk.to_vec())
                 .collect();
             self.fetch_heights(chunks, online_trainer_ips).await?;
-            return Ok(true);
+            return Ok(false);
         }
 
         if behind_rooted > 0 {
@@ -371,11 +380,11 @@ impl Context {
                     CatchupHeight { height, c: Some(true), e: Some(true), a: None, hashes: Some(hashes) }
                 })
                 .collect::<Vec<_>>()
-                .chunks(20)
+                .chunks(100)
                 .map(|chunk| chunk.to_vec())
                 .collect();
             self.fetch_heights(chunks, online_trainer_ips).await?;
-            return Ok(true);
+            return Ok(false);
         }
 
         if behind_temporal > 0 {
@@ -391,11 +400,11 @@ impl Context {
                     CatchupHeight { height, c: None, e: Some(true), a: Some(true), hashes: Some(hashes) }
                 })
                 .collect::<Vec<_>>()
-                .chunks(10)
+                .chunks(100)
                 .map(|chunk| chunk.to_vec())
                 .collect();
             self.fetch_heights(chunks, online_trainer_ips).await?;
-            return Ok(true);
+            return Ok(false);
         }
 
         if behind_temporal == 0 {
@@ -610,19 +619,33 @@ impl Context {
     pub async fn parse_udp(&self, buf: &[u8], src: Ipv4Addr) -> Option<Box<dyn Protocol>> {
         self.metrics.add_incoming_udp_packet(buf.len());
 
+        if !self.node_anrs.is_within_udp_limit(src).await? {
+            return None; // nodes sends too many UDP packets
+        }
+
         // Process encrypted message shards
         match self.reassembler.add_shard(buf, &self.config.get_sk()).await {
             Ok(Some((packet, pk))) => match parse_etf_bin(&packet) {
                 Ok(proto) => {
                     self.node_peers.update_peer_from_proto(src, proto.typename()).await;
-                    if matches!(proto.typename(), NewPhoneWhoDis::TYPENAME | NewPhoneWhoDisReply::TYPENAME)
-                        || self.node_anrs.handshaked_and_valid_ip4(&pk, &src).await
-                    {
-                        self.metrics.add_incoming_proto(proto.typename());
-                        return Some(proto);
+                    let has_handshake =
+                        matches!(proto.typename(), NewPhoneWhoDis::TYPENAME | NewPhoneWhoDisReply::TYPENAME)
+                            || self.node_anrs.handshaked_and_valid_ip4(&pk, &src).await;
+
+                    if !has_handshake {
+                        self.node_anrs.unset_handshaked(&pk).await;
+                        self.metrics.add_error(&Error::String(format!("handshake needed {src}")));
+                        return None; // neither handshake message nor handshaked peer
                     }
-                    self.node_anrs.unset_handshaked(&pk).await;
-                    self.metrics.add_error(&Error::String(format!("handshake needed {src}")));
+
+                    if matches!(proto.typename(), Catchup::TYPENAME)
+                        && !self.node_anrs.is_within_catchup_limit(&pk).await?
+                    {
+                        return None; // node sends too many catchup requests
+                    }
+
+                    self.metrics.add_incoming_proto(proto.typename());
+                    return Some(proto);
                 }
                 Err(e) => self.metrics.add_error(&e),
             },
@@ -721,63 +744,6 @@ impl Context {
 
             Instruction::ReceivedConsensus { consensus } => {
                 let _ = self.fabric.insert_consensus(&consensus);
-            }
-
-            Instruction::ConsensusesPacked { packed: _ } => {
-                // Handle packed consensuses
-                info!("received consensus bulk");
-                // TODO: unpack and validate consensuses
-                // Following Elixir implementation:
-                // - Unpack each consensus
-                // - Send to FabricCoordinatorGen for validation
-            }
-
-            Instruction::CatchupEntryReq { heights } => {
-                // Handle catchup entry request
-                info!("received catchup entry request for {} heights", heights.len());
-                if heights.len() > 100 {
-                    warn!("catchup entry request too large: {} heights", heights.len());
-                }
-                // TODO: implement entry catchup response
-                // Following Elixir implementation:
-                // - For each height, get entries by height
-                // - Send entry messages back to requester
-            }
-
-            Instruction::CatchupTriReq { heights } => {
-                // Handle catchup tri request (entries with attestations/consensus)
-                info!("received catchup tri request for {} heights", heights.len());
-                if heights.len() > 30 {
-                    warn!("catchup tri request too large: {} heights", heights.len());
-                }
-                // TODO: implement tri catchup response
-                // Following Elixir implementation:
-                // - Get entries by height with attestations or consensus
-                // - Send entry messages with attached data back to requester
-            }
-
-            Instruction::CatchupBiReq { heights } => {
-                // Handle catchup bi request (attestations and consensuses)
-                info!("received catchup bi request for {} heights", heights.len());
-                if heights.len() > 30 {
-                    warn!("catchup bi request too large: {} heights", heights.len());
-                }
-                // TODO: implement bi catchup response
-                // Following Elixir implementation:
-                // - Get attestations and consensuses by height
-                // - Send attestation_bulk and consensus_bulk messages
-            }
-
-            Instruction::CatchupAttestationReq { hashes } => {
-                // Handle catchup attestation request
-                info!("received catchup attestation request for {} hashes", hashes.len());
-                if hashes.len() > 30 {
-                    warn!("catchup attestation request too large: {} hashes", hashes.len());
-                }
-                // TODO: implement attestation catchup response
-                // Following Elixir implementation:
-                // - Get attestations by entry hash
-                // - Send attestation_bulk message back to requester
             }
 
             Instruction::SpecialBusiness { business: _ } => {
@@ -953,7 +919,7 @@ mod tests {
         match Context::with_config_and_socket(config, socket).await {
             Ok(ctx) => {
                 // test cleanup_stale manual trigger - should not panic
-                ctx.cleanup_task(8).await;
+                ctx.cleanup_task().await;
             }
             Err(_) => {
                 // context creation failed - this can happen when running tests in parallel

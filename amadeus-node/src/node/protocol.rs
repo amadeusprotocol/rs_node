@@ -105,11 +105,6 @@ pub enum Instruction {
     ReceivedEntry { entry: Entry },
     ReceivedAttestation { attestation: Attestation },
     ReceivedConsensus { consensus: Consensus },
-    ConsensusesPacked { packed: Vec<u8> },
-    CatchupEntryReq { heights: Vec<u64> },
-    CatchupTriReq { heights: Vec<u64> },
-    CatchupBiReq { heights: Vec<u64> },
-    CatchupAttestationReq { hashes: Vec<Vec<u8>> },
     SpecialBusiness { business: Vec<u8> },
     SpecialBusinessReply { business: Vec<u8> },
     SolicitEntry { hash: Vec<u8> },
@@ -250,31 +245,6 @@ pub struct Ping {
 pub struct PingReply {
     pub ts_m: u64,
     pub seen_time: u64,
-}
-
-#[derive(Debug)]
-pub struct ConsensusBulk {
-    pub consensuses_packed: Vec<u8>,
-}
-
-#[derive(Debug)]
-pub struct CatchupEntry {
-    pub heights: Vec<u64>,
-}
-
-#[derive(Debug)]
-pub struct CatchupTri {
-    pub heights: Vec<u64>,
-}
-
-#[derive(Debug)]
-pub struct CatchupBi {
-    pub heights: Vec<u64>,
-}
-
-#[derive(Debug)]
-pub struct CatchupAttestation {
-    pub hashes: Vec<Vec<u8>>,
 }
 
 /// Requests information about selected heights (<1000 heights per request)
@@ -467,7 +437,7 @@ impl Protocol for CatchupReply {
     async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
         use tracing::debug;
 
-        let mut instructions = Vec::new();
+        let instructions = Vec::new();
         let rooted_tip_height = ctx.fabric.get_rooted_height()?.unwrap_or(0);
 
         for trie in &self.heights {
@@ -476,7 +446,24 @@ impl Protocol for CatchupReply {
                 debug!("Received {} entries at height {}", entries.len(), trie.height);
                 for entry in entries {
                     if entry.header.height >= rooted_tip_height {
-                        instructions.push(Instruction::ReceivedEntry { entry: entry.clone() });
+                        let seen_time_ms = get_unix_millis_now();
+                        match entry.pack() {
+                            Ok(entry_bin) => {
+                                if let Err(e) = ctx.fabric.insert_entry(
+                                    &entry.hash,
+                                    entry.header.height,
+                                    entry.header.slot,
+                                    &entry_bin,
+                                    seen_time_ms,
+                                ) {
+                                    warn!("Failed to insert entry at height {}: {e}", entry.header.height);
+                                } else {
+                                    debug!("Successfully inserted entry at height {}", entry.header.height);
+                                }
+                            }
+                            Err(e) => warn!("Failed to pack entry for insertion: {}", e),
+                        }
+                        //instructions.push(Instruction::ReceivedEntry { entry: entry.clone() });
                     }
                 }
             }
@@ -484,8 +471,13 @@ impl Protocol for CatchupReply {
             // Handle attestations - validate and insert
             if let Some(ref attestations) = trie.attestations {
                 debug!("Received {} attestations at height {}", attestations.len(), trie.height);
-                for attestation in attestations {
-                    instructions.push(Instruction::ReceivedAttestation { attestation: attestation.clone() });
+                for _attestation in attestations {
+                    //info!("received attestation for entry {:?}", &attestation.entry_hash[..8]);
+                    // TODO: implement attestation validation and insertion
+                    // Following Elixir implementation:
+                    // - Validate attestation vs chain
+                    // - Insert if valid, cache if invalid but structurally correct
+                    debug!("Attestation handling not fully implemented yet");
                 }
             }
 
@@ -493,7 +485,11 @@ impl Protocol for CatchupReply {
             if let Some(ref consensuses) = trie.consensuses {
                 debug!("Received {} consensuses at height {}", consensuses.len(), trie.height);
                 for consensus in consensuses {
-                    instructions.push(Instruction::ReceivedConsensus { consensus: consensus.clone() });
+                    if let Err(e) = ctx.fabric.insert_consensus(&consensus) {
+                        warn!("Failed to insert consensus at height {}: {e}", trie.height);
+                    } else {
+                        debug!("Successfully inserted entry at height {}", trie.height);
+                    }
                 }
             }
         }

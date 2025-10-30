@@ -1010,9 +1010,7 @@ pub fn get_softfork_settings() -> SoftforkSettings {
 
 pub async fn proc_entries(fabric: &Fabric, config: &crate::config::Config, ctx: &crate::Context) -> Result<(), Error> {
     // Skip processing if no temporal_tip or if entry data not available yet
-    if fabric.get_temporal_entry()?.is_none() {
-        return Ok(());
-    }
+    fabric.get_temporal_entry()?.ok_or(Error::Missing("temporal_tip"))?;
 
     let softfork_settings = get_softfork_settings();
 

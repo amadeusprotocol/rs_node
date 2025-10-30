@@ -317,8 +317,8 @@ impl ReedSolomonReassembler {
     }
 
     /// Clean up stale incomplete reassembly entries older than `seconds`
-    pub async fn clear_stale(&self, seconds: u64) -> usize {
-        let threshold_ms = get_unix_millis_now().saturating_sub(seconds * 1_000);
+    pub async fn clear_stale(&self) -> usize {
+        let threshold_ms = get_unix_millis_now().saturating_sub(8_000);
         let mut map = self.reorg.write().await;
         let size_before = map.len();
         map.retain(|_k, v| v.ts_m > threshold_ms);

@@ -274,11 +274,11 @@ impl Fabric {
         to_sign[32..].copy_from_slice(&consensus.mutations_hash);
 
         let entry = self.get_entry_by_hash(&consensus.entry_hash).ok_or(Error::BadEtf("invalid_entry"))?;
-        let curr_h = self.get_temporal_height()?.ok_or(Error::KvCell("temporal_height_missing"))?;
+        //let curr_h = self.get_temporal_height()?.ok_or(Error::KvCell("temporal_height_missing"))?;
 
-        if entry.header.height > curr_h {
-            return Err(Error::BadEtf("too_far_in_future"));
-        }
+        // if entry.header.height > curr_h {
+        //     return Err(Error::BadEtf("too_far_in_future"));
+        // }
 
         let trainers = self.trainers_for_height(entry.header.height).ok_or(Error::KvCell("trainers_for_height"))?;
         if trainers.is_empty() {
@@ -663,6 +663,24 @@ impl Fabric {
             _ => false,
         }
     }
+
+    pub fn start_proc_consensus(&self) {
+        let _ = self.db.put(CF_SYSCONF, b"proc_consensus", &[1]);
+    }
+    pub fn stop_proc_consensus(&self) {
+        let _ = self.db.put(CF_SYSCONF, b"proc_consensus", &[0]);
+    }
+    pub fn start_proc_entries(&self) {
+        let _ = self.db.put(CF_SYSCONF, b"proc_entries", &[1]);
+    }
+    pub fn stop_proc_entries(&self) {
+        let _ = self.db.put(CF_SYSCONF, b"proc_entries", &[0]);
+    }
+
+    pub fn is_proc_consensus_or_entries(&self) -> bool {
+        self.db.get(CF_SYSCONF, b"proc_consensus").ok().flatten().map_or(false, |v| v[0] == 1)
+            || self.db.get(CF_SYSCONF, b"proc_entries").ok().flatten().map_or(false, |v| v[0] == 1)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -790,18 +808,15 @@ mod tests {
     #[test]
     fn test_pack_unpack_consensus_map() {
         let mut map = HashMap::new();
-        map.insert([1; 32], StoredConsensus {
-            mask: bitvec![u8, Msb0; 1, 0, 1, 1, 0, 1, 0, 0],
-            agg_sig: [10; 96]
-        });
-        map.insert([2; 32], StoredConsensus {
-            mask: bitvec![u8, Msb0; 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0],
-            agg_sig: [20; 96]
-        });
-        map.insert([3; 32], StoredConsensus {
-            mask: bitvec![u8, Msb0; 0, 0, 0, 0, 1, 1, 1, 1],
-            agg_sig: [30; 96]
-        });
+        map.insert([1; 32], StoredConsensus { mask: bitvec![u8, Msb0; 1, 0, 1, 1, 0, 1, 0, 0], agg_sig: [10; 96] });
+        map.insert(
+            [2; 32],
+            StoredConsensus {
+                mask: bitvec![u8, Msb0; 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0],
+                agg_sig: [20; 96],
+            },
+        );
+        map.insert([3; 32], StoredConsensus { mask: bitvec![u8, Msb0; 0, 0, 0, 0, 1, 1, 1, 1], agg_sig: [30; 96] });
 
         let packed = pack_consensus_map(&map).unwrap();
         let unpacked = unpack_consensus_map(&packed).unwrap();

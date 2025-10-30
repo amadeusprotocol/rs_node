@@ -13,6 +13,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::debug;
 
+const UDP_PACKETS_LIMIT: u64 = 40_000;
+const CATCHUP_REQS_LIMIT: u64 = 20;
+
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
 pub enum Error {
     #[error("Failed to sign ANR: {0}")]
@@ -76,6 +79,10 @@ pub struct Anr {
     pub pk_b3: [u8; 32],
     #[serde(skip)]
     pub pk_b3_f4: [u8; 4],
+    #[serde(skip)]
+    pub catchup_reqs: u64,
+    #[serde(skip)]
+    pub udp_packets: u64,
 }
 
 impl From<SeedANR> for Anr {
@@ -102,6 +109,8 @@ impl From<SeedANR> for Anr {
             next_check: seed.ts + 3,
             pk_b3,
             pk_b3_f4,
+            catchup_reqs: 0,
+            udp_packets: 0,
         }
     }
 }
@@ -156,6 +165,8 @@ impl Anr {
             next_check: ts_s + 3,
             pk_b3,
             pk_b3_f4,
+            catchup_reqs: 0,
+            udp_packets: 0,
         };
 
         // create signature over erlang term format like elixir
@@ -227,6 +238,8 @@ impl Anr {
             next_check: ts + 3,
             pk_b3,
             pk_b3_f4,
+            catchup_reqs: 0,
+            udp_packets: 0,
         })
     }
 
@@ -342,6 +355,8 @@ impl Anr {
                 error: None,
                 error_tries: 0,
                 next_check: 0,
+                catchup_reqs: 0,
+                udp_packets: 0,
             })
         } else {
             Err(Error::InvalidPort(anr.port))
@@ -367,6 +382,8 @@ impl Anr {
             error: None,
             error_tries: 0,
             next_check: 0,
+            catchup_reqs: 0,
+            udp_packets: 0,
         }
     }
 }
@@ -452,6 +469,35 @@ impl NodeAnrs {
         let map = self.store.read().await;
         let anrs: Vec<Anr> = map.values().cloned().collect();
         anrs
+    }
+
+    /// Increment and return the frames counter
+    pub async fn is_within_udp_limit(&self, ip4: Ipv4Addr) -> Option<bool> {
+        let mut map = self.store.write().await;
+        if let Some(anr) = map.values_mut().find(|anr| anr.ip4 == ip4) {
+            anr.udp_packets += 1;
+            return Some(anr.udp_packets < UDP_PACKETS_LIMIT);
+        }
+        None
+    }
+
+    /// Increment the catchup counter
+    pub async fn is_within_catchup_limit(&self, pk: &[u8]) -> Option<bool> {
+        let mut map = self.store.write().await;
+        if let Some(anr) = map.get_mut(pk) {
+            anr.catchup_reqs += 1;
+            return Some(anr.catchup_reqs < CATCHUP_REQS_LIMIT);
+        }
+        None
+    }
+
+    /// Reset rate limiting counters for all anrs
+    pub async fn update_rate_limiting_counters(&self) {
+        let mut map = self.store.write().await;
+        for anr in map.values_mut() {
+            anr.udp_packets = anr.udp_packets.saturating_sub(UDP_PACKETS_LIMIT / 2);
+            anr.catchup_reqs = anr.catchup_reqs.saturating_sub(CATCHUP_REQS_LIMIT / 2);
+        }
     }
 
     /// Reset handshaked status (will silently return if pk not found)
@@ -670,6 +716,8 @@ mod tests {
             next_check: 1234567893,
             pk_b3,
             pk_b3_f4,
+            catchup_reqs: 0,
+            udp_packets: 0,
         };
 
         // test insert
@@ -745,6 +793,8 @@ mod tests {
             next_check: 1003,
             pk_b3,
             pk_b3_f4,
+            catchup_reqs: 0,
+            udp_packets: 0,
         };
         registry.insert(anr1).await;
         registry.set_handshaked(&pk).await;
@@ -767,6 +817,8 @@ mod tests {
             next_check: 1002,
             pk_b3,
             pk_b3_f4,
+            catchup_reqs: 0,
+            udp_packets: 0,
         };
         registry.insert(anr2).await;
 
@@ -794,6 +846,8 @@ mod tests {
             next_check: 2003,
             pk_b3,
             pk_b3_f4,
+            catchup_reqs: 0,
+            udp_packets: 0,
         };
         registry.insert(anr3).await;
 
@@ -820,6 +874,8 @@ mod tests {
             next_check: 3003,
             pk_b3,
             pk_b3_f4,
+            catchup_reqs: 0,
+            udp_packets: 0,
         };
         registry.insert(anr4).await;
 
@@ -866,6 +922,8 @@ mod tests {
                 next_check: 2000,
                 pk_b3,
                 pk_b3_f4,
+                catchup_reqs: 0,
+                udp_packets: 0,
             };
 
             registry.insert(anr).await;
@@ -923,6 +981,8 @@ mod tests {
             next_check: 0,
             pk_b3,
             pk_b3_f4,
+            catchup_reqs: 0,
+            udp_packets: 0,
         };
 
         let encoded = anr_with_optionals.to_etf_bin_for_signing();
