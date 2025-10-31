@@ -1,7 +1,7 @@
 use crate::consensus::consensus_apply::ApplyEnv;
 use crate::consensus::consensus_kv::{kv_exists, kv_get, kv_increment, kv_put, kv_set_bit};
 use crate::{bcat, consensus};
-use amadeus_utils::constants::DST_MOTION;
+use amadeus_utils::constants::{CF_CONTRACTSTATE, DST_MOTION};
 use amadeus_utils::{blake3, bls12_381};
 use bitvec::order::Msb0;
 use bitvec::prelude::BitVec;
@@ -791,13 +791,13 @@ pub fn trainers_for_height(db: &amadeus_utils::rocksdb::RocksDb, height: u64) ->
     use amadeus_utils::misc::TermExt;
 
     let value: Option<Vec<u8>> = if (3_195_570..=3_195_575).contains(&height) {
-        match db.get("contractstate", b"bic:epoch:trainers:height:000000319557") {
+        match db.get(CF_CONTRACTSTATE, b"bic:epoch:trainers:height:000000319557") {
             Ok(v) => v,
             Err(_) => return None,
         }
     } else {
         let key_suffix = format!("{:012}", height);
-        match db.get_prev_or_first("contractstate", "bic:epoch:trainers:height:", &key_suffix) {
+        match db.get_prev_or_first(CF_CONTRACTSTATE, "bic:epoch:trainers:height:", &key_suffix) {
             Ok(Some((_k, v))) => Some(v),
             Ok(None) => None,
             Err(_) => return None,

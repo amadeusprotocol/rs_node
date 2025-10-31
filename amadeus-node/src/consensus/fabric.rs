@@ -3,6 +3,10 @@ use crate::consensus::doms::entry::Entry;
 use crate::utils::misc::{TermExt, bin_to_bitvec, bitvec_to_bin};
 use crate::utils::rocksdb::RocksDb;
 use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
+use amadeus_utils::constants::{
+    CF_CONSENSUS_BY_ENTRYHASH, CF_ENTRY, CF_ENTRY_BY_HEIGHT, CF_ENTRY_BY_SLOT, CF_MUTS, CF_MUTS_REV,
+    CF_MY_ATTESTATION_FOR_ENTRY, CF_MY_SEEN_TIME_FOR_ENTRY, CF_SYSCONF, CF_TX, CF_TX_ACCOUNT_NONCE,
+};
 use amadeus_utils::misc::get_bits_percentage;
 use amadeus_utils::rocksdb::{Direction, IteratorMode, ReadOptions};
 use amadeus_utils::safe_etf::u32_to_term;
@@ -34,14 +38,6 @@ pub enum Error {
     #[error("invalid etf: {0}")]
     BadEtf(&'static str),
 }
-
-const CF_ENTRY: &str = "entry";
-const CF_CONSENSUS_BY_ENTRYHASH: &str = "consensus_by_entryhash|Map<mutationshash,consensus>";
-const CF_SYSCONF: &str = "sysconf";
-const CF_ENTRY_BY_HEIGHT: &str = "entry_by_height|height->entryhash";
-const CF_ENTRY_BY_SLOT: &str = "entry_by_slot|slot->entryhash";
-const CF_MY_SEEN_TIME_FOR_ENTRY: &str = "my_seen_time_entry|entryhash->ts_sec";
-const CF_MY_ATTESTATION_FOR_ENTRY: &str = "my_attestation_for_entry|entryhash->attestation";
 
 /// Initialize Fabric DB area (creates/open RocksDB with the required CFs)
 async fn init_kvdb(base: &str) -> Result<RocksDb, Error> {
@@ -454,11 +450,11 @@ impl Fabric {
     }
 
     pub fn get_muts_rev(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, Error> {
-        Ok(self.db.get("muts_rev", hash)?)
+        Ok(self.db.get(CF_MUTS_REV, hash)?)
     }
 
     pub fn put_muts_rev(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
-        let cf_muts_rev = self.db.inner.cf_handle("muts_rev").unwrap();
+        let cf_muts_rev = self.db.inner.cf_handle(CF_MUTS_REV).unwrap();
 
         let txn = self.db.begin_transaction();
         txn.put_cf(&cf_muts_rev, hash, data)?;
@@ -468,7 +464,7 @@ impl Fabric {
     }
 
     pub fn delete_muts_rev(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        let cf_muts_rev = self.db.inner.cf_handle("muts_rev").unwrap();
+        let cf_muts_rev = self.db.inner.cf_handle(CF_MUTS_REV).unwrap();
 
         let txn = self.db.begin_transaction();
         txn.delete_cf(&cf_muts_rev, hash)?;
@@ -478,11 +474,11 @@ impl Fabric {
     }
 
     pub fn get_muts(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, Error> {
-        Ok(self.db.get("muts", hash)?)
+        Ok(self.db.get(CF_MUTS, hash)?)
     }
 
     pub fn put_muts(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
-        let cf_muts = self.db.inner.cf_handle("muts").unwrap();
+        let cf_muts = self.db.inner.cf_handle(CF_MUTS).unwrap();
 
         let txn = self.db.begin_transaction();
         txn.put_cf(&cf_muts, hash, data)?;
@@ -572,7 +568,7 @@ impl Fabric {
     }
 
     pub fn put_tx_metadata(&self, key: &[u8], tx: &[u8]) -> Result<(), Error> {
-        let cf_tx = self.db.inner.cf_handle("tx|txhash->entryhash").unwrap();
+        let cf_tx = self.db.inner.cf_handle(CF_TX).unwrap();
 
         let txn = self.db.begin_transaction();
         txn.put_cf(&cf_tx, key, tx)?;
@@ -582,7 +578,7 @@ impl Fabric {
     }
 
     pub fn delete_tx_metadata(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        let cf_tx = self.db.inner.cf_handle("tx|txhash->entryhash").unwrap();
+        let cf_tx = self.db.inner.cf_handle(CF_TX).unwrap();
 
         let txn = self.db.begin_transaction();
         txn.delete_cf(&cf_tx, hash)?;
@@ -592,7 +588,7 @@ impl Fabric {
     }
 
     pub fn put_tx_account_nonce(&self, key: &[u8], tx_hash: &[u8; 32]) -> Result<(), Error> {
-        let cf_nonce = self.db.inner.cf_handle("tx_account_nonce|account:nonce->txhash").unwrap();
+        let cf_nonce = self.db.inner.cf_handle(CF_TX_ACCOUNT_NONCE).unwrap();
 
         let txn = self.db.begin_transaction();
         txn.put_cf(&cf_nonce, key, tx_hash)?;
@@ -602,7 +598,7 @@ impl Fabric {
     }
 
     pub fn delete_tx_account_nonce(&self, key: &[u8]) -> Result<(), Error> {
-        let cf_nonce = self.db.inner.cf_handle("tx_account_nonce|account:nonce->txhash").unwrap();
+        let cf_nonce = self.db.inner.cf_handle(CF_TX_ACCOUNT_NONCE).unwrap();
 
         let txn = self.db.begin_transaction();
         txn.delete_cf(&cf_nonce, key)?;
@@ -628,7 +624,7 @@ impl Fabric {
 
     fn clean_muts_rev_range(&self, start: u64, end: u64) -> Result<(), crate::utils::rocksdb::Error> {
         let cf_by_height = self.db.inner.cf_handle(CF_ENTRY_BY_HEIGHT).unwrap();
-        let cf_muts_rev = self.db.inner.cf_handle("muts_rev").unwrap();
+        let cf_muts_rev = self.db.inner.cf_handle(CF_MUTS_REV).unwrap();
 
         let start_key = format!("{}:", start).into_bytes();
         let end_key = format!("{}:", end + 1).into_bytes();
@@ -907,19 +903,19 @@ mod tests {
         fab.insert_entry(&h2, 101, 1001, &[2], 0).unwrap();
         fab.insert_entry(&h3, 102, 1002, &[3], 0).unwrap();
         fab.insert_entry(&h4, 103, 1003, &[4], 0).unwrap();
-        fab.db.put("muts_rev", &h0, b"data0").unwrap();
-        fab.db.put("muts_rev", &h1, b"data1").unwrap();
-        fab.db.put("muts_rev", &h2, b"data2").unwrap();
-        fab.db.put("muts_rev", &h3, b"data3").unwrap();
-        fab.db.put("muts_rev", &h4, b"data4").unwrap();
+        fab.db.put(CF_MUTS_REV, &h0, b"data0").unwrap();
+        fab.db.put(CF_MUTS_REV, &h1, b"data1").unwrap();
+        fab.db.put(CF_MUTS_REV, &h2, b"data2").unwrap();
+        fab.db.put(CF_MUTS_REV, &h3, b"data3").unwrap();
+        fab.db.put(CF_MUTS_REV, &h4, b"data4").unwrap();
 
         fab.clean_muts_rev_range(100, 102).unwrap();
 
-        assert!(fab.db.get("muts_rev", &h0).unwrap().is_some());
-        assert!(fab.db.get("muts_rev", &h1).unwrap().is_none());
-        assert!(fab.db.get("muts_rev", &h2).unwrap().is_none());
-        assert!(fab.db.get("muts_rev", &h3).unwrap().is_none());
-        assert!(fab.db.get("muts_rev", &h4).unwrap().is_some());
+        assert!(fab.db.get(CF_MUTS_REV, &h0).unwrap().is_some());
+        assert!(fab.db.get(CF_MUTS_REV, &h1).unwrap().is_none());
+        assert!(fab.db.get(CF_MUTS_REV, &h2).unwrap().is_none());
+        assert!(fab.db.get(CF_MUTS_REV, &h3).unwrap().is_none());
+        assert!(fab.db.get(CF_MUTS_REV, &h4).unwrap().is_some());
     }
 
     #[test]

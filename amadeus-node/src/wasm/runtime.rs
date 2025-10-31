@@ -1,4 +1,5 @@
 use super::super::bic::epoch::CallEnv;
+use amadeus_utils::constants::CF_CONTRACTSTATE;
 use crate::kv;
 use crate::wasm::opcodes::{RpcMessage, RpcResponse};
 use std::sync::mpsc::{Receiver, Sender};
@@ -397,7 +398,7 @@ mod host_functions {
 
         // Look up bytecode directly from DB (read-only operation)
         let key = crate::utils::misc::bcat(&[b"bic:contract:account:", &contract_pk, b":bytecode"]);
-        let bytecode = match context.db.get("contractstate", &key).ok().flatten() {
+        let bytecode = match context.db.get(CF_CONTRACTSTATE, &key).ok().flatten() {
             Some(b) => b,
             None => {
                 let mut logs = context.logs.lock().unwrap();

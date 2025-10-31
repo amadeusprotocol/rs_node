@@ -11,6 +11,7 @@ pub use amadeus_utils::constants::{
 
 use crate::utils::misc::TermExt;
 use crate::utils::rocksdb::RocksDb;
+use amadeus_utils::constants::CF_SYSCONF;
 use eetf::Term;
 
 // Re-export from bic module for backward compatibility
@@ -45,7 +46,7 @@ pub fn chain_epoch(db: &RocksDb) -> u32 {
 
 /// Chain height accessor - gets current blockchain height
 pub fn chain_height(db: &RocksDb) -> u32 {
-    match db.get("sysconf", b"temporal_height") {
+    match db.get(CF_SYSCONF, b"temporal_height") {
         Ok(Some(bytes)) => {
             // Elixir stores as ETF term with `term: true`
             match Term::decode(&bytes[..]) {
@@ -196,7 +197,9 @@ mod tests {
             .collect()
     }
 
-    fn decode_muts(bin: &[u8]) -> Result<Vec<amadeus_runtime::consensus::consensus_muts::Mutation>, Box<dyn std::error::Error>> {
+    fn decode_muts(
+        bin: &[u8],
+    ) -> Result<Vec<amadeus_runtime::consensus::consensus_muts::Mutation>, Box<dyn std::error::Error>> {
         use crate::utils::misc::TermExt;
         let term = Term::decode(bin)?;
         let list = match &term {
@@ -224,16 +227,9 @@ mod tests {
                             .and_then(|t| t.get_binary())
                             .ok_or("no val")?
                             .to_vec();
-                        Ok(amadeus_runtime::consensus::consensus_muts::Mutation::Put {
-                            op: vec![],
-                            key,
-                            value,
-                        })
+                        Ok(amadeus_runtime::consensus::consensus_muts::Mutation::Put { op: vec![], key, value })
                     }
-                    "delete" => Ok(amadeus_runtime::consensus::consensus_muts::Mutation::Delete {
-                        op: vec![],
-                        key,
-                    }),
+                    "delete" => Ok(amadeus_runtime::consensus::consensus_muts::Mutation::Delete { op: vec![], key }),
                     "set_bit" => {
                         let value = m
                             .get(&Term::Atom(eetf::Atom::from("value")))
@@ -255,11 +251,7 @@ mod tests {
                             .get(&Term::Atom(eetf::Atom::from("value")))
                             .and_then(|t| if let Term::FixInteger(i) = t { Some(i.value) } else { None })
                             .ok_or("no bit")? as u64;
-                        Ok(amadeus_runtime::consensus::consensus_muts::Mutation::ClearBit {
-                            op: vec![],
-                            key,
-                            value,
-                        })
+                        Ok(amadeus_runtime::consensus::consensus_muts::Mutation::ClearBit { op: vec![], key, value })
                     }
                     _ => Err("unknown op".into()),
                 }

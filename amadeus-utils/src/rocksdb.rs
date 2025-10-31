@@ -819,20 +819,20 @@ pub mod snapshot {
             let db = super::RocksDb::open(base.clone()).await.expect("open test db");
 
             // Put some test data
-            db.put("default", b"key1", b"value1").unwrap();
-            db.put("default", b"key2", b"value2").unwrap();
-            db.put("default", b"key3", b"value3").unwrap();
+            db.put(crate::constants::CF_DEFAULT, b"key1", b"value1").unwrap();
+            db.put(crate::constants::CF_DEFAULT, b"key2", b"value2").unwrap();
+            db.put(crate::constants::CF_DEFAULT, b"key3", b"value3").unwrap();
 
             let spk_path = std::path::PathBuf::from(format!("{}/test.spk", base));
 
             // Export snapshot
-            let manifest = export_spk(&db, "default", &spk_path).await.unwrap();
+            let manifest = export_spk(&db, crate::constants::CF_DEFAULT, &spk_path).await.unwrap();
             assert_eq!(manifest.items_total, 3);
-            assert_eq!(manifest.cf, "default");
+            assert_eq!(manifest.cf, crate::constants::CF_DEFAULT);
             assert_eq!(manifest.version, 1);
 
             // Verify hash matches
-            let cf_hash = hash_cf(&db, "default").await.unwrap();
+            let cf_hash = hash_cf(&db, crate::constants::CF_DEFAULT).await.unwrap();
             assert_eq!(hex::encode(cf_hash), manifest.root_hex);
 
             // Test import on a fresh database instance
@@ -840,15 +840,15 @@ pub mod snapshot {
             let db2 = super::RocksDb::open(base2.clone()).await.expect("open test db 2");
 
             // Import the snapshot to the fresh database
-            import_spk(&db2, "default", &spk_path, &manifest, 1024).await.unwrap();
+            import_spk(&db2, crate::constants::CF_DEFAULT, &spk_path, &manifest, 1024).await.unwrap();
 
             // Verify data was imported correctly
-            assert_eq!(db2.get("default", b"key1").unwrap(), Some(b"value1".to_vec()));
-            assert_eq!(db2.get("default", b"key2").unwrap(), Some(b"value2".to_vec()));
-            assert_eq!(db2.get("default", b"key3").unwrap(), Some(b"value3".to_vec()));
+            assert_eq!(db2.get(crate::constants::CF_DEFAULT, b"key1").unwrap(), Some(b"value1".to_vec()));
+            assert_eq!(db2.get(crate::constants::CF_DEFAULT, b"key2").unwrap(), Some(b"value2".to_vec()));
+            assert_eq!(db2.get(crate::constants::CF_DEFAULT, b"key3").unwrap(), Some(b"value3".to_vec()));
 
             // Verify hash matches on imported data
-            let cf_hash_after = hash_cf(&db2, "default").await.unwrap();
+            let cf_hash_after = hash_cf(&db2, crate::constants::CF_DEFAULT).await.unwrap();
             assert_eq!(hex::encode(cf_hash_after), manifest.root_hex);
         }
     }
