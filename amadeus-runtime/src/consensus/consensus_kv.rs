@@ -204,6 +204,36 @@ pub fn kv_clear_prefix(env: &mut ApplyEnv, prefix: &[u8]) -> Result<()> {
     Ok(())
 }
 
+pub fn revert(env: &mut ApplyEnv) -> Result<()> {
+    for m in env.muts_rev.clone() {
+        match m {
+            Mutation::Put { op: _, key, value } => {
+                kv_put(env, key.as_slice(), value.as_slice())?;
+            }
+            Mutation::Delete { op: _, key } => {
+                kv_delete(env, key.as_slice())?;
+            }
+            Mutation::SetBit { op: _, key: _, value: _, bloomsize: _ } => {
+                panic!("SetBit should not be in reverse mutations");
+            }
+            Mutation::ClearBit { op: _, key, value } => {
+                let bit_idx = value;
+                if let Some(mut old) = kv_get(env, key.as_slice())? {
+                    let byte_idx = (bit_idx / 8) as usize;
+                    let bit_in = (bit_idx % 8) as u8;
+                    if byte_idx < old.len() {
+                        let mask: u8 = 1u8 << (7 - bit_in);
+                        old[byte_idx] &= !mask;
+                        kv_put(env, key.as_slice(), old.as_slice())?;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub fn apply_mutations(db: &RocksDb, cf_name: &str, muts_rev: &[Mutation]) -> Result<()> {
     let cf = db.inner.cf_handle(cf_name).unwrap(); // the cf must be present!
     let txn = db.begin_transaction();

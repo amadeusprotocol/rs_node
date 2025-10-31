@@ -10,7 +10,6 @@ use crate::utils::rocksdb::RocksDb;
 use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
 use amadeus_runtime::consensus::consensus_apply::ApplyEnv;
 use amadeus_runtime::consensus::consensus_kv;
-use amadeus_runtime::consensus::consensus_kv::apply_mutations;
 use amadeus_runtime::consensus::consensus_muts::Mutation;
 use amadeus_runtime::consensus::unmask_trainers;
 use amadeus_utils::constants::{DST_ENTRY, DST_VRF};
@@ -89,12 +88,12 @@ impl Consensus {
     }
 }
 
-pub fn chain_muts_rev(fabric: &fabric::Fabric, hash: &[u8; 32]) -> Option<Vec<Mutation>> {
+pub fn chain_muts_rev(fabric: &Fabric, hash: &[u8; 32]) -> Option<Vec<Mutation>> {
     let bin = fabric.get_muts_rev(hash).ok()??;
     mutations_from_etf(&bin).ok()
 }
 
-pub fn chain_muts(fabric: &fabric::Fabric, hash: &[u8; 32]) -> Option<Vec<Mutation>> {
+pub fn chain_muts(fabric: &Fabric, hash: &[u8; 32]) -> Option<Vec<Mutation>> {
     let bin = fabric.get_muts(hash).ok()??;
     mutations_from_etf(&bin).ok()
 }
@@ -449,7 +448,7 @@ pub fn apply_entry(
             muts_rev.extend(m_rev3);
         } else {
             // failure: apply reverse mutations
-            apply_mutations(fabric.db(), "contractstate", &m_rev3).map_err(Error::Runtime)?;
+            consensus_kv::revert(&mut env).map_err(Error::Runtime)?;
         }
 
         tx_results.push(TxResult { error, logs });
@@ -550,7 +549,7 @@ pub fn apply_entry(
     Ok(if is_trainer { Some(attestation_packed) } else { None })
 }
 
-pub fn produce_entry(fabric: &fabric::Fabric, config: &crate::config::Config, slot: u64) -> Result<Entry, Error> {
+pub fn produce_entry(fabric: &Fabric, config: &crate::config::Config, slot: u64) -> Result<Entry, Error> {
     let cur_entry = fabric.get_temporal_entry()?.ok_or(Error::Missing("temporal_tip"))?;
 
     // build next header
@@ -620,7 +619,7 @@ fn chain_rewind_internal(fabric: &Fabric, current_entry: &Entry, target_hash: &[
         // revert mutations for current entry
         let db = fabric.db();
         if let Some(m_rev_new) = chain_muts_rev(fabric, &current.hash) {
-            apply_mutations(db, "contractstate", &m_rev_new).map_err(Error::Runtime)?;
+            consensus_kv::apply_mutations(db, "contractstate", &m_rev_new).map_err(Error::Runtime)?;
         }
 
         // remove current entry from indices
@@ -697,7 +696,7 @@ pub struct ScoredEntry {
     pub score: Option<f64>,
 }
 
-pub fn best_entry_for_height(fabric: &fabric::Fabric, height: u64) -> Result<Vec<ScoredEntry>, Error> {
+pub fn best_entry_for_height(fabric: &Fabric, height: u64) -> Result<Vec<ScoredEntry>, Error> {
     let rooted_tip = fabric.get_rooted_hash()?.unwrap_or([0u8; 32]);
 
     // get entries by height
@@ -746,7 +745,7 @@ pub fn best_entry_for_height(fabric: &fabric::Fabric, height: u64) -> Result<Vec
     Ok(entries)
 }
 
-pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {
+pub fn proc_consensus(fabric: &Fabric) -> Result<(), Error> {
     // Skip processing if no temporal_tip or if entry data not available yet
     if fabric.get_temporal_entry()?.is_none() {
         return Ok(());
@@ -901,7 +900,7 @@ pub fn validate_next_entry(current_entry: &Entry, next_entry: &Entry) -> Result<
 /// Stub function for checking if the node is synced with quorum
 /// Returns true if the node is within X entries of the quorum (BFT threshold)
 /// TODO: implement proper sync checking via FabricSyncAttestGen.isQuorumSyncedOffByX
-fn is_quorum_synced_off_by_x(fabric: &fabric::Fabric, x: u64) -> bool {
+fn is_quorum_synced_off_by_x(fabric: &Fabric, x: u64) -> bool {
     // stub implementation - check if rooted tip is close to temporal tip
     let temporal_height = fabric.get_temporal_height().ok().flatten().unwrap_or(0);
     let rooted_height = fabric.get_rooted_height().ok().flatten().unwrap_or(0);
