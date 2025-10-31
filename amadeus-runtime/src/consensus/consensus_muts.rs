@@ -1,4 +1,4 @@
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Mutation {
     Put { op: Vec<u8>, key: Vec<u8>, value: Vec<u8> },
     Delete { op: Vec<u8>, key: Vec<u8> },

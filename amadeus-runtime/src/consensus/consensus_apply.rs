@@ -1,5 +1,5 @@
 // Consensus application environment and entry processing
-use amadeus_utils::rocksdb::{BoundColumnFamily, MultiThreaded, Transaction, TransactionDB};
+use amadeus_utils::rocksdb::{BoundColumnFamily, MultiThreaded, RocksDb, Transaction, TransactionDB};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -81,8 +81,8 @@ pub fn make_caller_env(
 }
 
 pub fn make_apply_env<'db>(
-    txn_wrapper: amadeus_utils::rocksdb::RocksDbTxn<'db>,
-    cf_name: String,
+    db: &'db RocksDb,
+    cf_name: &str,
     entry_signer: &[u8; 48],
     entry_prev_hash: &[u8; 32],
     entry_slot: u64,
@@ -93,22 +93,6 @@ pub fn make_apply_env<'db>(
     entry_vr_b3: &[u8; 32],
     entry_dr: &[u8; 32],
 ) -> ApplyEnv<'db> {
-    // Extract inner transaction and get column family handle
-    let inner = txn_wrapper.inner();
-    // note: if column family is not found, this will panic during initialization (acceptable for database setup)
-    let cf_handle = inner.db.cf_handle(&cf_name).unwrap();
-
-    // SAFETY: We're extracting the transaction from the wrapper
-    // The wrapper must be consumed/leaked to avoid double-free
-    // This is a temporary solution - proper fix would restructure the API
-    let (raw_txn, raw_db) = unsafe {
-        let inner_ptr = inner as *const amadeus_utils::rocksdb::SimpleTransaction<'db>;
-        let txn = std::ptr::read(&(*inner_ptr).txn);
-        let db = (*inner_ptr).db;
-        (txn, db)
-    };
-    std::mem::forget(txn_wrapper); // Prevent double-free
-
     ApplyEnv {
         caller_env: make_caller_env(
             entry_signer,
@@ -121,8 +105,8 @@ pub fn make_apply_env<'db>(
             entry_vr_b3,
             entry_dr,
         ),
-        cf: cf_handle,
-        txn: raw_txn,
+        cf: db.inner.cf_handle(cf_name).unwrap(), // the cf must be present!
+        txn: db.begin_transaction(),
         muts_final: Vec::new(),
         muts_final_rev: Vec::new(),
         muts: Vec::new(),

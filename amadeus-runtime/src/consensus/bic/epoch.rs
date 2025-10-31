@@ -782,7 +782,7 @@ impl Epoch {
         }
     }
 
-    pub fn next(&self, env: &mut ApplyEnv, _db: &amadeus_utils::rocksdb::RocksDb) {
+    pub fn next(&self, env: &mut ApplyEnv) {
         next(env);
     }
 }
@@ -790,15 +790,14 @@ impl Epoch {
 pub fn trainers_for_height(db: &amadeus_utils::rocksdb::RocksDb, height: u64) -> Option<Vec<[u8; 48]>> {
     use amadeus_utils::misc::TermExt;
 
-    let cf = "contractstate";
     let value: Option<Vec<u8>> = if (3_195_570..=3_195_575).contains(&height) {
-        match db.get(cf, b"bic:epoch:trainers:height:000000319557") {
+        match db.get("contractstate", b"bic:epoch:trainers:height:000000319557") {
             Ok(v) => v,
             Err(_) => return None,
         }
     } else {
         let key_suffix = format!("{:012}", height);
-        match db.get_prev_or_first(cf, "bic:epoch:trainers:height:", &key_suffix) {
+        match db.get_prev_or_first("contractstate", "bic:epoch:trainers:height:", &key_suffix) {
             Ok(Some((_k, v))) => Some(v),
             Ok(None) => None,
             Err(_) => return None,
@@ -818,6 +817,7 @@ pub fn trainers_for_height(db: &amadeus_utils::rocksdb::RocksDb, height: u64) ->
         arr.copy_from_slice(pk);
         out.push(arr);
     }
+
     Some(out)
 }
 

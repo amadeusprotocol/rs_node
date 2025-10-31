@@ -13,7 +13,7 @@ use tokio::fs::create_dir_all;
 
 #[cfg(test)]
 thread_local! {
-    static TEST_DB: std::cell::RefCell<Option<DbHandles>> = std::cell::RefCell::new(None);
+    static TEST_DB: std::cell::RefCell<Option<TransactionDB<MultiThreaded>>> = std::cell::RefCell::new(None);
 }
 
 #[cfg(test)]
@@ -50,14 +50,10 @@ pub enum Error {
     ColumnFamilyNotFound(String),
 }
 
-pub struct DbHandles {
-    pub db: TransactionDB<MultiThreaded>,
-}
-
 /// Instance-oriented wrapper to be used from Context
 #[derive(Clone)]
 pub struct RocksDb {
-    pub handles: std::sync::Arc<DbHandles>,
+    pub inner: std::sync::Arc<TransactionDB<MultiThreaded>>,
 }
 
 impl std::fmt::Debug for RocksDb {
@@ -164,7 +160,7 @@ pub fn init_for_test(base: &str) -> Result<TestDbGuard, Error> {
     let db = TransactionDB::open_cf_descriptors(&db_opts, &txn_db_opts, path, cf_descs)?;
 
     TEST_DB.with(|cell| {
-        *cell.borrow_mut() = Some(DbHandles { db });
+        *cell.borrow_mut() = Some(db);
     });
 
     Ok(TestDbGuard { base: base.to_string() })
@@ -274,30 +270,26 @@ impl RocksDb {
         db.flush()?;
         db.flush_wal(true)?;
 
-        Ok(RocksDb { handles: std::sync::Arc::new(DbHandles { db }) })
+        Ok(RocksDb { inner: std::sync::Arc::new(db) })
     }
 
-    pub fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-        let h = &self.handles;
-        let cf_h = h.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
-        Ok(h.db.get_cf(&cf_h, key)?)
+    pub fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, RocksDbError> {
+        let cf_h = self.inner.cf_handle(cf).unwrap();
+        Ok(self.inner.get_cf(&cf_h, key)?)
     }
-    pub fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        let h = &self.handles;
-        let cf_h = h.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
-        Ok(h.db.put_cf(&cf_h, key, value)?)
+    pub fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), RocksDbError> {
+        let cf_h = self.inner.cf_handle(cf).unwrap();
+        Ok(self.inner.put_cf(&cf_h, key, value)?)
     }
-    pub fn delete(&self, cf: &str, key: &[u8]) -> Result<(), Error> {
-        let h = &self.handles;
-        let cf_h = h.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
-        Ok(h.db.delete_cf(&cf_h, key)?)
+    pub fn delete(&self, cf: &str, key: &[u8]) -> Result<(), RocksDbError> {
+        let cf_h = self.inner.cf_handle(cf).unwrap();
+        Ok(self.inner.delete_cf(&cf_h, key)?)
     }
-    pub fn iter_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
-        let h = &self.handles;
-        let cf_h = h.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
+    pub fn iter_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, RocksDbError> {
+        let cf_h = self.inner.cf_handle(cf).unwrap();
         let opts = ReadOptions::default();
         let it_mode = IteratorMode::From(prefix, Direction::Forward);
-        let iter = h.db.iterator_cf_opt(&cf_h, opts, it_mode);
+        let iter = self.inner.iterator_cf_opt(&cf_h, opts, it_mode);
         let mut out = Vec::new();
         for item in iter {
             let (k, v) = item?;
@@ -313,13 +305,14 @@ impl RocksDb {
         cf: &str,
         prefix: &str,
         key_suffix: &str,
-    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
-        let h = &self.handles;
-        let cf_h = h.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
+    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, RocksDbError> {
+        let Some(cf_h) = self.inner.cf_handle(cf) else {
+            return Ok(None);
+        };
         let opts = ReadOptions::default();
         let key = format!("{}{}", prefix, key_suffix);
         let it_mode = IteratorMode::From(key.as_bytes(), Direction::Reverse);
-        let mut iter = h.db.iterator_cf_opt(&cf_h, opts, it_mode);
+        let mut iter = self.inner.iterator_cf_opt(&cf_h, opts, it_mode);
         if let Some(item) = iter.next() {
             let (k, v) = item?;
             if !k.starts_with(prefix.as_bytes()) {
@@ -329,7 +322,7 @@ impl RocksDb {
         }
         // fallback: first forward
         let it_mode_f = IteratorMode::From(prefix.as_bytes(), Direction::Forward);
-        let mut iter_f = h.db.iterator_cf_opt(&cf_h, ReadOptions::default(), it_mode_f);
+        let mut iter_f = self.inner.iterator_cf_opt(&cf_h, ReadOptions::default(), it_mode_f);
         if let Some(item) = iter_f.next() {
             let (k, v) = item?;
             if k.starts_with(prefix.as_bytes()) {
@@ -338,31 +331,26 @@ impl RocksDb {
         }
         Ok(None)
     }
-    pub fn begin_transaction(&self) -> Result<RocksDbTxn<'_>, Error> {
-        let h = &self.handles;
+    pub fn begin_transaction(&self) -> Transaction<'_, TransactionDB<MultiThreaded>> {
         let txn_opts = TransactionOptions::default();
         let write_opts = WriteOptions::default();
-        let txn = h.db.transaction_opt(&write_opts, &txn_opts);
-        Ok(RocksDbTxn { inner: SimpleTransaction { txn, db: &h.db } })
+        self.inner.transaction_opt(&write_opts, &txn_opts)
     }
 
     /// Flush write-ahead log to disk
     pub fn flush_wal(&self, sync: bool) -> Result<(), Error> {
-        let h = &self.handles;
-        h.db.flush_wal(sync).map_err(Into::into)
+        self.inner.flush_wal(sync).map_err(Into::into)
     }
 
     /// Flush all memtables to disk
     pub fn flush(&self) -> Result<(), Error> {
-        let h = &self.handles;
-        h.db.flush().map_err(Into::into)
+        self.inner.flush().map_err(Into::into)
     }
 
     /// Flush a specific column family's memtable to disk
     pub fn flush_cf(&self, cf: &str) -> Result<(), Error> {
-        let h = &self.handles;
-        let cf_h = h.db.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
-        h.db.flush_cf(&cf_h).map_err(Into::into)
+        let cf_h = self.inner.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
+        self.inner.flush_cf(&cf_h).map_err(Into::into)
     }
 
     /// Close the database gracefully by flushing pending writes
@@ -379,8 +367,7 @@ impl RocksDb {
     /// Create a checkpoint (snapshot) of the database at the given path
     /// This is a native RocksDB checkpoint operation
     pub fn checkpoint(&self, path: &str) -> Result<(), Error> {
-        let h = &self.handles;
-        h.db.create_checkpoint(path).map_err(Into::into)
+        self.inner.create_checkpoint(path).map_err(Into::into)
     }
 }
 
@@ -599,20 +586,19 @@ pub mod snapshot {
 
     /// Export a column family to a deterministic snapshot file (.spk)
     pub async fn export_spk(db: &super::RocksDb, cf_name: &str, output_path: &Path) -> Result<Manifest, Error> {
-        let handles = db.handles.as_ref();
-        let cf_handle = handles.db.cf_handle(cf_name).ok_or_else(|| {
+        let cf_handle = db.inner.cf_handle(cf_name).ok_or_else(|| {
             Error::TokioIo(
                 std::io::Error::new(std::io::ErrorKind::NotFound, format!("column family '{}' not found", cf_name))
                     .into(),
             )
         })?;
 
-        let snapshot = handles.db.snapshot();
+        let snapshot = db.inner.snapshot();
         let mut read_opts = ReadOptions::default();
         read_opts.set_total_order_seek(true);
         read_opts.set_snapshot(&snapshot);
 
-        let iterator = handles.db.iterator_cf_opt(&cf_handle, read_opts, IteratorMode::From(&[], Direction::Forward));
+        let iterator = db.inner.iterator_cf_opt(&cf_handle, read_opts, IteratorMode::From(&[], Direction::Forward));
 
         let mut records = Vec::new();
         let mut count = 0u64;
@@ -761,15 +747,13 @@ pub mod snapshot {
 
     /// Write a batch of key-value pairs to the database
     fn write_batch(db: &super::RocksDb, cf_name: &str, batch: &[(Vec<u8>, Vec<u8>)]) -> Result<(), Error> {
-        let handles = db.handles.as_ref();
-        let cf_handle =
-            handles.db.cf_handle(cf_name).ok_or_else(|| Error::ColumnFamilyNotFound(cf_name.to_string()))?;
+        let cf_handle = db.inner.cf_handle(cf_name).ok_or_else(|| Error::ColumnFamilyNotFound(cf_name.to_string()))?;
 
         let mut write_opts = WriteOptions::default();
         write_opts.set_sync(false); // Use async writes for better performance
 
         for (key, value) in batch {
-            handles.db.put_cf_opt(&cf_handle, key, value, &write_opts)?;
+            db.inner.put_cf_opt(&cf_handle, key, value, &write_opts)?;
         }
 
         Ok(())
@@ -777,19 +761,18 @@ pub mod snapshot {
 
     /// Hash a column family in the database (for verification)
     pub async fn hash_cf(db: &super::RocksDb, cf_name: &str) -> Result<[u8; 32], Error> {
-        let handles = db.handles.as_ref();
-        let snapshot = handles.db.snapshot();
+        let snapshot = db.inner.snapshot();
         let mut read_opts = ReadOptions::default();
         read_opts.set_total_order_seek(true);
         read_opts.set_snapshot(&snapshot);
 
-        let cf_handle = handles.db.cf_handle(cf_name).ok_or_else(|| {
+        let cf_handle = db.inner.cf_handle(cf_name).ok_or_else(|| {
             Error::TokioIo(
                 std::io::Error::new(std::io::ErrorKind::NotFound, format!("cf '{}' missing", cf_name)).into(),
             )
         })?;
 
-        let iterator = handles.db.iterator_cf_opt(&cf_handle, read_opts, IteratorMode::Start);
+        let iterator = db.inner.iterator_cf_opt(&cf_handle, read_opts, IteratorMode::Start);
 
         let mut hasher = Hasher::new();
         hasher.update(DOMAIN_SEP.as_bytes());
@@ -906,7 +889,7 @@ mod tests {
     async fn spam_random_writes() {
         use rand::Rng;
         let db = RocksDb::open("/tmp/rocksdb_spam".to_string()).await.unwrap();
-        let db_ref = &db.handles.db;
+        let db_ref = &db.inner;
         std::thread::scope(|s| {
             for _ in 0..16 {
                 s.spawn(|| {
@@ -930,7 +913,7 @@ mod tests {
         let _guard = init_for_test("/tmp/rocksdb_spam").unwrap();
         TEST_DB.with(|cell| {
             let h = cell.borrow();
-            let db = &h.as_ref().unwrap().db;
+            let db = h.as_ref().unwrap();
             let mut rng = rand::rng();
             loop {
                 for cf in cf_names() {
@@ -956,7 +939,7 @@ mod tests {
         let _guard = init_for_test("/tmp/rocksdb_spam").unwrap();
         TEST_DB.with(|cell| {
             let h = cell.borrow();
-            let db = &h.as_ref().unwrap().db;
+            let db = h.as_ref().unwrap();
             loop {
                 for cf in cf_names() {
                     let cf_h = db.cf_handle(cf).unwrap();

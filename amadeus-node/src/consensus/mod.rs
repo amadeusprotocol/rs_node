@@ -3,7 +3,6 @@ pub mod consensus;
 pub mod doms;
 pub mod fabric;
 pub mod genesis;
-pub mod kv;
 
 // Re-export DST constants from amadeus_utils
 pub use amadeus_utils::constants::{
@@ -62,7 +61,6 @@ pub fn chain_height(db: &RocksDb) -> u32 {
 mod tests {
     use crate::consensus::consensus::apply_entry;
     use crate::consensus::fabric::Fabric;
-    use crate::kv::{MutationLegacy, Op};
     use eetf::Term;
     use std::path::Path;
 
@@ -135,12 +133,8 @@ mod tests {
         apply_entry(&fabric, &config, &entry)?;
 
         // get results
-        let muts_new = crate::consensus::consensus::chain_muts(&fabric, &entry.hash).ok_or("no muts")?;
-        let muts_rev_new = crate::consensus::consensus::chain_muts_rev(&fabric, &entry.hash).ok_or("no muts_rev")?;
-
-        // convert to legacy format for comparison
-        let muts: Vec<_> = muts_new.iter().map(crate::consensus::consensus::mutation_to_legacy).collect();
-        let muts_rev: Vec<_> = muts_rev_new.iter().map(crate::consensus::consensus::mutation_to_legacy).collect();
+        let muts = crate::consensus::consensus::chain_muts(&fabric, &entry.hash).ok_or("no muts")?;
+        let muts_rev = crate::consensus::consensus::chain_muts_rev(&fabric, &entry.hash).ok_or("no muts_rev")?;
 
         // decode expected from elixir
         let exp_muts = decode_muts(&std::fs::read(format!("{}/next_muts", db_path))?)?;
@@ -202,7 +196,7 @@ mod tests {
             .collect()
     }
 
-    fn decode_muts(bin: &[u8]) -> Result<Vec<MutationLegacy>, Box<dyn std::error::Error>> {
+    fn decode_muts(bin: &[u8]) -> Result<Vec<amadeus_runtime::consensus::consensus_muts::Mutation>, Box<dyn std::error::Error>> {
         use crate::utils::misc::TermExt;
         let term = Term::decode(bin)?;
         let list = match &term {
@@ -223,37 +217,52 @@ mod tests {
                 let key =
                     m.get(&Term::Atom(eetf::Atom::from("key"))).and_then(|t| t.get_binary()).ok_or("no key")?.to_vec();
 
-                let (op, val) = match op.name.as_str() {
+                match op.name.as_str() {
                     "put" => {
-                        let v = m
+                        let value = m
                             .get(&Term::Atom(eetf::Atom::from("value")))
                             .and_then(|t| t.get_binary())
                             .ok_or("no val")?
                             .to_vec();
-                        (Op::Put, Some(v))
+                        Ok(amadeus_runtime::consensus::consensus_muts::Mutation::Put {
+                            op: vec![],
+                            key,
+                            value,
+                        })
                     }
-                    "delete" => (Op::Delete, None),
+                    "delete" => Ok(amadeus_runtime::consensus::consensus_muts::Mutation::Delete {
+                        op: vec![],
+                        key,
+                    }),
                     "set_bit" => {
-                        let bit = m
+                        let value = m
                             .get(&Term::Atom(eetf::Atom::from("value")))
                             .and_then(|t| if let Term::FixInteger(i) = t { Some(i.value) } else { None })
-                            .ok_or("no bit")? as u32;
-                        let size = m
+                            .ok_or("no bit")? as u64;
+                        let bloomsize = m
                             .get(&Term::Atom(eetf::Atom::from("bloomsize")))
                             .and_then(|t| if let Term::FixInteger(i) = t { Some(i.value) } else { None })
-                            .ok_or("no size")? as u32;
-                        (Op::SetBit { bit_idx: bit, bloom_size: size }, None)
+                            .ok_or("no size")? as u64;
+                        Ok(amadeus_runtime::consensus::consensus_muts::Mutation::SetBit {
+                            op: vec![],
+                            key,
+                            value,
+                            bloomsize,
+                        })
                     }
                     "clear_bit" => {
-                        let bit = m
+                        let value = m
                             .get(&Term::Atom(eetf::Atom::from("value")))
                             .and_then(|t| if let Term::FixInteger(i) = t { Some(i.value) } else { None })
-                            .ok_or("no bit")? as u32;
-                        (Op::ClearBit { bit_idx: bit }, None)
+                            .ok_or("no bit")? as u64;
+                        Ok(amadeus_runtime::consensus::consensus_muts::Mutation::ClearBit {
+                            op: vec![],
+                            key,
+                            value,
+                        })
                     }
-                    _ => return Err("unknown op".into()),
-                };
-                Ok(MutationLegacy { op, key, value: val })
+                    _ => Err("unknown op".into()),
+                }
             })
             .collect()
     }

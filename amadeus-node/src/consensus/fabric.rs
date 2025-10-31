@@ -1,9 +1,11 @@
 use crate::consensus::doms::attestation::Attestation;
 use crate::consensus::doms::entry::Entry;
 use crate::utils::misc::{TermExt, bin_to_bitvec, bitvec_to_bin};
-use crate::utils::rocksdb::{self, RocksDb};
+use crate::utils::rocksdb::RocksDb;
 use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
 use amadeus_utils::misc::get_bits_percentage;
+use amadeus_utils::rocksdb::{Direction, IteratorMode, ReadOptions};
+use amadeus_utils::safe_etf::u32_to_term;
 use bitvec::prelude::*;
 use eetf::{Atom, BigInteger, Binary, Term};
 use std::collections::HashMap;
@@ -12,7 +14,7 @@ use tracing::{Instrument, debug, info};
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    RocksDb(#[from] rocksdb::Error),
+    RocksDb(#[from] amadeus_utils::rocksdb::RocksDbError),
     #[error(transparent)]
     EtfDecode(#[from] eetf::DecodeError),
     #[error(transparent)]
@@ -51,10 +53,8 @@ async fn init_kvdb(base: &str) -> Result<RocksDb, Error> {
         .instrument(tracing::Span::current()),
     );
 
-    // Open instance RocksDB for fabric namespace
     let path = format!("{}/db/fabric", base);
-    // Open and return the instance-oriented DB handle
-    let db = RocksDb::open(path).await?;
+    let db = RocksDb::open(path).await.unwrap(); // nothing to do if db fails
     long_init_hint.abort();
 
     Ok(db)
@@ -89,12 +89,14 @@ impl Fabric {
         let db = &self.db;
 
         // read progress
-        let next_epoch = match db.get(CF_SYSCONF, b"finality_clean_next_epoch") {
-            Ok(Some(bytes)) => match bincode::decode_from_slice::<u32, _>(&bytes, bincode::config::standard()) {
-                Ok((val, _)) => val,
-                Err(_) => 0u32,
-            },
-            _ => 0u32,
+        let next_epoch = if let Ok(Some(bin)) = self.db.get(CF_SYSCONF, b"finality_clean_next_epoch") {
+            if let Ok(term) = Term::decode(bin.as_slice()) {
+                TermExt::get_integer(&term).unwrap_or(0) as u32
+            } else {
+                0u32
+            }
+        } else {
+            0u32
         };
 
         let cur_epoch = chain_epoch(db);
@@ -121,9 +123,12 @@ impl Fabric {
             let _ = h.await;
         }
 
-        // advance pointer
-        let bytes = bincode::encode_to_vec(&(next_epoch + 1), bincode::config::standard()).unwrap();
-        let _ = db.put(CF_SYSCONF, b"finality_clean_next_epoch", &bytes);
+        let cf_sysconf = db.inner.cf_handle(CF_SYSCONF).unwrap();
+
+        let next_epoch_term = encode_safe_deterministic(&u32_to_term(next_epoch + 1));
+        let txn = db.begin_transaction();
+        let _ = txn.put_cf(&cf_sysconf, b"finality_clean_next_epoch", &next_epoch_term);
+        let _ = txn.commit();
     }
 
     // Methods migrated from free functions
@@ -135,61 +140,63 @@ impl Fabric {
         entry_bin: &[u8],
         seen_millis: u64,
     ) -> Result<(), Error> {
-        let entry_cf = CF_ENTRY;
-        if self.db.get(entry_cf, hash)?.is_none() {
-            self.db.put(entry_cf, hash, entry_bin)?;
+        let cf_entry = self.db.inner.cf_handle(CF_ENTRY).unwrap();
+        let cf_seen_time = self.db.inner.cf_handle(CF_MY_SEEN_TIME_FOR_ENTRY).unwrap();
+        let cf_by_height = self.db.inner.cf_handle(CF_ENTRY_BY_HEIGHT).unwrap();
+        let cf_by_slot = self.db.inner.cf_handle(CF_ENTRY_BY_SLOT).unwrap();
+
+        let txn = self.db.begin_transaction();
+        if txn.get_cf(&cf_entry, hash)?.is_none() {
+            txn.put_cf(&cf_entry, hash, entry_bin)?;
             let seen_time_term = Term::from(BigInteger { value: seen_millis.into() });
             let seen_time_bin = encode_safe_deterministic(&seen_time_term);
-            self.db.put(CF_MY_SEEN_TIME_FOR_ENTRY, hash, &seen_time_bin)?;
+            txn.put_cf(&cf_seen_time, hash, &seen_time_bin)?;
         }
 
-        // ALWAYS index by height and slot, even if entry already exists
-        // this is crucial for entries loaded from snapshots that aren't indexed yet
-        // Key format matches Elixir: "#{height}:#{hash}" - no padding, raw hash bytes
+        // ALWAYS index by height and slot, even if entry already exists, it is
+        // crucial for entries loaded from snapshots that aren't indexed yet
         let mut height_key = height.to_string().into_bytes();
         height_key.push(b':');
         height_key.extend_from_slice(hash);
-        self.db.put(CF_ENTRY_BY_HEIGHT, &height_key, hash)?;
+        txn.put_cf(&cf_by_height, &height_key, hash)?;
 
         let mut slot_key = slot.to_string().into_bytes();
         slot_key.push(b':');
         slot_key.extend_from_slice(hash);
-        self.db.put(CF_ENTRY_BY_SLOT, &slot_key, hash)?;
+        txn.put_cf(&cf_by_slot, &slot_key, hash)?;
 
+        txn.commit()?;
         Ok(())
     }
 
     pub fn entries_by_height(&self, height: u64) -> Result<Vec<Vec<u8>>, Error> {
         let mut height_prefix = height.to_string().into_bytes();
         height_prefix.push(b':');
-        let kvs = self.db.iter_prefix(CF_ENTRY_BY_HEIGHT, &height_prefix)?;
         let mut out = Vec::new();
-        let entry_cf = CF_ENTRY;
-        for (_k, v) in kvs.into_iter() {
-            if let Some(entry_bin) = self.db.get(entry_cf, &v)? {
+        for (_, v) in self.db.iter_prefix(CF_ENTRY_BY_HEIGHT, &height_prefix)?.iter() {
+            if let Some(entry_bin) = self.db.get(CF_ENTRY, v)? {
                 out.push(entry_bin);
             }
         }
+
         Ok(out)
     }
 
     pub fn entries_by_slot(&self, slot: u64) -> Result<Vec<Vec<u8>>, Error> {
         let mut slot_prefix = slot.to_string().into_bytes();
         slot_prefix.push(b':');
-        let kvs = self.db.iter_prefix(CF_ENTRY_BY_SLOT, &slot_prefix)?;
         let mut out = Vec::new();
-        let entry_cf = CF_ENTRY;
-        for (_k, v) in kvs.into_iter() {
-            if let Some(entry_bin) = self.db.get(entry_cf, &v)? {
+        for (_, v) in self.db.iter_prefix(CF_ENTRY_BY_SLOT, &slot_prefix)?.iter() {
+            if let Some(entry_bin) = self.db.get(CF_ENTRY, &v)? {
                 out.push(entry_bin);
             }
         }
+
         Ok(out)
     }
 
     pub fn get_entry_by_hash(&self, hash: &[u8; 32]) -> Option<Entry> {
-        let entry_cf = CF_ENTRY;
-        let bin = self.db.get(entry_cf, hash).ok()??;
+        let bin = self.db.get(CF_ENTRY, hash).ok()??;
         let entry = Entry::unpack(&bin).ok()?;
         Some(entry)
     }
@@ -230,12 +237,20 @@ impl Fabric {
         let sk = config.get_sk();
         let new_a = Attestation::sign_with(&pk, &sk, entry_hash, &att.mutations_hash)?;
         let packed = new_a.to_etf_bin()?;
-        self.db.put(CF_MY_ATTESTATION_FOR_ENTRY, entry_hash, packed.as_slice())?;
+
+        let cf_attestation = self.db.inner.cf_handle(CF_MY_ATTESTATION_FOR_ENTRY).unwrap();
+        let txn = self.db.begin_transaction();
+        txn.put_cf(&cf_attestation, entry_hash, packed.as_slice())?;
+        txn.commit()?;
+
         Ok(Some(new_a))
     }
 
     pub fn insert_consensus(&self, consensus: &crate::consensus::consensus::Consensus) -> Result<(), Error> {
-        let mut map = match self.db.get(CF_CONSENSUS_BY_ENTRYHASH, &consensus.entry_hash)? {
+        let cf_consensus = self.db.inner.cf_handle(CF_CONSENSUS_BY_ENTRYHASH).unwrap();
+        let txn = self.db.begin_transaction();
+
+        let mut map = match txn.get_cf(&cf_consensus, &consensus.entry_hash)? {
             Some(bin) => unpack_consensus_map(&bin)?,
             None => HashMap::new(),
         };
@@ -251,7 +266,9 @@ impl Fabric {
 
         map.insert(consensus.mutations_hash, StoredConsensus { mask, agg_sig: consensus.agg_sig });
         let packed = pack_consensus_map(&map)?;
-        self.db.put(CF_CONSENSUS_BY_ENTRYHASH, &consensus.entry_hash, &packed)?;
+
+        txn.put_cf(&cf_consensus, &consensus.entry_hash, &packed)?;
+        txn.commit()?;
 
         Ok(())
     }
@@ -327,11 +344,14 @@ impl Fabric {
 
     /// Sets temporal entry hash and height
     pub fn set_temporal_hash_height(&self, entry: &Entry) -> Result<(), Error> {
-        let txn = self.db.begin_transaction()?;
-        txn.put(CF_SYSCONF, b"temporal_tip", &entry.hash)?;
+        let cf_sysconf = self.db.inner.cf_handle(CF_SYSCONF).unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.put_cf(&cf_sysconf, b"temporal_tip", &entry.hash)?;
         let height_term = encode_safe_deterministic(&u64_to_term(entry.header.height));
-        txn.put(CF_SYSCONF, b"temporal_height", &height_term)?;
+        txn.put_cf(&cf_sysconf, b"temporal_height", &height_term)?;
         txn.commit()?;
+
         Ok(())
     }
 
@@ -373,11 +393,14 @@ impl Fabric {
 
     /// Sets rooted entry hash and height
     pub fn set_rooted_hash_height(&self, entry: &Entry) -> Result<(), Error> {
-        let txn = self.db.begin_transaction()?;
-        txn.put(CF_SYSCONF, b"rooted_tip", &entry.hash)?;
+        let cf_sysconf = self.db.inner.cf_handle(CF_SYSCONF).unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.put_cf(&cf_sysconf, b"rooted_tip", &entry.hash)?;
         let height_term = encode_safe_deterministic(&u64_to_term(entry.header.height));
-        txn.put(CF_SYSCONF, b"rooted_height", &height_term)?;
+        txn.put_cf(&cf_sysconf, b"rooted_height", &height_term)?;
         txn.commit()?;
+
         Ok(())
     }
 
@@ -435,12 +458,22 @@ impl Fabric {
     }
 
     pub fn put_muts_rev(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
-        self.db.put("muts_rev", hash, data)?;
+        let cf_muts_rev = self.db.inner.cf_handle("muts_rev").unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.put_cf(&cf_muts_rev, hash, data)?;
+        txn.commit()?;
+
         Ok(())
     }
 
     pub fn delete_muts_rev(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        self.db.delete("muts_rev", hash)?;
+        let cf_muts_rev = self.db.inner.cf_handle("muts_rev").unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.delete_cf(&cf_muts_rev, hash)?;
+        txn.commit()?;
+
         Ok(())
     }
 
@@ -449,74 +482,142 @@ impl Fabric {
     }
 
     pub fn put_muts(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
-        self.db.put("muts", hash, data)?;
+        let cf_muts = self.db.inner.cf_handle("muts").unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.put_cf(&cf_muts, hash, data)?;
+        txn.commit()?;
+
         Ok(())
     }
 
     pub fn put_attestation(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
-        self.db.put(CF_MY_ATTESTATION_FOR_ENTRY, hash, data)?;
+        let cf_attestation = self.db.inner.cf_handle(CF_MY_ATTESTATION_FOR_ENTRY).unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.put_cf(&cf_attestation, hash, data)?;
+        txn.commit()?;
+
         Ok(())
     }
 
     pub fn delete_attestation(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        self.db.delete(CF_MY_ATTESTATION_FOR_ENTRY, hash)?;
+        let cf_attestation = self.db.inner.cf_handle(CF_MY_ATTESTATION_FOR_ENTRY).unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.delete_cf(&cf_attestation, hash)?;
+        txn.commit()?;
+
         Ok(())
     }
 
     pub fn put_seen_time(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
-        self.db.put(CF_MY_SEEN_TIME_FOR_ENTRY, hash, data)?;
+        let cf_seen_time = self.db.inner.cf_handle(CF_MY_SEEN_TIME_FOR_ENTRY).unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.put_cf(&cf_seen_time, hash, data)?;
+        txn.commit()?;
+
         Ok(())
     }
 
     pub fn delete_seen_time(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        self.db.delete(CF_MY_SEEN_TIME_FOR_ENTRY, hash)?;
+        let cf_seen_time = self.db.inner.cf_handle(CF_MY_SEEN_TIME_FOR_ENTRY).unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.delete_cf(&cf_seen_time, hash)?;
+        txn.commit()?;
+
         Ok(())
     }
 
     pub fn delete_consensus(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        self.db.delete(CF_CONSENSUS_BY_ENTRYHASH, hash)?;
+        let cf_consensus = self.db.inner.cf_handle(CF_CONSENSUS_BY_ENTRYHASH).unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.delete_cf(&cf_consensus, hash)?;
+        txn.commit()?;
+
         Ok(())
     }
 
     pub fn delete_entry(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        let entry_cf = CF_ENTRY;
-        self.db.delete(entry_cf, hash)?;
+        let cf_entry = self.db.inner.cf_handle(CF_ENTRY).unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.delete_cf(&cf_entry, hash)?;
+        txn.commit()?;
+
         Ok(())
     }
 
     pub fn delete_entry_by_height(&self, height_key: &[u8]) -> Result<(), Error> {
-        self.db.delete(CF_ENTRY_BY_HEIGHT, height_key)?;
+        let cf_by_height = self.db.inner.cf_handle(CF_ENTRY_BY_HEIGHT).unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.delete_cf(&cf_by_height, height_key)?;
+        txn.commit()?;
+
         Ok(())
     }
 
     pub fn delete_entry_by_slot(&self, slot_key: &[u8]) -> Result<(), Error> {
-        self.db.delete(CF_ENTRY_BY_SLOT, slot_key)?;
+        let cf_by_slot = self.db.inner.cf_handle(CF_ENTRY_BY_SLOT).unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.delete_cf(&cf_by_slot, slot_key)?;
+        txn.commit()?;
+
         Ok(())
     }
 
     pub fn put_tx_metadata(&self, key: &[u8], tx: &[u8]) -> Result<(), Error> {
-        self.db.put("tx|txhash->entryhash", key, tx)?;
+        let cf_tx = self.db.inner.cf_handle("tx|txhash->entryhash").unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.put_cf(&cf_tx, key, tx)?;
+        txn.commit()?;
+
         Ok(())
     }
 
     pub fn delete_tx_metadata(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        self.db.delete("tx|txhash->entryhash", hash)?;
+        let cf_tx = self.db.inner.cf_handle("tx|txhash->entryhash").unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.delete_cf(&cf_tx, hash)?;
+        txn.commit()?;
+
         Ok(())
     }
 
     pub fn put_tx_account_nonce(&self, key: &[u8], tx_hash: &[u8; 32]) -> Result<(), Error> {
-        self.db.put("tx_account_nonce|account:nonce->txhash", key, tx_hash)?;
+        let cf_nonce = self.db.inner.cf_handle("tx_account_nonce|account:nonce->txhash").unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.put_cf(&cf_nonce, key, tx_hash)?;
+        txn.commit()?;
+
         Ok(())
     }
 
     pub fn delete_tx_account_nonce(&self, key: &[u8]) -> Result<(), Error> {
-        self.db.delete("tx_account_nonce|account:nonce->txhash", key)?;
+        let cf_nonce = self.db.inner.cf_handle("tx_account_nonce|account:nonce->txhash").unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.delete_cf(&cf_nonce, key)?;
+        txn.commit()?;
+
         Ok(())
     }
 
     pub fn put_entry_raw(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
-        let entry_cf = CF_ENTRY;
-        self.db.put(entry_cf, hash, data)?;
+        let cf_entry = self.db.inner.cf_handle(CF_ENTRY).unwrap();
+
+        let txn = self.db.begin_transaction();
+        txn.put_cf(&cf_entry, hash, data)?;
+        txn.commit()?;
+
         Ok(())
     }
 
@@ -526,33 +627,30 @@ impl Fabric {
     }
 
     fn clean_muts_rev_range(&self, start: u64, end: u64) -> Result<(), crate::utils::rocksdb::Error> {
-        use amadeus_utils::rocksdb::{Direction, IteratorMode, ReadOptions};
+        let cf_by_height = self.db.inner.cf_handle(CF_ENTRY_BY_HEIGHT).unwrap();
+        let cf_muts_rev = self.db.inner.cf_handle("muts_rev").unwrap();
 
         let start_key = format!("{}:", start).into_bytes();
         let end_key = format!("{}:", end + 1).into_bytes();
 
-        let h = &self.db.handles;
-        let cf_h =
-            h.db.cf_handle(CF_ENTRY_BY_HEIGHT)
-                .ok_or_else(|| crate::utils::rocksdb::Error::ColumnFamilyNotFound(CF_ENTRY_BY_HEIGHT.to_string()))?;
-
+        let txn = self.db.begin_transaction();
         let mut opts = ReadOptions::default();
         opts.set_total_order_seek(true);
-        let iter = h.db.iterator_cf_opt(&cf_h, opts, IteratorMode::From(&start_key, Direction::Forward));
+        let iter = txn.iterator_cf_opt(&cf_by_height, opts, IteratorMode::From(&start_key, Direction::Forward));
 
-        let txn = self.db.begin_transaction()?;
         let mut ops = 0;
         for item in iter {
             let (k, v) = item?;
             if k.as_ref() >= end_key.as_slice() {
                 break;
             }
-            let _ = txn.delete("muts_rev", &v);
+            let _ = txn.delete_cf(&cf_muts_rev, &v);
             ops += 1;
         }
         if ops > 0 {
             txn.commit()?;
         }
+
         Ok(())
     }
 
@@ -665,16 +763,35 @@ impl Fabric {
     }
 
     pub fn start_proc_consensus(&self) {
-        let _ = self.db.put(CF_SYSCONF, b"proc_consensus", &[1]);
+        let cf_sysconf = self.db.inner.cf_handle(CF_SYSCONF).unwrap();
+
+        let txn = self.db.begin_transaction();
+        let _ = txn.put_cf(&cf_sysconf, b"proc_consensus", &[1]);
+        let _ = txn.commit();
     }
+
     pub fn stop_proc_consensus(&self) {
-        let _ = self.db.put(CF_SYSCONF, b"proc_consensus", &[0]);
+        let cf_sysconf = self.db.inner.cf_handle(CF_SYSCONF).unwrap();
+
+        let txn = self.db.begin_transaction();
+        let _ = txn.put_cf(&cf_sysconf, b"proc_consensus", &[0]);
+        let _ = txn.commit();
     }
+
     pub fn start_proc_entries(&self) {
-        let _ = self.db.put(CF_SYSCONF, b"proc_entries", &[1]);
+        let cf_sysconf = self.db.inner.cf_handle(CF_SYSCONF).unwrap();
+
+        let txn = self.db.begin_transaction();
+        let _ = txn.put_cf(&cf_sysconf, b"proc_entries", &[1]);
+        let _ = txn.commit();
     }
+
     pub fn stop_proc_entries(&self) {
-        let _ = self.db.put(CF_SYSCONF, b"proc_entries", &[0]);
+        let cf_sysconf = self.db.inner.cf_handle(CF_SYSCONF).unwrap();
+
+        let txn = self.db.begin_transaction();
+        let _ = txn.put_cf(&cf_sysconf, b"proc_entries", &[0]);
+        let _ = txn.commit();
     }
 
     pub fn is_proc_consensus_or_entries(&self) -> bool {

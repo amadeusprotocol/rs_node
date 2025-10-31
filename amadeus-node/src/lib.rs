@@ -2,7 +2,6 @@ pub mod bic;
 pub mod config;
 pub mod consensus;
 pub mod context;
-pub mod kv;
 pub mod metrics;
 pub mod node;
 pub mod socket;
@@ -17,9 +16,6 @@ pub use amadeus_utils::{Database, DatabaseError};
 pub use amadeus_runtime::consensus::consensus_apply::{ApplyEnv, CallerEnv};
 pub use amadeus_runtime::consensus::consensus_muts::Mutation;
 pub use amadeus_runtime::consensus::{consensus_apply, consensus_kv, consensus_muts};
-
-// Re-export local kv module (legacy - used only by WASM runtime internally)
-pub use kv::ApplyEnvLegacy as ApplyCtxLegacy;
 
 pub use config::Config;
 pub use context::{Context, SoftforkStatus};

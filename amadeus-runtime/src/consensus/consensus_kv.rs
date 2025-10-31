@@ -1,6 +1,8 @@
 use crate::Result;
 use crate::consensus::consensus_apply::ApplyEnv;
 use crate::consensus::consensus_muts::Mutation;
+use amadeus_utils::rocksdb::{BoundColumnFamily, MultiThreaded, RocksDb, RocksDbTxn, Transaction, TransactionDB};
+use std::sync::Arc;
 
 pub fn kv_put(env: &mut ApplyEnv, key: &[u8], value: &[u8]) -> Result<()> {
     let old_value = env.txn.get_cf(&env.cf, key).map_err(|_| "kv_get_failed")?;
@@ -202,31 +204,35 @@ pub fn kv_clear_prefix(env: &mut ApplyEnv, prefix: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub fn revert(env: &mut ApplyEnv) -> Result<()> {
-    for m in env.muts_rev.clone() {
+pub fn apply_mutations(db: &RocksDb, cf_name: &str, muts_rev: &[Mutation]) -> Result<()> {
+    let cf = db.inner.cf_handle(cf_name).unwrap(); // the cf must be present!
+    let txn = db.begin_transaction();
+
+    for m in muts_rev {
         match m {
             Mutation::Put { op: _, key, value } => {
-                kv_put(env, key.as_slice(), value.as_slice())?;
+                txn.put_cf(&cf, key, value).map_err(|_| "kv_put_failed")?;
             }
             Mutation::Delete { op: _, key } => {
-                kv_delete(env, key.as_slice())?;
+                txn.delete_cf(&cf, key).map_err(|_| "kv_delete_failed")?;
             }
             Mutation::SetBit { op: _, key: _, value: _, bloomsize: _ } => {
-                // no-op for revert (ClearBit handles it)
+                panic!("SetBit should not be in reverse mutations");
             }
             Mutation::ClearBit { op: _, key, value } => {
                 let bit_idx = value;
-                if let Some(mut old) = kv_get(env, key.as_slice())? {
+                if let Some(mut old) = txn.get_cf(&cf, key).map_err(|_| "kv_get_failed")? {
                     let byte_idx = (bit_idx / 8) as usize;
                     let bit_in = (bit_idx % 8) as u8;
                     if byte_idx < old.len() {
                         let mask: u8 = 1u8 << (7 - bit_in);
                         old[byte_idx] &= !mask;
-                        kv_put(env, key.as_slice(), old.as_slice())?;
+                        txn.put_cf(&cf, key, old).map_err(|_| "kv_put_failed")?;
                     }
                 }
             }
         }
     }
+
     Ok(())
 }

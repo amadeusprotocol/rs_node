@@ -10,6 +10,7 @@ use crate::utils::rocksdb::RocksDb;
 use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
 use amadeus_runtime::consensus::consensus_apply::ApplyEnv;
 use amadeus_runtime::consensus::consensus_kv;
+use amadeus_runtime::consensus::consensus_kv::apply_mutations;
 use amadeus_runtime::consensus::consensus_muts::Mutation;
 use amadeus_runtime::consensus::unmask_trainers;
 use amadeus_utils::constants::{DST_ENTRY, DST_VRF};
@@ -123,12 +124,7 @@ impl TxResult {
 
 /// Execute a single transaction, routing to the appropriate contract handler
 /// Returns (error, logs, mutations, mutations_reverse)
-fn execute_transaction(
-    env: &mut ApplyEnv,
-    _db: &RocksDb,
-    _next_entry: &Entry,
-    txu: &TxU,
-) -> (String, Vec<String>, Vec<Mutation>, Vec<Mutation>) {
+fn execute_transaction(env: &mut ApplyEnv, txu: &TxU) -> (String, Vec<String>, Vec<Mutation>, Vec<Mutation>) {
     let action = match txu.tx.actions.first() {
         Some(a) => a,
         None => return ("no_actions".to_string(), vec![], vec![], vec![]),
@@ -177,7 +173,7 @@ fn execute_contract_call(env: &mut ApplyEnv, function: &str, args: &[Vec<u8>]) -
 }
 
 // TODO: Re-enable after WASM module migration
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code)]
 fn execute_wasm_call(
     _apply_env: &mut ApplyEnv,
     _db: &RocksDb,
@@ -187,27 +183,6 @@ fn execute_wasm_call(
 ) -> (String, Vec<String>) {
     // WASM execution temporarily disabled during bic module migration
     ("wasm_disabled_temporarily".to_string(), vec![])
-}
-
-// Helper function to convert old Mutation type to new Mutation type
-#[allow(dead_code)]
-fn convert_old_mutation_to_new(old: &crate::kv::MutationLegacy) -> Mutation {
-    use crate::kv::Op;
-    match &old.op {
-        Op::Put => {
-            Mutation::Put { op: b"put".to_vec(), key: old.key.clone(), value: old.value.clone().unwrap_or_default() }
-        }
-        Op::Delete => Mutation::Delete { op: b"delete".to_vec(), key: old.key.clone() },
-        Op::SetBit { bit_idx, bloom_size } => Mutation::SetBit {
-            op: b"set_bit".to_vec(),
-            key: old.key.clone(),
-            value: *bit_idx as u64,
-            bloomsize: *bloom_size as u64,
-        },
-        Op::ClearBit { bit_idx } => {
-            Mutation::ClearBit { op: b"clear_bit".to_vec(), key: old.key.clone(), value: *bit_idx as u64 }
-        }
-    }
 }
 
 fn parse_epoch_call(function: &str, args: &[Vec<u8>]) -> Result<crate::bic::epoch::EpochCall, String> {
@@ -262,30 +237,6 @@ fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) -> Result<
     Ok(())
 }
 
-// Helper functions for Mutation type
-
-/// Revert mutations
-fn revert_mutations(db: &RocksDb, muts_rev: &[Mutation]) {
-    for m in muts_rev {
-        match m {
-            Mutation::Put { key, value, .. } => {
-                let _ = db.put("contractstate", key, value);
-            }
-            Mutation::Delete { key, .. } => {
-                let _ = db.delete("contractstate", key);
-            }
-            Mutation::SetBit { key, value, .. } => {
-                // implement set_bit logic similar to old version
-                let _ = db.put("contractstate", key, &value.to_le_bytes());
-            }
-            Mutation::ClearBit { key, value, .. } => {
-                // implement clear_bit logic similar to old version
-                let _ = db.put("contractstate", key, &value.to_le_bytes());
-            }
-        }
-    }
-}
-
 /// Convert Mutation type to ETF
 fn mutations_to_etf(muts: &[Mutation]) -> Vec<u8> {
     use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
@@ -325,28 +276,6 @@ fn mutations_to_etf(muts: &[Mutation]) -> Vec<u8> {
 
     let list = Term::List(List { elements: etf_list });
     encode_safe_deterministic(&list)
-}
-
-/// Convert Mutation to legacy format for testing
-pub fn mutation_to_legacy(m: &Mutation) -> crate::kv::MutationLegacy {
-    match m {
-        Mutation::Put { key, value, .. } => {
-            crate::kv::MutationLegacy { op: crate::kv::Op::Put, key: key.clone(), value: Some(value.clone()) }
-        }
-        Mutation::Delete { key, .. } => {
-            crate::kv::MutationLegacy { op: crate::kv::Op::Delete, key: key.clone(), value: None }
-        }
-        Mutation::SetBit { key, value, bloomsize, .. } => crate::kv::MutationLegacy {
-            op: crate::kv::Op::SetBit { bit_idx: *value as u32, bloom_size: *bloomsize as u32 },
-            key: key.clone(),
-            value: None,
-        },
-        Mutation::ClearBit { key, value, .. } => crate::kv::MutationLegacy {
-            op: crate::kv::Op::ClearBit { bit_idx: *value as u32 },
-            key: key.clone(),
-            value: None,
-        },
-    }
 }
 
 fn mutations_from_etf(bin: &[u8]) -> Result<Vec<Mutation>, Error> {
@@ -435,7 +364,7 @@ fn mutations_from_etf(bin: &[u8]) -> Result<Vec<Mutation>, Error> {
 }
 
 /// Exit logic: segment VR updates and epoch transitions
-fn call_exit(env: &mut ApplyEnv, next_entry: &Entry, db: &RocksDb) -> Result<(), &'static str> {
+fn call_exit(env: &mut ApplyEnv, next_entry: &Entry) -> Result<(), &'static str> {
     // seed random (matches Elixir: seed_random(env.entry_vr, "", "", ""))
     let vr = next_entry.header.vr.to_vec();
     let seed_hash = crate::utils::blake3::hash(&vr);
@@ -460,7 +389,7 @@ fn call_exit(env: &mut ApplyEnv, next_entry: &Entry, db: &RocksDb) -> Result<(),
         env.caller_env.call_exec_points_remaining = 0;
         env.caller_env.attached_symbol = vec![];
         env.caller_env.attached_amount = vec![];
-        let _ = crate::bic::epoch::Epoch.next(env, db);
+        let _ = crate::bic::epoch::Epoch.next(env);
     }
     Ok(())
 }
@@ -488,12 +417,10 @@ pub fn apply_entry(
     }
 
     // Create transaction and ApplyEnv
-    let db = fabric.db();
-    let txn = db.begin_transaction()?;
     let entry_vr_b3 = crate::utils::blake3::hash(&next_entry.header.vr);
     let mut env = amadeus_runtime::consensus::consensus_apply::make_apply_env(
-        txn,
-        "contractstate".to_string(),
+        fabric.db(),
+        "contractstate",
         &next_entry.header.signer,
         &next_entry.header.prev_hash,
         next_entry.header.slot,
@@ -514,15 +441,15 @@ pub fn apply_entry(
     // execute transactions (mutations include gas)
     let mut tx_results = Vec::new();
     for txu in &txus {
-        let (error, logs, m3, m_rev3) = execute_transaction(&mut env, db, next_entry, txu);
+        let (error, logs, m3, m_rev3) = execute_transaction(&mut env, txu);
 
         if error == "ok" {
             // success: add all mutations
             muts.extend(m3);
             muts_rev.extend(m_rev3);
         } else {
-            // failure: revert mutations
-            revert_mutations(db, &m_rev3);
+            // failure: apply reverse mutations
+            apply_mutations(fabric.db(), "contractstate", &m_rev3).map_err(Error::Runtime)?;
         }
 
         tx_results.push(TxResult { error, logs });
@@ -542,7 +469,7 @@ pub fn apply_entry(
     env.muts_rev.clear();
 
     // call exit logic (segment VR updates, epoch transitions)
-    call_exit(&mut env, next_entry, db).map_err(Error::Runtime)?;
+    call_exit(&mut env, next_entry).map_err(Error::Runtime)?;
 
     // get exit mutations and combine
     let muts_exit = env.muts.clone();
@@ -550,8 +477,8 @@ pub fn apply_entry(
     muts.extend(muts_exit);
     muts_rev.extend(muts_exit_rev);
 
-    // Hash results + mutations (matching Elixir: ConsensusKV.hash_mutations(l ++ m))
-    let mutations_hash = crate::consensus::kv::hash_mutations_with_results(&tx_results, &muts);
+    // Hash results + mutations
+    let mutations_hash = hash_mutations_with_results(&muts, &tx_results);
 
     // Commit the transaction
     env.txn.commit().map_err(crate::utils::rocksdb::Error::from)?;
@@ -663,8 +590,7 @@ pub fn produce_entry(fabric: &fabric::Fabric, config: &crate::config::Config, sl
     Ok(Entry { hash, header: entry.header, signature: entry.signature, mask: entry.mask, txs: entry.txs })
 }
 
-pub fn chain_rewind(fabric: &fabric::Fabric, target_hash: &[u8; 32]) -> Result<bool, Error> {
-    // check if target is in chain
+pub fn chain_rewind(fabric: &Fabric, target_hash: &[u8; 32]) -> Result<bool, Error> {
     if !fabric.is_in_chain(target_hash) {
         return Ok(false);
     }
@@ -672,28 +598,19 @@ pub fn chain_rewind(fabric: &fabric::Fabric, target_hash: &[u8; 32]) -> Result<b
     let tip_entry = fabric.get_temporal_entry()?.ok_or(Error::Missing("temporal_tip"))?;
     let entry = chain_rewind_internal(fabric, &tip_entry, target_hash)?;
 
-    // update chain tips
-    let db = fabric.db();
-    db.put("sysconf", b"temporal_tip", &entry.hash)?;
-    // store temporal_height as ETF term (matches Elixir term: true)
-    let height_term = encode_safe_deterministic(&u64_to_term(entry.header.height));
-    db.put("sysconf", b"temporal_height", &height_term)?;
+    fabric.set_temporal_hash_height(&entry)?;
 
-    // update rooted tip if needed
-    if let Ok(Some(rooted_hash)) = fabric.get_rooted_hash() {
-        if fabric.get_entry_raw(&rooted_hash)?.is_none() {
-            db.put("sysconf", b"rooted_tip", &entry.hash)?;
-        }
+    let rooted_hash = fabric.get_rooted_hash()?.ok_or(Error::Missing("rooted_tip"))?;
+    if fabric.get_entry_raw(&rooted_hash)?.is_none() {
+        let rooted_height = fabric.get_rooted_height()?.ok_or(Error::Missing("rooted_height"))?;
+        warn!("Rewind rolled back rooted entries from {rooted_height} until {}", entry.header.height);
+        fabric.set_rooted_hash_height(&entry)?;
     }
 
     Ok(true)
 }
 
-fn chain_rewind_internal(
-    fabric: &fabric::Fabric,
-    current_entry: &Entry,
-    target_hash: &[u8; 32],
-) -> Result<Entry, Error> {
+fn chain_rewind_internal(fabric: &Fabric, current_entry: &Entry, target_hash: &[u8; 32]) -> Result<Entry, Error> {
     let mut current = current_entry.clone();
 
     loop {
@@ -703,8 +620,7 @@ fn chain_rewind_internal(
         // revert mutations for current entry
         let db = fabric.db();
         if let Some(m_rev_new) = chain_muts_rev(fabric, &current.hash) {
-            let m_rev_legacy: Vec<_> = m_rev_new.iter().map(mutation_to_legacy).collect();
-            crate::kv::revert(db, &m_rev_legacy[..]);
+            apply_mutations(db, "contractstate", &m_rev_new).map_err(Error::Runtime)?;
         }
 
         // remove current entry from indices
@@ -860,6 +776,14 @@ pub fn proc_consensus(fabric: &fabric::Fabric) -> Result<(), Error> {
         let Some(best_entry_info) = next_entries.first() else {
             break;
         };
+        //
+        // let entry = fabric.get_entry_by_hash(&best_entry_info.entry.hash).unwrap();
+        // println!("height {next_height}");
+        // // print entry transactions
+        // entry.txs.iter().for_each(|tx_packed| {
+        //     let txu = TxU::from_vanilla(tx_packed).unwrap();
+        //     println!("Transaction: {:?}", txu.tx.actions);
+        // });
 
         let score = best_entry_info.score.unwrap_or(0.0);
         let best_entry = &best_entry_info.entry;
@@ -1094,4 +1018,57 @@ async fn broadcast_attestation(ctx: &crate::Context, attestation_packed: &[u8], 
     }
 
     debug!("Broadcasted attestation for entry {}", bs58::encode(entry_hash).into_string());
+}
+
+/// Hash mutations with transaction results prepended, hash_mutations(l ++ m)
+pub fn hash_mutations_with_results(muts: &[Mutation], results: &[TxResult]) -> [u8; 32] {
+    use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
+    use eetf::{Atom, Binary, List, Map, Term};
+    use std::collections::HashMap;
+
+    let mut etf_list = Vec::new();
+
+    for result in results {
+        let mut map = HashMap::new();
+        map.insert(Term::Atom(Atom::from("error")), Term::Atom(Atom::from(result.error.as_str())));
+        etf_list.push(Term::Map(Map { map }));
+    }
+
+    for m in muts {
+        let mut map = HashMap::new();
+
+        match m {
+            Mutation::Put { op: _, key, value } => {
+                map.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("put")));
+                map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: key.clone() }));
+                map.insert(Term::Atom(Atom::from("value")), Term::Binary(Binary { bytes: value.clone() }));
+            }
+            Mutation::Delete { op: _, key } => {
+                map.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("delete")));
+                map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: key.clone() }));
+            }
+            Mutation::SetBit { op: _, key, value, bloomsize } => {
+                map.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("set_bit")));
+                map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: key.clone() }));
+                map.insert(Term::Atom(Atom::from("value")), u64_to_term(*value));
+                map.insert(Term::Atom(Atom::from("bloomsize")), u64_to_term(*bloomsize));
+            }
+            Mutation::ClearBit { op: _, key, value } => {
+                map.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from("clear_bit")));
+                map.insert(Term::Atom(Atom::from("key")), Term::Binary(Binary { bytes: key.clone() }));
+                map.insert(Term::Atom(Atom::from("value")), u64_to_term(*value));
+            }
+        }
+
+        etf_list.push(Term::Map(Map { map }));
+    }
+
+    // Create list term
+    let list_term = Term::List(List { elements: etf_list });
+
+    // Encode with deterministic ETF encoding
+    let encoded = encode_safe_deterministic(&list_term);
+
+    // Hash the encoded bytes
+    amadeus_utils::blake3::hash(&encoded)
 }

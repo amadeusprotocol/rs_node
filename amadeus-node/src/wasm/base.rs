@@ -90,7 +90,6 @@ pub fn call(env: &CallEnv, wasmbytes: &[u8], function: &str, args: &[Vec<u8>]) -
 
 /// Call stack entry for cross-contract calls
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct CallStackEntry {
     rpc_id: u64,
     last_account: Vec<u8>,
