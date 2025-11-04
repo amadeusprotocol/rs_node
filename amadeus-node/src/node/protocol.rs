@@ -463,7 +463,6 @@ impl Protocol for CatchupReply {
                             }
                             Err(e) => warn!("Failed to pack entry for insertion: {}", e),
                         }
-                        //instructions.push(Instruction::ReceivedEntry { entry: entry.clone() });
                     }
                 }
             }

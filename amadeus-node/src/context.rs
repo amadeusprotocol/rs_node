@@ -148,19 +148,6 @@ impl Context {
                 let mut ticker = interval(Duration::from_millis(CONSENSUS_PERIOD_MILLIS));
                 loop {
                     ticker.tick().await;
-                    if let Err(e) = ctx.entries_task().await {
-                        warn!("entries task error: {e}");
-                    }
-                }
-            }
-        });
-
-        tokio::spawn({
-            let ctx = ctx.clone();
-            async move {
-                let mut ticker = interval(Duration::from_millis(CONSENSUS_PERIOD_MILLIS));
-                loop {
-                    ticker.tick().await;
                     if let Err(e) = ctx.consensus_task().await {
                         warn!("consensus task error: {e}");
                     }
@@ -232,7 +219,6 @@ impl Context {
         if cleared_shards > 0 || cleared_peers > 0 {
             debug!("cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
         }
-        self.fabric.cleanup().await;
     }
 
     #[instrument(skip(self), name = "anr_task")]
@@ -289,21 +275,14 @@ impl Context {
         Ok(())
     }
 
-    #[instrument(skip(self), name = "entries_task")]
-    async fn entries_task(&self) -> Result<(), Error> {
-        use consensus::consensus::proc_entries;
-        self.fabric.start_proc_entries();
+    #[instrument(skip(self), name = "consensus_task")]
+    async fn consensus_task(&self) -> Result<(), Error> {
+        use consensus::consensus::{proc_consensus, proc_entries};
+        self.fabric.start_proc_consensus();
         if let Err(e) = proc_entries(&self.fabric, &self.config, self).await {
             warn!("proc_entries failed: {e}");
         }
-        self.fabric.stop_proc_entries();
-        Ok(())
-    }
 
-    #[instrument(skip(self), name = "consensus_task")]
-    async fn consensus_task(&self) -> Result<(), Error> {
-        use consensus::consensus::proc_consensus;
-        self.fabric.start_proc_consensus();
         if let Err(e) = proc_consensus(&self.fabric) {
             warn!("proc_consensus failed: {e}");
         }
@@ -313,7 +292,7 @@ impl Context {
 
     #[instrument(skip(self), name = "catchup_task")]
     async fn catchup_task(&self) -> Result<bool, Error> {
-        if self.fabric.is_proc_consensus_or_entries() {
+        if self.fabric.is_proc_consensus() {
             return Ok(true);
         }
 
@@ -341,12 +320,12 @@ impl Context {
             );
             let online_trainer_ips =
                 self.node_peers.get_trainer_ips_above_temporal(temporal_height, &trainer_pks).await?;
-            let heights: Vec<u64> = (rooted_height + 1..=temporal_height).take(1000).collect();
+            let heights: Vec<u64> = (rooted_height + 1..=temporal_height).take(200).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
                 .map(|height| CatchupHeight { height, c: Some(true), e: None, a: None, hashes: None })
                 .collect::<Vec<_>>()
-                .chunks(100)
+                .chunks(20)
                 .map(|chunk| chunk.to_vec())
                 .collect();
             self.fetch_heights(chunks, online_trainer_ips).await?;
@@ -356,12 +335,12 @@ impl Context {
         if behind_bft > 0 {
             info!("Behind BFT: Syncing {} entries", behind_bft);
             let online_trainer_ips = self.node_peers.get_trainer_ips_above_temporal(peers_bft, &trainer_pks).await?;
-            let heights: Vec<u64> = (rooted_height + 1..=peers_bft).take(1000).collect();
+            let heights: Vec<u64> = (rooted_height + 1..=peers_bft).take(200).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
                 .map(|height| CatchupHeight { height, c: Some(true), e: Some(true), a: None, hashes: None })
                 .collect::<Vec<_>>()
-                .chunks(100)
+                .chunks(20)
                 .map(|chunk| chunk.to_vec())
                 .collect();
             self.fetch_heights(chunks, online_trainer_ips).await?;
@@ -371,7 +350,7 @@ impl Context {
         if behind_rooted > 0 {
             info!("Behind rooted: Syncing {} entries", behind_rooted);
             let online_trainer_ips = self.node_peers.get_trainer_ips_above_rooted(peers_rooted, &trainer_pks).await?;
-            let heights: Vec<u64> = (rooted_height + 1..=peers_rooted).take(1000).collect();
+            let heights: Vec<u64> = (rooted_height + 1..=peers_rooted).take(200).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
                 .map(|height| {
@@ -380,7 +359,7 @@ impl Context {
                     CatchupHeight { height, c: Some(true), e: Some(true), a: None, hashes: Some(hashes) }
                 })
                 .collect::<Vec<_>>()
-                .chunks(100)
+                .chunks(20)
                 .map(|chunk| chunk.to_vec())
                 .collect();
             self.fetch_heights(chunks, online_trainer_ips).await?;
@@ -391,7 +370,7 @@ impl Context {
             info!("Behind temporal: Syncing {} entries", behind_temporal);
             let online_trainer_ips =
                 self.node_peers.get_trainer_ips_above_temporal(peers_temporal, &trainer_pks).await?;
-            let heights: Vec<u64> = (temporal_height..=peers_temporal).take(1000).collect();
+            let heights: Vec<u64> = (temporal_height..=peers_temporal).take(200).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
                 .map(|height| {
@@ -400,9 +379,10 @@ impl Context {
                     CatchupHeight { height, c: None, e: Some(true), a: Some(true), hashes: Some(hashes) }
                 })
                 .collect::<Vec<_>>()
-                .chunks(100)
+                .chunks(20)
                 .map(|chunk| chunk.to_vec())
                 .collect();
+            println!("Fetching {} chunks", chunks.len());
             self.fetch_heights(chunks, online_trainer_ips).await?;
             return Ok(false);
         }
