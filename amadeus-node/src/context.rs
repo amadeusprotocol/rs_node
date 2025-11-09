@@ -594,6 +594,84 @@ impl Context {
         all_anrs.into_iter().filter(|anr| anr.handshaked).collect()
     }
 
+    /// Get entries by height from fabric
+    pub fn get_entries_by_height(&self, height: u64) -> Result<Vec<consensus::doms::entry::Entry>, Error> {
+        let entries_raw = self.fabric.entries_by_height(height)?;
+        entries_raw
+            .into_iter()
+            .map(|raw| {
+                consensus::doms::entry::Entry::unpack(&raw).map_err(|e| Error::String(format!("entry decode: {e}")))
+            })
+            .collect()
+    }
+
+    /// Get temporal entry from fabric
+    pub fn get_temporal_entry(&self) -> Result<Option<consensus::doms::entry::Entry>, Error> {
+        self.fabric.get_temporal_entry().map_err(Into::into)
+    }
+
+    /// Get trainers for height
+    pub fn get_trainers_for_height(&self, height: u64) -> Option<Vec<[u8; 48]>> {
+        self.fabric.trainers_for_height(height)
+    }
+
+    /// Get wallet balance - wrapper around bic::chain_balance_symbol
+    pub fn get_wallet_balance(&self, public_key: &[u8; 48], symbol: &[u8]) -> i128 {
+        crate::bic::chain_balance_symbol(self.fabric.db(), public_key, symbol)
+    }
+
+    /// Get contract state from CF_CONTRACTSTATE
+    pub fn get_contract_state(&self, contract: &[u8; 48], key: &[u8]) -> Option<Vec<u8>> {
+        use amadeus_utils::constants::CF_CONTRACTSTATE;
+        let full_key = [b"bic:contract:", contract.as_slice(), b":", key].concat();
+        self.fabric.db().get(CF_CONTRACTSTATE, &full_key).ok().flatten()
+    }
+
+    /// Get chain difficulty bits
+    pub fn get_chain_diff_bits(&self) -> u32 {
+        crate::consensus::chain_diff_bits(self.fabric.db())
+    }
+
+    /// Get total sols
+    pub fn get_chain_total_sols(&self) -> i128 {
+        crate::bic::chain_total_sols(self.fabric.db())
+    }
+
+    /// Get all balances for a wallet using prefix scan
+    pub fn get_all_wallet_balances(&self, public_key: &[u8; 48]) -> Vec<(Vec<u8>, i128)> {
+        use amadeus_utils::constants::CF_CONTRACTSTATE;
+        let prefix = [b"bic:coin:balance:", public_key.as_slice(), b":"].concat();
+        self.fabric
+            .db()
+            .iter_prefix(CF_CONTRACTSTATE, &prefix)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(key, value)| {
+                if key.len() <= prefix.len() {
+                    return None;
+                }
+                let symbol = key[prefix.len()..].to_vec();
+                let amount = std::str::from_utf8(&value).ok()?.parse::<i128>().ok()?;
+                if amount > 0 { Some((symbol, amount)) } else { None }
+            })
+            .collect()
+    }
+
+    /// Get entry by hash
+    pub fn get_entry_by_hash(&self, hash: &[u8; 32]) -> Option<consensus::doms::entry::Entry> {
+        self.fabric.get_entry_by_hash(hash)
+    }
+
+    /// Get value from database column family
+    pub fn db_get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        self.fabric.db().get(cf, key).map_err(|e| Error::String(e.to_string()))
+    }
+
+    /// Iterate over keys with prefix in database column family
+    pub fn db_iter_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
+        self.fabric.db().iter_prefix(cf, prefix).map_err(|e| Error::String(e.to_string()))
+    }
+
     /// Reads UDP datagram and silently does parsing, validation and reassembly
     /// If the protocol message is complete, returns Some(Protocol)
     pub async fn parse_udp(&self, buf: &[u8], src: Ipv4Addr) -> Option<Box<dyn Protocol>> {
@@ -627,7 +705,7 @@ impl Context {
                     self.metrics.add_incoming_proto(proto.typename());
                     return Some(proto);
                 }
-                Err(e) => self.metrics.add_error(&e),
+                Err(e) => self.metrics.add_error(&Error::String(format!("can't add shard from {src} - {e}"))),
             },
             Ok(None) => {} // waiting for more shards, not an error
             Err(e) => self.metrics.add_error(&e),

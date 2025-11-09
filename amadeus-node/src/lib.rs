@@ -17,6 +17,15 @@ pub use amadeus_runtime::consensus::consensus_apply::{ApplyEnv, CallerEnv};
 pub use amadeus_runtime::consensus::consensus_muts::Mutation;
 pub use amadeus_runtime::consensus::{consensus_apply, consensus_kv, consensus_muts};
 
+// Re-export commonly needed constants for HTTP API
+pub use amadeus_utils::constants::{CF_CONTRACTSTATE, CF_TX, CF_TX_ACCOUNT_NONCE};
+
+// Re-export coin utilities for HTTP API
+pub use amadeus_runtime::consensus::bic::coin::from_flat;
+
+// Re-export base58 decoding utilities for HTTP API
+pub use amadeus_utils::misc::{decode_base58_array, decode_base58_hash, decode_base58_pk};
+
 pub use config::Config;
 pub use context::{Context, SoftforkStatus};
 pub use metrics::{MetricsSnapshot, UdpStats};

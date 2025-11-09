@@ -83,14 +83,8 @@ pub async fn get_all_nodes(State(ctx): State<Arc<Context>>) -> Json<serde_json::
     let nodes: std::collections::HashMap<String, NodeInfo> = peers_summary
         .into_iter()
         .map(|(ip, peer_info)| {
-            let node_info = NodeInfo {
-                pk: ip_to_pk.get(&ip).cloned().unwrap_or_else(|| "unknown".to_string()),
-                ip4: ip,
-                version: peer_info.version.map(|v| v.to_string()).unwrap_or_else(|| "unknown".to_string()),
-                latency: peer_info.latency,
-                last_message: peer_info.last_ts,
-                online: matches!(peer_info.handshake_status, amadeus_node::node::peers::HandshakeStatus::Completed),
-            };
+            let pk = ip_to_pk.get(&ip).cloned();
+            let node_info = NodeInfo::from_peer_info(ip, &peer_info, pk);
             (node_info.ip4.clone(), node_info)
         })
         .collect();
@@ -107,14 +101,15 @@ pub async fn get_all_nodes(State(ctx): State<Arc<Context>>) -> Json<serde_json::
     ),
     tag = "peer"
 )]
-pub async fn get_trainers(State(_ctx): State<Arc<Context>>) -> Json<TrainersResponse> {
-    // placeholder implementation - in a real system, this would query the trainer registry
-    let trainers = vec![
-        "7EVUJfpnEqK32KrzUAaR4Yf26KgT66AWwW63xSHw5mbgdQhV8iwL1NkHMAqTi5Hv3h".to_string(),
-        "8FWVKgqoFrL43LszVBbS5Zg27LhU67BWxX74yTIx6ocheRiW9jxM2OlINBrTj6Iw4i".to_string(),
-    ];
-
-    Json(TrainersResponse::ok(trainers))
+pub async fn get_trainers(State(ctx): State<Arc<Context>>) -> Json<TrainersResponse> {
+    let temporal_height = ctx.get_temporal_height();
+    match ctx.get_trainers_for_height(temporal_height + 1) {
+        Some(trainer_pks) => {
+            let trainers: Vec<String> = trainer_pks.iter().map(|pk| bs58::encode(pk).into_string()).collect();
+            Json(TrainersResponse::ok(trainers))
+        }
+        None => Json(TrainersResponse::ok(vec![])),
+    }
 }
 
 #[utoipa::path(

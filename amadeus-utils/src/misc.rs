@@ -35,6 +35,22 @@ pub fn pk_hex(pk: &[u8]) -> String {
     bs58::encode(pk).into_string()
 }
 
+/// Decode base58 string to fixed-size byte array
+/// Returns None if decoding fails or size doesn't match
+pub fn decode_base58_array<const N: usize>(s: &str) -> Option<[u8; N]> {
+    bs58::decode(s).into_vec().ok().and_then(|bytes| bytes.try_into().ok())
+}
+
+/// Decode base58 string to 48-byte public key
+pub fn decode_base58_pk(s: &str) -> Option<[u8; 48]> {
+    decode_base58_array::<48>(s)
+}
+
+/// Decode base58 string to 32-byte hash
+pub fn decode_base58_hash(s: &str) -> Option<[u8; 32]> {
+    decode_base58_array::<32>(s)
+}
+
 /// Concatenate multiple byte slices into a single Vec<u8>
 /// Example: bcat(&[b"bic:coin:balance:", pk, b":AMA"])
 #[inline]
@@ -396,5 +412,45 @@ mod tests {
         let pk = [0xAA, 0xBB, 0xCC];
         let result = bcat(&[b"bic:coin:balance:", &pk, b":AMA"]);
         assert_eq!(result, b"bic:coin:balance:\xAA\xBB\xCC:AMA");
+    }
+
+    #[test]
+    fn test_decode_base58_pk() {
+        // Test valid 48-byte public key
+        let test_pk = [0u8; 48];
+        let encoded = bs58::encode(&test_pk).into_string();
+        let decoded = decode_base58_pk(&encoded);
+        assert_eq!(decoded, Some(test_pk));
+
+        // Test invalid base58
+        assert_eq!(decode_base58_pk("not-valid-base58!"), None);
+
+        // Test wrong size (32 bytes instead of 48)
+        let wrong_size = [0u8; 32];
+        let encoded_wrong = bs58::encode(&wrong_size).into_string();
+        assert_eq!(decode_base58_pk(&encoded_wrong), None);
+    }
+
+    #[test]
+    fn test_decode_base58_hash() {
+        // Test valid 32-byte hash
+        let test_hash = [0xFF; 32];
+        let encoded = bs58::encode(&test_hash).into_string();
+        let decoded = decode_base58_hash(&encoded);
+        assert_eq!(decoded, Some(test_hash));
+
+        // Test wrong size (48 bytes instead of 32)
+        let wrong_size = [0u8; 48];
+        let encoded_wrong = bs58::encode(&wrong_size).into_string();
+        assert_eq!(decode_base58_hash(&encoded_wrong), None);
+    }
+
+    #[test]
+    fn test_decode_base58_array() {
+        // Test arbitrary size array
+        let test_bytes: [u8; 16] = [0x12; 16];
+        let encoded = bs58::encode(&test_bytes).into_string();
+        let decoded: Option<[u8; 16]> = decode_base58_array(&encoded);
+        assert_eq!(decoded, Some(test_bytes));
     }
 }

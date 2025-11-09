@@ -119,6 +119,51 @@ impl From<&amadeus_node::node::anr::Anr> for Anr {
     }
 }
 
+impl From<&amadeus_node::consensus::doms::tx::TxU> for Transaction {
+    fn from(txu: &amadeus_node::consensus::doms::tx::TxU) -> Self {
+        Self {
+            hash: bs58::encode(&txu.hash).into_string(),
+            from: bs58::encode(&txu.tx.signer).into_string(),
+            to: "pending_decode".to_string(), // Action decoding not yet implemented
+            amount: "0".to_string(),          // Action decoding not yet implemented
+            symbol: "AMA".to_string(),
+            fee: "0".to_string(),
+            nonce: txu.tx.nonce as u64,
+            timestamp: 0, // Not available in transaction
+            signature: bs58::encode(&txu.signature).into_string(),
+            tx_type: "pending_decode".to_string(), // Action decoding not yet implemented
+        }
+    }
+}
+
+impl From<&amadeus_node::consensus::doms::entry::Entry> for BlockEntry {
+    fn from(entry: &amadeus_node::consensus::doms::entry::Entry) -> Self {
+        Self {
+            hash: bs58::encode(&entry.hash).into_string(),
+            height: entry.header.height,
+            timestamp: 0, // Not stored in entry
+            previous_hash: bs58::encode(&entry.header.prev_hash).into_string(),
+            merkle_root: bs58::encode(&entry.header.txs_hash).into_string(),
+            signature: bs58::encode(&entry.signature).into_string(),
+            mask: format!("{:?}", entry.mask),
+        }
+    }
+}
+
+impl NodeInfo {
+    /// Create NodeInfo from peer info and optional public key
+    pub fn from_peer_info(ip: String, peer_info: &amadeus_node::node::peers::PeerInfo, pk: Option<String>) -> Self {
+        Self {
+            pk: pk.unwrap_or_else(|| "unknown".to_string()),
+            ip4: ip,
+            version: peer_info.version.map(|v| v.to_string()).unwrap_or_else(|| "unknown".to_string()),
+            latency: peer_info.latency,
+            last_message: peer_info.last_ts,
+            online: matches!(peer_info.handshake_status, amadeus_node::node::peers::HandshakeStatus::Completed),
+        }
+    }
+}
+
 impl Balance {
     pub fn new(symbol: &str, flat: u64, float: f64) -> Self {
         Self { symbol: symbol.to_string(), flat, float }

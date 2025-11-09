@@ -1,5 +1,5 @@
 use crate::models::*;
-use amadeus_node::Context;
+use amadeus_node::{Context, decode_base58_pk};
 use axum::{
     Json,
     extract::{Path, State},
@@ -21,10 +21,17 @@ use utoipa;
     tag = "wallet"
 )]
 pub async fn get_wallet_balance(
-    State(_ctx): State<Arc<Context>>,
-    Path(_public_key): Path<String>,
+    State(ctx): State<Arc<Context>>,
+    Path(public_key): Path<String>,
 ) -> Json<BalanceResponse> {
-    Json(BalanceResponse::ok(Balance::new("AMA", 1000000000000, 1000.0)))
+    let pk_bytes = match decode_base58_pk(&public_key) {
+        Some(pk) => pk,
+        None => return Json(BalanceResponse::error("invalid_public_key")),
+    };
+
+    let flat = ctx.get_wallet_balance(&pk_bytes, b"AMA");
+    use amadeus_node::from_flat;
+    Json(BalanceResponse::ok(Balance::new("AMA", flat as u64, from_flat(flat))))
 }
 
 #[utoipa::path(
@@ -42,15 +49,17 @@ pub async fn get_wallet_balance(
     tag = "wallet"
 )]
 pub async fn get_wallet_balance_by_symbol(
-    State(_ctx): State<Arc<Context>>,
-    Path((_public_key, symbol)): Path<(String, String)>,
+    State(ctx): State<Arc<Context>>,
+    Path((public_key, symbol)): Path<(String, String)>,
 ) -> Json<BalanceResponse> {
-    let balance = match symbol.as_str() {
-        "AMA" => Balance::new("AMA", 1000000000000, 1000.0),
-        "USDT" => Balance::new("USDT", 500000000, 500.0),
-        _ => Balance::new(&symbol, 0, 0.0),
+    let pk_bytes = match decode_base58_pk(&public_key) {
+        Some(pk) => pk,
+        None => return Json(BalanceResponse::error("invalid_public_key")),
     };
-    Json(BalanceResponse::ok(balance))
+
+    let flat = ctx.get_wallet_balance(&pk_bytes, symbol.as_bytes());
+    use amadeus_node::from_flat;
+    Json(BalanceResponse::ok(Balance::new(&symbol, flat as u64, from_flat(flat))))
 }
 
 #[utoipa::path(
@@ -67,13 +76,22 @@ pub async fn get_wallet_balance_by_symbol(
     tag = "wallet"
 )]
 pub async fn get_all_wallet_balances(
-    State(_ctx): State<Arc<Context>>,
-    Path(_public_key): Path<String>,
+    State(ctx): State<Arc<Context>>,
+    Path(public_key): Path<String>,
 ) -> Json<AllBalancesResponse> {
-    let balances = vec![
-        Balance::new("AMA", 1000000000000, 1000.0),
-        Balance::new("USDT", 500000000, 500.0),
-        Balance::new("ETH", 2000000000000000000, 2.0),
-    ];
+    let pk_bytes = match decode_base58_pk(&public_key) {
+        Some(pk) => pk,
+        None => return Json(AllBalancesResponse::error("invalid_public_key")),
+    };
+
+    use amadeus_node::from_flat;
+    let balances: Vec<Balance> = ctx
+        .get_all_wallet_balances(&pk_bytes)
+        .into_iter()
+        .map(|(symbol, flat)| {
+            let symbol_str = String::from_utf8_lossy(&symbol).to_string();
+            Balance::new(&symbol_str, flat as u64, from_flat(flat))
+        })
+        .collect();
     Json(AllBalancesResponse::ok(balances))
 }

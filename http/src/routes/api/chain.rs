@@ -1,13 +1,11 @@
 use crate::models::*;
-use amadeus_node::Context;
+use amadeus_node::{Context, decode_base58_hash, decode_base58_pk};
 use axum::{
     Json,
     extract::{Path, State},
 };
 use std::sync::Arc;
 use utoipa;
-
-// Router function not needed - routes defined in mod.rs
 
 #[utoipa::path(
     get,
@@ -22,10 +20,10 @@ use utoipa;
 pub async fn get_chain_stats(State(ctx): State<Arc<Context>>) -> Json<ChainStatsResponse> {
     let stats = ChainStats {
         height: ctx.get_rooted_height(),
-        total_transactions: 0,                  // placeholder - would need to query from fabric
-        total_accounts: 0,                      // placeholder - would need to query from fabric
-        network_hash_rate: "0 H/s".to_string(), // placeholder
-        difficulty: "0x0".to_string(),          // placeholder
+        total_transactions: 0, // would need to scan CF_TX
+        total_accounts: 0,     // would need to scan CF_CONTRACTSTATE
+        network_hash_rate: format!("{} H/s", ctx.get_chain_total_sols()),
+        difficulty: format!("0x{:08x}", ctx.get_chain_diff_bits()),
     };
 
     Json(ChainStatsResponse::ok(stats))
@@ -41,19 +39,15 @@ pub async fn get_chain_stats(State(ctx): State<Arc<Context>>) -> Json<ChainStats
     ),
     tag = "chain"
 )]
-pub async fn get_chain_tip(State(_ctx): State<Arc<Context>>) -> Json<ChainTipResponse> {
-    // placeholder implementation - would query current tip from consensus layer
-    let entry = BlockEntry {
-        hash: "0x1234567890abcdef".to_string(),
-        height: 12345,
-        timestamp: 1695123456,
-        previous_hash: "0x0987654321fedcba".to_string(),
-        merkle_root: "0xabcdef1234567890".to_string(),
-        signature: "signature_data".to_string(),
-        mask: "consensus_mask".to_string(),
-    };
-
-    Json(ChainTipResponse::ok(entry))
+pub async fn get_chain_tip(State(ctx): State<Arc<Context>>) -> Json<ChainTipResponse> {
+    match ctx.get_temporal_entry() {
+        Ok(Some(entry)) => {
+            let block_entry = BlockEntry::from(&entry);
+            Json(ChainTipResponse::ok(block_entry))
+        }
+        Ok(None) => Json(ChainTipResponse::error("no_tip_found")),
+        Err(_) => Json(ChainTipResponse::error("query_failed")),
+    }
 }
 
 #[utoipa::path(
@@ -69,19 +63,14 @@ pub async fn get_chain_tip(State(_ctx): State<Arc<Context>>) -> Json<ChainTipRes
     ),
     tag = "chain"
 )]
-pub async fn get_entries_by_height(State(_ctx): State<Arc<Context>>, Path(height): Path<u64>) -> Json<EntriesResponse> {
-    // placeholder implementation - would query entries from fabric by height
-    let entries = vec![BlockEntry {
-        hash: format!("0x{:x}", height),
-        height,
-        timestamp: 1695123456 + height,
-        previous_hash: format!("0x{:x}", height - 1),
-        merkle_root: format!("0x{:x}root", height),
-        signature: format!("sig_{}", height),
-        mask: format!("mask_{}", height),
-    }];
-
-    Json(EntriesResponse::ok(entries))
+pub async fn get_entries_by_height(State(ctx): State<Arc<Context>>, Path(height): Path<u64>) -> Json<EntriesResponse> {
+    match ctx.get_entries_by_height(height) {
+        Ok(entries) => {
+            let block_entries: Vec<BlockEntry> = entries.into_iter().map(|entry| BlockEntry::from(&entry)).collect();
+            Json(EntriesResponse::ok(block_entries))
+        }
+        Err(_) => Json(EntriesResponse::ok(vec![])),
+    }
 }
 
 #[utoipa::path(
@@ -98,35 +87,32 @@ pub async fn get_entries_by_height(State(_ctx): State<Arc<Context>>, Path(height
     tag = "chain"
 )]
 pub async fn get_entries_by_height_with_txs(
-    State(_ctx): State<Arc<Context>>,
+    State(ctx): State<Arc<Context>>,
     Path(height): Path<u64>,
 ) -> Json<EntriesWithTxsResponse> {
-    // placeholder implementation
-    let entry_with_txs = BlockEntryWithTxs {
-        entry: BlockEntry {
-            hash: format!("0x{:x}", height),
-            height,
-            timestamp: 1695123456 + height,
-            previous_hash: format!("0x{:x}", height - 1),
-            merkle_root: format!("0x{:x}root", height),
-            signature: format!("sig_{}", height),
-            mask: format!("mask_{}", height),
-        },
-        txs: vec![Transaction {
-            hash: format!("tx_{}", height),
-            from: "7EVUJfpnEqK32KrzUAaR4Yf26KgT66AWwW63xSHw5mbgdQhV8iwL1NkHMAqTi5Hv3h".to_string(),
-            to: "6K9RwSR3gKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKg".to_string(),
-            amount: "100.0".to_string(),
-            symbol: "AMA".to_string(),
-            fee: "0.1".to_string(),
-            nonce: height,
-            timestamp: 1695123456 + height,
-            signature: format!("tx_sig_{}", height),
-            tx_type: "transfer".to_string(),
-        }],
-    };
+    match ctx.get_entries_by_height(height) {
+        Ok(entries) => {
+            let entries_with_txs: Vec<BlockEntryWithTxs> = entries
+                .into_iter()
+                .map(|entry| {
+                    use amadeus_node::consensus::doms::tx::TxU;
 
-    Json(EntriesWithTxsResponse::ok(vec![entry_with_txs]))
+                    let block_entry = BlockEntry::from(&entry);
+
+                    // Decode transactions from entry.txs
+                    let txs: Vec<Transaction> = entry
+                        .txs
+                        .iter()
+                        .filter_map(|tx_bytes| TxU::from_vanilla(tx_bytes).ok().map(|txu| Transaction::from(&txu)))
+                        .collect();
+
+                    BlockEntryWithTxs { entry: block_entry, txs }
+                })
+                .collect();
+            Json(EntriesWithTxsResponse::ok(entries_with_txs))
+        }
+        Err(_) => Json(EntriesWithTxsResponse::ok(vec![])),
+    }
 }
 
 #[utoipa::path(
@@ -144,28 +130,42 @@ pub async fn get_entries_by_height_with_txs(
     tag = "chain"
 )]
 pub async fn get_transaction_by_id(
-    State(_ctx): State<Arc<Context>>,
+    State(ctx): State<Arc<Context>>,
     Path(tx_id): Path<String>,
 ) -> Json<TransactionResponse> {
-    // placeholder implementation - would query transaction from fabric
-    if tx_id.starts_with("tx_") {
-        let transaction = Transaction {
-            hash: tx_id.clone(),
-            from: "7EVUJfpnEqK32KrzUAaR4Yf26KgT66AWwW63xSHw5mbgdQhV8iwL1NkHMAqTi5Hv3h".to_string(),
-            to: "6K9RwSR3gKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKg".to_string(),
-            amount: "100.0".to_string(),
-            symbol: "AMA".to_string(),
-            fee: "0.1".to_string(),
-            nonce: 42,
-            timestamp: 1695123456,
-            signature: format!("{}_signature", tx_id),
-            tx_type: "transfer".to_string(),
-        };
+    use amadeus_node::CF_TX;
+    use amadeus_node::consensus::doms::tx::TxU;
 
-        Json(TransactionResponse::ok(Some(transaction)))
-    } else {
-        Json(TransactionResponse::error("not_found"))
+    // Decode transaction hash from base58
+    let tx_hash = match decode_base58_hash(&tx_id) {
+        Some(hash) => hash,
+        None => return Json(TransactionResponse::error("invalid_tx_hash")),
+    };
+
+    // Query CF_TX to get entry_hash
+    let entry_hash = match ctx.db_get(CF_TX, &tx_hash) {
+        Ok(Some(hash)) if hash.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&hash);
+            arr
+        }
+        _ => return Json(TransactionResponse::error("not_found")),
+    };
+
+    // Get the entry and find the matching transaction
+    if let Some(entry) = ctx.get_entry_by_hash(&entry_hash) {
+        for tx_bytes in &entry.txs {
+            if let Ok(txu) = TxU::from_vanilla(tx_bytes) {
+                if txu.hash == tx_hash {
+                    let mut transaction = Transaction::from(&txu);
+                    transaction.hash = tx_id; // Keep original input hash string
+                    return Json(TransactionResponse::ok(Some(transaction)));
+                }
+            }
+        }
     }
+
+    Json(TransactionResponse::error("not_found"))
 }
 
 #[utoipa::path(
@@ -182,38 +182,58 @@ pub async fn get_transaction_by_id(
     tag = "chain"
 )]
 pub async fn get_transaction_events_by_account(
-    State(_ctx): State<Arc<Context>>,
+    State(ctx): State<Arc<Context>>,
     Path(account): Path<String>,
 ) -> Json<TransactionEventsResponse> {
-    // placeholder implementation - would query events from fabric
-    let transactions = vec![
-        Transaction {
-            hash: format!("event_tx_1_{}", account.chars().take(8).collect::<String>()),
-            from: account.clone(),
-            to: "6K9RwSR3gKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKg".to_string(),
-            amount: "50.0".to_string(),
-            symbol: "AMA".to_string(),
-            fee: "0.1".to_string(),
-            nonce: 1,
-            timestamp: 1695123456,
-            signature: "event_signature_1".to_string(),
-            tx_type: "transfer".to_string(),
-        },
-        Transaction {
-            hash: format!("event_tx_2_{}", account.chars().take(8).collect::<String>()),
-            from: "7EVUJfpnEqK32KrzUAaR4Yf26KgT66AWwW63xSHw5mbgdQhV8iwL1NkHMAqTi5Hv3h".to_string(),
-            to: account,
-            amount: "25.0".to_string(),
-            symbol: "AMA".to_string(),
-            fee: "0.1".to_string(),
-            nonce: 2,
-            timestamp: 1695123466,
-            signature: "event_signature_2".to_string(),
-            tx_type: "transfer".to_string(),
-        },
-    ];
+    use amadeus_node::consensus::doms::tx::TxU;
+    use amadeus_node::{CF_TX, CF_TX_ACCOUNT_NONCE};
 
-    Json(TransactionEventsResponse { cursor: Some("next_cursor_placeholder".to_string()), txs: transactions })
+    // Decode account public key from base58
+    let account_bytes = match decode_base58_pk(&account) {
+        Some(pk) => pk,
+        None => return Json(TransactionEventsResponse { cursor: None, txs: vec![] }),
+    };
+
+    // Scan CF_TX_ACCOUNT_NONCE with account prefix
+    let mut transactions = Vec::new();
+    if let Ok(items) = ctx.db_iter_prefix(CF_TX_ACCOUNT_NONCE, &account_bytes) {
+        // Limit to first 20 transactions for performance
+        for (_key, tx_hash) in items.into_iter().take(20) {
+            if tx_hash.len() != 32 {
+                continue;
+            }
+
+            let mut tx_hash_arr = [0u8; 32];
+            tx_hash_arr.copy_from_slice(&tx_hash);
+
+            // Get entry hash from CF_TX
+            if let Ok(Some(entry_hash)) = ctx.db_get(CF_TX, &tx_hash_arr) {
+                if entry_hash.len() != 32 {
+                    continue;
+                }
+
+                let mut entry_hash_arr = [0u8; 32];
+                entry_hash_arr.copy_from_slice(&entry_hash);
+
+                // Get entry and find the matching transaction
+                if let Some(entry) = ctx.get_entry_by_hash(&entry_hash_arr) {
+                    for tx_bytes in &entry.txs {
+                        if let Ok(txu) = TxU::from_vanilla(tx_bytes) {
+                            if txu.hash == tx_hash_arr {
+                                transactions.push(Transaction::from(&txu));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Json(TransactionEventsResponse {
+        cursor: if transactions.len() == 20 { Some("next".to_string()) } else { None },
+        txs: transactions,
+    })
 }
 
 #[utoipa::path(
@@ -230,22 +250,26 @@ pub async fn get_transaction_events_by_account(
     tag = "chain"
 )]
 pub async fn get_transactions_in_entry(
-    State(_ctx): State<Arc<Context>>,
+    State(ctx): State<Arc<Context>>,
     Path(entry_hash): Path<String>,
 ) -> Json<TransactionsInEntryResponse> {
-    // placeholder implementation - would query transactions from specific entry
-    let transactions = vec![Transaction {
-        hash: format!("entry_tx_1_{}", entry_hash.chars().take(8).collect::<String>()),
-        from: "7EVUJfpnEqK32KrzUAaR4Yf26KgT66AWwW63xSHw5mbgdQhV8iwL1NkHMAqTi5Hv3h".to_string(),
-        to: "6K9RwSR3gKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKgKg".to_string(),
-        amount: "100.0".to_string(),
-        symbol: "AMA".to_string(),
-        fee: "0.1".to_string(),
-        nonce: 42,
-        timestamp: 1695123456,
-        signature: "entry_tx_signature_1".to_string(),
-        tx_type: "transfer".to_string(),
-    }];
+    // Decode hash from base58
+    let hash_bytes = match decode_base58_hash(&entry_hash) {
+        Some(hash) => hash,
+        None => return Json(TransactionsInEntryResponse::ok(vec![])),
+    };
 
-    Json(TransactionsInEntryResponse::ok(transactions))
+    if let Some(entry) = ctx.get_entry_by_hash(&hash_bytes) {
+        use amadeus_node::consensus::doms::tx::TxU;
+
+        let transactions: Vec<Transaction> = entry
+            .txs
+            .iter()
+            .filter_map(|tx_bytes| TxU::from_vanilla(tx_bytes).ok().map(|txu| Transaction::from(&txu)))
+            .collect();
+
+        Json(TransactionsInEntryResponse::ok(transactions))
+    } else {
+        Json(TransactionsInEntryResponse::ok(vec![]))
+    }
 }
