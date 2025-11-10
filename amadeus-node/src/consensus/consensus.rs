@@ -61,13 +61,61 @@ pub struct Consensus {
 }
 
 impl Consensus {
+    /// Parse mask from raw ETF bytes, handling BitBinary format properly
+    /// Returns None if the mask field is not found in the expected BitBinary format
+    fn parse_mask_from_raw_etf(bin: &[u8]) -> Option<BitVec<u8, Msb0>> {
+        // BitBinary ETF format: 119 (tag), 4, 'm', 'a', 's', 'k', 77 (BitBinary tag)
+        let mask_pattern = &[119u8, 4, b'm', b'a', b's', b'k', 77];
+        let mask_start = bin.windows(7).position(|w| w == mask_pattern)?;
+        let bitbin_start = mask_start + 6; // Skip the atom header
+
+        // Parse BitBinary: 77 (tag), 4-byte length, tail_bits, bytes
+        if bin.get(bitbin_start)? != &77 {
+            return None;
+        }
+
+        // Get the byte length (4-byte big-endian)
+        let mask_len = u32::from_be_bytes([
+            *bin.get(bitbin_start + 1)?,
+            *bin.get(bitbin_start + 2)?,
+            *bin.get(bitbin_start + 3)?,
+            *bin.get(bitbin_start + 4)?,
+        ]) as usize;
+
+        // Get the tail bits (number of bits in the last byte)
+        let tail_bits = *bin.get(bitbin_start + 5)? as usize;
+
+        // Get the mask bytes
+        let mask_bytes = bin.get(bitbin_start + 6..bitbin_start + 6 + mask_len)?;
+
+        // Build the BitVec with proper bit count
+        let mut mask = BitVec::<u8, Msb0>::new();
+
+        // Add all complete bytes except the last one
+        if mask_bytes.len() > 1 {
+            for byte in &mask_bytes[..mask_bytes.len() - 1] {
+                mask.extend_from_bitslice(&byte.view_bits::<Msb0>());
+            }
+        }
+
+        // Add the last byte with only tail_bits
+        if let Some(&last_byte) = mask_bytes.last() {
+            if tail_bits > 0 {
+                mask.extend_from_bitslice(&last_byte.view_bits::<Msb0>()[..tail_bits]);
+            }
+        }
+
+        Some(mask)
+    }
+
     /// Decode from ETF map; supported keys: entry_hash, mutations_hash, mask (bitvec), aggsig
     pub fn from_etf_bin(bin: &[u8]) -> Result<Self, Error> {
         let map = Term::decode(bin)?.get_term_map().ok_or(Error::WrongType("consensus map"))?;
         let entry_hash = map.get_binary("entry_hash").ok_or(Error::Missing("entry_hash"))?;
         let mutations_hash = map.get_binary("mutations_hash").ok_or(Error::Missing("mutations_hash"))?;
-        // No mask binary means all trainers have signed - we make it as empty bitvec
-        let mask = map.get_binary::<Vec<u8>>("mask").map(|bytes| bin_to_bitvec(bytes)).unwrap_or(BitVec::new());
+        let mask = Self::parse_mask_from_raw_etf(bin)
+            .or_else(|| map.get_binary::<Vec<u8>>("mask").map(|bytes| bin_to_bitvec(bytes)))
+            .unwrap_or(BitVec::new());
         let agg_sig = map.get_binary("aggsig").ok_or(Error::Missing("aggsig"))?;
         Ok(Self { entry_hash, mutations_hash, mask, agg_sig })
     }

@@ -485,7 +485,8 @@ impl Protocol for CatchupReply {
                 debug!("Received {} consensuses at height {}", consensuses.len(), trie.height);
                 for consensus in consensuses {
                     if let Err(e) = ctx.fabric.insert_consensus(&consensus) {
-                        warn!("Failed to insert consensus from {src} at height {}: {e}", trie.height);
+                        let ty = if consensus.mask.is_empty() { "full" } else { "partial" };
+                        warn!("Failed to insert {ty} consensus from {src} at height {}: {e}", trie.height);
                     } else {
                         debug!("Successfully inserted entry at height {}", trie.height);
                     }

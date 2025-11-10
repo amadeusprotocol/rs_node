@@ -252,7 +252,9 @@ impl Fabric {
         };
 
         if let Some(existing) = map.get(&consensus.mutations_hash) {
-            if existing.mask.count_ones() >= consensus.mask.count_ones() {
+            if existing.mask.all()
+                || (!consensus.mask.is_empty() && existing.mask.count_ones() >= consensus.mask.count_ones())
+            {
                 return Ok(());
             }
         }

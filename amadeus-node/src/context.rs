@@ -705,10 +705,10 @@ impl Context {
                     self.metrics.add_incoming_proto(proto.typename());
                     return Some(proto);
                 }
-                Err(e) => self.metrics.add_error(&Error::String(format!("can't add shard from {src} - {e}"))),
+                Err(e) => self.metrics.add_error(&e),
             },
             Ok(None) => {} // waiting for more shards, not an error
-            Err(e) => self.metrics.add_error(&e),
+            Err(e) => self.metrics.add_error(&Error::String(format!("bad udp frame from {src} - {e}"))),
         }
 
         None
