@@ -1,7 +1,7 @@
-use crate::bic::{coin, sol};
+use crate::consensus::chain_epoch;
 use crate::consensus::doms::tx::{TxU, pack, validate};
-use crate::consensus::{self, chain_epoch};
 use crate::utils::rocksdb::RocksDb;
+use amadeus_runtime::consensus::bic::{coin, sol};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -71,12 +71,9 @@ impl TxPool {
     pub fn validate_tx(&self, txu: &TxU, args: &mut ValidateTxArgs) -> Result<(), TxPoolError> {
         // Check nonce validity
         let signer_vec = txu.tx.signer.to_vec();
-        let chain_nonce = args
-            .batch_state
-            .chain_nonces
-            .get(&signer_vec)
-            .cloned()
-            .unwrap_or_else(|| consensus::chain_nonce(self.db.as_ref(), &txu.tx.signer).unwrap_or(0));
+        let chain_nonce = args.batch_state.chain_nonces.get(&signer_vec).cloned().unwrap_or_else(|| {
+            crate::consensus::fabric::chain_queries::chain_nonce(self.db.as_ref(), &txu.tx.signer).unwrap_or(0) as i128
+        });
 
         if chain_nonce != 0 && txu.tx.nonce <= chain_nonce {
             return Err(TxPoolError::InvalidNonce { nonce: txu.tx.nonce, hash: txu.hash });
@@ -84,12 +81,9 @@ impl TxPool {
         args.batch_state.chain_nonces.insert(signer_vec.clone(), txu.tx.nonce);
 
         // Check balance
-        let balance = args
-            .batch_state
-            .balances
-            .get(&signer_vec)
-            .cloned()
-            .unwrap_or_else(|| consensus::chain_balance(self.db.as_ref(), &txu.tx.signer));
+        let balance = args.batch_state.balances.get(&signer_vec).cloned().unwrap_or_else(|| {
+            crate::consensus::fabric::chain_queries::chain_balance(self.db.as_ref(), &txu.tx.signer)
+        });
 
         let exec_cost = txu.exec_cost(args.epoch) as i128;
         let fee = coin::to_cents(1) as i128;
@@ -123,12 +117,17 @@ impl TxPool {
 
     pub fn validate_tx_batch(&self, txs_packed: &[Vec<u8>]) -> Vec<Vec<u8>> {
         let chain_epoch = chain_epoch(self.db.as_ref());
-        let segment_vr_hash =
-            consensus::chain_segment_vr_hash(self.db.as_ref()).and_then(|v| v.try_into().ok()).unwrap_or([0u8; 32]);
-        let diff_bits = consensus::chain_diff_bits(self.db.as_ref());
+        let segment_vr_hash = crate::consensus::fabric::chain_queries::chain_segment_vr_hash(self.db.as_ref())
+            .and_then(|v| v.try_into().ok())
+            .unwrap_or([0u8; 32]);
+        let diff_bits = crate::consensus::fabric::chain_queries::chain_diff_bits(self.db.as_ref());
 
-        let mut args =
-            ValidateTxArgs { epoch: chain_epoch, segment_vr_hash, diff_bits, batch_state: BatchState::default() };
+        let mut args = ValidateTxArgs {
+            epoch: chain_epoch,
+            segment_vr_hash,
+            diff_bits: diff_bits as u32,
+            batch_state: BatchState::default(),
+        };
 
         let mut good = Vec::new();
         for tx_packed in txs_packed {
@@ -147,12 +146,17 @@ impl TxPool {
 
     pub async fn grab_next_valid(&self, amt: usize) -> Vec<Vec<u8>> {
         let chain_epoch = chain_epoch(self.db.as_ref());
-        let segment_vr_hash =
-            consensus::chain_segment_vr_hash(self.db.as_ref()).and_then(|v| v.try_into().ok()).unwrap_or([0u8; 32]);
-        let diff_bits = consensus::chain_diff_bits(self.db.as_ref());
+        let segment_vr_hash = crate::consensus::fabric::chain_queries::chain_segment_vr_hash(self.db.as_ref())
+            .and_then(|v| v.try_into().ok())
+            .unwrap_or([0u8; 32]);
+        let diff_bits = crate::consensus::fabric::chain_queries::chain_diff_bits(self.db.as_ref());
 
-        let mut args =
-            ValidateTxArgs { epoch: chain_epoch, segment_vr_hash, diff_bits, batch_state: BatchState::default() };
+        let mut args = ValidateTxArgs {
+            epoch: chain_epoch,
+            segment_vr_hash,
+            diff_bits: diff_bits as u32,
+            batch_state: BatchState::default(),
+        };
 
         let mut result = Vec::new();
         let mut to_delete = Vec::new();

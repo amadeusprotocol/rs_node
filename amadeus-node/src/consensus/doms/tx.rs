@@ -89,7 +89,7 @@ impl TxU {
 
     pub fn exec_cost_from_len(&self) -> i128 {
         let bytes = self.tx_encoded.len() + 32 + 96;
-        crate::bic::coin::to_cents((1 + bytes / 1024) as i128)
+        amadeus_runtime::consensus::bic::coin::to_cents((1 + bytes / 1024) as i128)
     }
 
     pub fn exec_cost(&self, _epoch: u32) -> i128 {
@@ -187,7 +187,7 @@ pub fn valid_pk(pk: &[u8]) -> bool {
     // accept burn address or any valid BLS public key
     if pk.len() == 48
         && let Ok(arr) = <&[u8; 48]>::try_from(pk)
-        && arr == &crate::bic::coin::burn_address()
+        && arr == &amadeus_runtime::consensus::bic::coin::burn_address()
     {
         return true;
     }
@@ -426,19 +426,19 @@ pub fn build(
 }
 
 /// Chain-level validity checks (nonce, balance, epoch) - matches Elixir TX.chain_valid/1
-pub fn chain_valid_txu(db: &crate::utils::rocksdb::RocksDb, txu: &TxU) -> bool {
+pub fn chain_valid_txu(fabric: &crate::consensus::fabric::Fabric, txu: &TxU) -> bool {
     // elixir logic:
     // chainNonce = Consensus.chain_nonce(txu.tx.signer)
     // nonceValid = !chainNonce or txu.tx.nonce > chainNonce
-    let chain_nonce = crate::consensus::chain_nonce(db, &txu.tx.signer);
+    let chain_nonce = fabric.chain_nonce(&txu.tx.signer);
     let nonce_valid = match chain_nonce {
         None => true,
-        Some(n) => txu.tx.nonce > n,
+        Some(n) => txu.tx.nonce > n as i128,
     };
 
     // hasBalance = BIC.Base.exec_cost(txu) <= Consensus.chain_balance(txu.tx.signer)
     let has_balance =
-        txu.exec_cost(crate::consensus::chain_epoch(db)) as i128 <= crate::consensus::chain_balance(db, &txu.tx.signer);
+        txu.exec_cost(crate::consensus::chain_epoch(fabric.db())) as i128 <= fabric.chain_balance(&txu.tx.signer);
 
     // hasSol / epochSolValid
     let mut epoch_sol_valid = true;
@@ -448,7 +448,7 @@ pub fn chain_valid_txu(db: &crate::utils::rocksdb::RocksDb, txu: &TxU) -> bool {
         && first_arg.len() >= 4
     {
         let sol_epoch = u32::from_le_bytes([first_arg[0], first_arg[1], first_arg[2], first_arg[3]]);
-        epoch_sol_valid = crate::consensus::chain_epoch(db) as u32 == sol_epoch;
+        epoch_sol_valid = crate::consensus::chain_epoch(fabric.db()) as u32 == sol_epoch;
     }
 
     epoch_sol_valid && nonce_valid && has_balance
@@ -456,9 +456,9 @@ pub fn chain_valid_txu(db: &crate::utils::rocksdb::RocksDb, txu: &TxU) -> bool {
 
 /// Chain-level validity checks - equivalent to Elixir TX.chain_valid/1
 /// Can accept either packed transaction bytes or unpacked TxU
-pub fn chain_valid(db: &crate::utils::rocksdb::RocksDb, tx_input: &[u8]) -> bool {
+pub fn chain_valid(fabric: &crate::consensus::fabric::Fabric, tx_input: &[u8]) -> bool {
     match unpack(tx_input) {
-        Ok(txu) => chain_valid_txu(db, &txu),
+        Ok(txu) => chain_valid_txu(fabric, &txu),
         Err(_) => false,
     }
 }

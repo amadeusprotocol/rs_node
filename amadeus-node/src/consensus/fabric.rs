@@ -448,7 +448,7 @@ impl Fabric {
     }
 
     pub fn trainers_for_height(&self, height: u64) -> Option<Vec<[u8; 48]>> {
-        crate::bic::epoch::trainers_for_height(self.db(), height)
+        amadeus_runtime::consensus::bic::epoch::trainers_for_height(self.db(), height)
     }
 
     pub fn get_muts_rev(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, Error> {
@@ -778,6 +778,139 @@ impl Fabric {
 
     pub fn is_proc_consensus(&self) -> bool {
         self.db.get(CF_SYSCONF, b"proc_consensus").ok().flatten().map_or(false, |v| v[0] == 1)
+    }
+
+    // Chain state query functions - read from CF_CONTRACTSTATE column family
+
+    /// Get the chain nonce for a given public key
+    pub fn chain_nonce(&self, public_key: &[u8]) -> Option<u64> {
+        let cf = self.db.inner.cf_handle(amadeus_utils::constants::CF_CONTRACTSTATE)?;
+        let key = format!("account:{}:nonce", hex::encode(public_key));
+        self.db
+            .inner
+            .get_cf(&cf, key.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|bytes| std::str::from_utf8(&bytes).ok().and_then(|s| s.parse::<u64>().ok()))
+    }
+
+    /// Get the chain balance for a given public key (native AMA token)
+    pub fn chain_balance(&self, public_key: &[u8]) -> i128 {
+        let cf = match self.db.inner.cf_handle(amadeus_utils::constants::CF_CONTRACTSTATE) {
+            Some(cf) => cf,
+            None => return 0,
+        };
+        let key = format!("bic:coin:balance:{}:AMA", hex::encode(public_key));
+        self.db
+            .inner
+            .get_cf(&cf, key.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|bytes| std::str::from_utf8(&bytes).ok().and_then(|s| s.parse::<i128>().ok()))
+            .unwrap_or(0)
+    }
+
+    /// Get the chain difficulty bits
+    pub fn chain_diff_bits(&self) -> u64 {
+        let cf = match self.db.inner.cf_handle(amadeus_utils::constants::CF_CONTRACTSTATE) {
+            Some(cf) => cf,
+            None => return 128, // default difficulty
+        };
+        self.db
+            .inner
+            .get_cf(&cf, b"bic:sol:diff")
+            .ok()
+            .flatten()
+            .and_then(|bytes| std::str::from_utf8(&bytes).ok().and_then(|s| s.parse::<u64>().ok()))
+            .unwrap_or(128)
+    }
+
+    /// Get the chain segment VR hash
+    pub fn chain_segment_vr_hash(&self) -> Option<Vec<u8>> {
+        let cf = self.db.inner.cf_handle(amadeus_utils::constants::CF_CONTRACTSTATE)?;
+        self.db.inner.get_cf(&cf, b"segment:vr_hash").ok().flatten()
+    }
+
+    /// Get balance for a specific account and symbol from the chain state
+    pub fn chain_balance_symbol(&self, public_key: &[u8], symbol: &[u8]) -> i128 {
+        let cf = match self.db.inner.cf_handle(amadeus_utils::constants::CF_CONTRACTSTATE) {
+            Some(cf) => cf,
+            None => return 0,
+        };
+        let key = format!("bic:coin:balance:{}:{}", hex::encode(public_key), std::str::from_utf8(symbol).unwrap_or(""));
+        self.db
+            .inner
+            .get_cf(&cf, key.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|bytes| std::str::from_utf8(&bytes).ok().and_then(|s| s.parse::<i128>().ok()))
+            .unwrap_or(0)
+    }
+
+    /// Get the total number of solutions from the chain state
+    pub fn chain_total_sols(&self) -> u64 {
+        let cf = match self.db.inner.cf_handle(amadeus_utils::constants::CF_CONTRACTSTATE) {
+            Some(cf) => cf,
+            None => return 0,
+        };
+        self.db
+            .inner
+            .get_cf(&cf, b"bic:sol:total")
+            .ok()
+            .flatten()
+            .and_then(|bytes| std::str::from_utf8(&bytes).ok().and_then(|s| s.parse::<u64>().ok()))
+            .unwrap_or(0)
+    }
+}
+
+// Standalone chain query functions for use when only RocksDb is available
+pub mod chain_queries {
+    use crate::utils::rocksdb::RocksDb;
+
+    /// Get the chain nonce for a given public key
+    pub fn chain_nonce(db: &RocksDb, public_key: &[u8]) -> Option<u64> {
+        let cf = db.inner.cf_handle(amadeus_utils::constants::CF_CONTRACTSTATE)?;
+        let key = format!("account:{}:nonce", hex::encode(public_key));
+        db.inner
+            .get_cf(&cf, key.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|bytes| std::str::from_utf8(&bytes).ok().and_then(|s| s.parse::<u64>().ok()))
+    }
+
+    /// Get the chain balance for a given public key (native AMA token)
+    pub fn chain_balance(db: &RocksDb, public_key: &[u8]) -> i128 {
+        let cf = match db.inner.cf_handle(amadeus_utils::constants::CF_CONTRACTSTATE) {
+            Some(cf) => cf,
+            None => return 0,
+        };
+        let key = format!("bic:coin:balance:{}:AMA", hex::encode(public_key));
+        db.inner
+            .get_cf(&cf, key.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|bytes| std::str::from_utf8(&bytes).ok().and_then(|s| s.parse::<i128>().ok()))
+            .unwrap_or(0)
+    }
+
+    /// Get the chain difficulty bits
+    pub fn chain_diff_bits(db: &RocksDb) -> u64 {
+        let cf = match db.inner.cf_handle(amadeus_utils::constants::CF_CONTRACTSTATE) {
+            Some(cf) => cf,
+            None => return 128, // default difficulty
+        };
+        db.inner
+            .get_cf(&cf, b"bic:sol:diff")
+            .ok()
+            .flatten()
+            .and_then(|bytes| std::str::from_utf8(&bytes).ok().and_then(|s| s.parse::<u64>().ok()))
+            .unwrap_or(128)
+    }
+
+    /// Get the chain segment VR hash
+    pub fn chain_segment_vr_hash(db: &RocksDb) -> Option<Vec<u8>> {
+        let cf = db.inner.cf_handle(amadeus_utils::constants::CF_CONTRACTSTATE)?;
+        db.inner.get_cf(&cf, b"segment:vr_hash").ok().flatten()
     }
 }
 

@@ -1,4 +1,5 @@
 pub mod bic;
+pub mod wasm;
 
 pub mod consensus_apply;
 pub mod consensus_kv;

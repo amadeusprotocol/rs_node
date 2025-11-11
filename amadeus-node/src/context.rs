@@ -615,9 +615,9 @@ impl Context {
         self.fabric.trainers_for_height(height)
     }
 
-    /// Get wallet balance - wrapper around bic::chain_balance_symbol
+    /// Get wallet balance - wrapper around fabric.chain_balance_symbol
     pub fn get_wallet_balance(&self, public_key: &[u8; 48], symbol: &[u8]) -> i128 {
-        crate::bic::chain_balance_symbol(self.fabric.db(), public_key, symbol)
+        self.fabric.chain_balance_symbol(public_key, symbol)
     }
 
     /// Get contract state from CF_CONTRACTSTATE
@@ -629,12 +629,12 @@ impl Context {
 
     /// Get chain difficulty bits
     pub fn get_chain_diff_bits(&self) -> u32 {
-        crate::consensus::chain_diff_bits(self.fabric.db())
+        self.fabric.chain_diff_bits() as u32
     }
 
     /// Get total sols
     pub fn get_chain_total_sols(&self) -> i128 {
-        crate::bic::chain_total_sols(self.fabric.db())
+        self.fabric.chain_total_sols() as i128
     }
 
     /// Get all balances for a wallet using prefix scan

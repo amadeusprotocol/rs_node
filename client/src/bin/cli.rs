@@ -1,6 +1,6 @@
-use amadeus_node::bic::contract;
 use amadeus_node::config::{Config, gen_sk, get_pk, read_sk, write_sk};
 use amadeus_node::consensus::doms::tx;
+use amadeus_node::runtime_bic::contract;
 use anyhow::{Error, Result};
 use bs58;
 use clap::{Parser, Subcommand};
@@ -198,7 +198,7 @@ async fn handle_contract_tx(config: &Config, wasm_path: &str, url: Option<&str>)
     let wasm_bytes = fs::read(wasm_path)?;
 
     // Validate WASM
-    contract::validate(&wasm_bytes)?;
+    contract::validate(&wasm_bytes).map_err(|e| anyhow::anyhow!(e))?;
     let args_vec = vec![wasm_bytes];
     let tx_packed = tx::build(config, b"Contract", "deploy", &args_vec, None, None, None);
 

@@ -171,7 +171,11 @@ impl TxResult {
 
 /// Execute a single transaction, routing to the appropriate contract handler
 /// Returns (error, logs, mutations, mutations_reverse)
-fn execute_transaction(env: &mut ApplyEnv, txu: &TxU) -> (String, Vec<String>, Vec<Mutation>, Vec<Mutation>) {
+fn execute_transaction(
+    env: &mut ApplyEnv,
+    db: &RocksDb,
+    txu: &TxU,
+) -> (String, Vec<String>, Vec<Mutation>, Vec<Mutation>) {
     let action = match txu.tx.actions.first() {
         Some(a) => a,
         None => return ("no_actions".to_string(), vec![], vec![], vec![]),
@@ -191,8 +195,8 @@ fn execute_transaction(env: &mut ApplyEnv, txu: &TxU) -> (String, Vec<String>, V
         b"Coin" => execute_coin_call(env, &action.function, &action.args),
         b"Contract" => execute_contract_call(env, &action.function, &action.args),
         contract if contract.len() == 48 => {
-            // TODO: Re-enable WASM after CallEnv migration
-            ("wasm_disabled_temporarily".to_string(), vec![])
+            // WASM contract execution for 48-byte public key contracts
+            execute_wasm_call(env, db, contract, &action.function, &action.args)
         }
         _ => ("invalid_contract".to_string(), vec![]),
     };
@@ -202,38 +206,56 @@ fn execute_transaction(env: &mut ApplyEnv, txu: &TxU) -> (String, Vec<String>, V
 
 fn execute_epoch_call(env: &mut ApplyEnv, function: &str, args: &[Vec<u8>]) -> (String, Vec<String>) {
     parse_epoch_call(function, args)
-        .and_then(|call| crate::bic::epoch::Epoch.call(env, call).map_err(|e| e.to_string()))
+        .and_then(|call| amadeus_runtime::consensus::bic::epoch::Epoch.call(env, call).map_err(|e| e.to_string()))
         .map(|_| ("ok".to_string(), vec![]))
         .unwrap_or_else(|e| (e, vec![]))
 }
 
 fn execute_coin_call(env: &mut ApplyEnv, function: &str, args: &[Vec<u8>]) -> (String, Vec<String>) {
-    crate::bic::coin::call(env, function, args)
+    amadeus_runtime::consensus::bic::coin::call(env, function, args)
         .map(|_| ("ok".to_string(), vec![]))
         .unwrap_or_else(|e| (e.to_string(), vec![]))
 }
 
 fn execute_contract_call(env: &mut ApplyEnv, function: &str, args: &[Vec<u8>]) -> (String, Vec<String>) {
-    crate::bic::contract::call(env, function, args)
+    amadeus_runtime::consensus::bic::contract::call(env, function, args)
         .map(|_| ("ok".to_string(), vec![]))
         .unwrap_or_else(|e| (e.to_string(), vec![]))
 }
 
-// TODO: Re-enable after WASM module migration
-#[allow(dead_code)]
 fn execute_wasm_call(
-    _apply_env: &mut ApplyEnv,
+    apply_env: &mut ApplyEnv,
     _db: &RocksDb,
-    _contract: &[u8],
-    _function: &str,
-    _args: &[Vec<u8>],
+    contract: &[u8],
+    function: &str,
+    args: &[Vec<u8>],
 ) -> (String, Vec<String>) {
-    // WASM execution temporarily disabled during bic module migration
-    ("wasm_disabled_temporarily".to_string(), vec![])
+    // check if contract has bytecode
+    let bytecode = match amadeus_runtime::consensus::bic::contract::bytecode(apply_env, contract) {
+        Ok(Some(code)) => code,
+        Ok(None) => return ("account_has_no_bytecode".to_string(), vec![]),
+        Err(e) => return (format!("bytecode_error:{}", e), vec![]),
+    };
+
+    // execute wasm using the runtime from amadeus-runtime
+    match amadeus_runtime::consensus::wasm::execute(apply_env, &bytecode, function, args) {
+        Ok(result) => {
+            // mutations are already updated in apply_env by the runtime
+            // return success with logs
+            ("ok".to_string(), result.logs)
+        }
+        Err(e) => {
+            // wasm execution failed
+            (format!("wasm_error:{}", e), vec![])
+        }
+    }
 }
 
-fn parse_epoch_call(function: &str, args: &[Vec<u8>]) -> Result<crate::bic::epoch::EpochCall, String> {
-    use crate::bic::epoch::EpochCall;
+fn parse_epoch_call(
+    function: &str,
+    args: &[Vec<u8>],
+) -> Result<amadeus_runtime::consensus::bic::epoch::EpochCall, String> {
+    use amadeus_runtime::consensus::bic::epoch::EpochCall;
 
     match function {
         "submit_sol" => Ok(EpochCall::SubmitSol { sol: args.first().ok_or("missing sol arg")?.clone() }),
@@ -261,7 +283,11 @@ fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) -> Result<
     let epoch = next_entry.header.height / 100_000;
 
     let entry_signer_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &next_entry.header.signer, b":AMA"]);
-    let burn_address_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &crate::bic::coin::BURN_ADDRESS, b":AMA"]);
+    let burn_address_key = crate::utils::misc::bcat(&[
+        b"bic:coin:balance:",
+        &amadeus_runtime::consensus::bic::coin::BURN_ADDRESS,
+        b":AMA",
+    ]);
 
     for txu in txus {
         let nonce_key = crate::utils::misc::bcat(&[b"bic:base:nonce:", &txu.tx.signer]);
@@ -270,9 +296,9 @@ fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) -> Result<
 
         let bytes = txu.tx_encoded.len() + 32 + 96;
         let exec_cost = if epoch >= 295 {
-            crate::bic::coin::to_cents((1 + bytes / 1024) as i128)
+            amadeus_runtime::consensus::bic::coin::to_cents((1 + bytes / 1024) as i128)
         } else {
-            crate::bic::coin::to_cents((3 + bytes / 256 * 3) as i128)
+            amadeus_runtime::consensus::bic::coin::to_cents((3 + bytes / 256 * 3) as i128)
         };
 
         let signer_balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &txu.tx.signer, b":AMA"]);
@@ -436,7 +462,7 @@ fn call_exit(env: &mut ApplyEnv, next_entry: &Entry) -> Result<(), &'static str>
         env.caller_env.call_exec_points_remaining = 0;
         env.caller_env.attached_symbol = vec![];
         env.caller_env.attached_amount = vec![];
-        let _ = crate::bic::epoch::Epoch.next(env);
+        let _ = amadeus_runtime::consensus::bic::epoch::Epoch.next(env);
     }
     Ok(())
 }
@@ -487,8 +513,9 @@ pub fn apply_entry(
 
     // execute transactions (mutations include gas)
     let mut tx_results = Vec::new();
+    let db = fabric.db();
     for txu in &txus {
-        let (error, logs, m3, m_rev3) = execute_transaction(&mut env, txu);
+        let (error, logs, m3, m_rev3) = execute_transaction(&mut env, db, txu);
 
         if error == "ok" {
             // success: add all mutations

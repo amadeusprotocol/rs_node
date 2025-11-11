@@ -1,12 +1,9 @@
-pub mod bic;
 pub mod config;
 pub mod consensus;
 pub mod context;
 pub mod metrics;
 pub mod node;
 pub mod socket;
-// TODO: Re-enable after CallEnv migration is complete
-// pub mod wasm;
 
 // Re-export utility modules
 pub use amadeus_utils as utils;
@@ -16,6 +13,9 @@ pub use amadeus_utils::{Database, DatabaseError};
 pub use amadeus_runtime::consensus::consensus_apply::{ApplyEnv, CallerEnv};
 pub use amadeus_runtime::consensus::consensus_muts::Mutation;
 pub use amadeus_runtime::consensus::{consensus_apply, consensus_kv, consensus_muts};
+
+// Re-export BIC modules from amadeus-runtime with an alias to avoid conflicts
+pub use amadeus_runtime::consensus::bic as runtime_bic;
 
 // Re-export commonly needed constants for HTTP API
 pub use amadeus_utils::constants::{CF_CONTRACTSTATE, CF_TX, CF_TX_ACCOUNT_NONCE};
