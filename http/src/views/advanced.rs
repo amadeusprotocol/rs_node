@@ -1850,6 +1850,15 @@ pub fn page(snapshot: &MetricsSnapshot, peers_summary: &Option<PeersSummary>, ct
                                             <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 10l5 5 5-5"/>
                                         </svg>
                                     </th>
+                                    <th class="sortable" onclick="sortPeersTable('trainer')">
+                                        <span>TRAINER</span>
+                                        <svg class="sort-arrow sort-asc" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="display: none;">
+                                            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 14l5-5 5 5"/>
+                                        </svg>
+                                        <svg class="sort-arrow sort-desc" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" style="display: none;">
+                                            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 10l5 5 5-5"/>
+                                        </svg>
+                                    </th>
                                 </tr>
                             </thead>
                             <tbody id="peers-table-body">
@@ -1986,6 +1995,10 @@ pub fn page(snapshot: &MetricsSnapshot, peers_summary: &Option<PeersSummary>, ct
                             bVal = String(b.peerInfo.version || '');
                         }}
                         break;
+                    case 'trainer':
+                        aVal = a.isTrainer ? 1 : 0;
+                        bVal = b.isTrainer ? 1 : 0;
+                        break;
                     default:
                         return 0;
                 }}
@@ -2065,7 +2078,8 @@ pub fn page(snapshot: &MetricsSnapshot, peers_summary: &Option<PeersSummary>, ct
                 const temporalHeight = peerInfo.temporal_height || '-';
                 const rootedHeight = peerInfo.rooted_height || '-';
                 const version = peerInfo.version || '-';
-                
+                const trainerIcon = item.isTrainer ? '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21v-6m2 0v-1.5m0 9V21m-2-3h3m-1 0h.5a1.5 1.5 0 0 1 0 3H16m3-3h.5a1.5 1.5 0 0 0 0-3H16M8 7a4 4 0 1 0 8 0a4 4 0 0 0-8 0M6 21v-2a4 4 0 0 1 4-4h3"/></svg>' : '';
+
                 return `
                     <tr>
                         <td class="font-mono">${{address}}</td>
@@ -2079,6 +2093,7 @@ pub fn page(snapshot: &MetricsSnapshot, peers_summary: &Option<PeersSummary>, ct
                         <td class="font-mono">${{typeof temporalHeight === 'number' ? temporalHeight.toLocaleString() : temporalHeight}}</td>
                         <td class="font-mono">${{typeof rootedHeight === 'number' ? rootedHeight.toLocaleString() : rootedHeight}}</td>
                         <td class="font-mono">${{version}}</td>
+                        <td>${{trainerIcon}}</td>
                     </tr>
                 `;
             }}).join('');
@@ -2411,21 +2426,26 @@ pub fn page(snapshot: &MetricsSnapshot, peers_summary: &Option<PeersSummary>, ct
         }}
         
         function updatePeersTable(peersData) {{
-            // Extract peers object from API response (new format has online, connecting, trainers, peers fields)
             const peers = peersData.peers || peersData;
             const peerEntries = Object.entries(peers);
 
-            // Update global peers data for sorting
-            window.peersData = peerEntries.map(([address, peerInfo]) => ({{ address, peerInfo }}));
+            Promise.all([
+                fetch('/api/peer/anr').then(res => res.json()),
+                fetch('/api/peer/trainers').then(res => res.json())
+            ]).then(([anrRes, trainersRes]) => {{
+                const ipToPk = new Map();
+                (anrRes.data || []).forEach(anr => ipToPk.set(anr.ip4, anr.pk));
+                const trainerPkSet = new Set(trainersRes.data || []);
 
-            // Apply current sort if any
-            if (window.currentSortColumn && window.currentSortDirection) {{
-                // Re-sort with current settings (userClick = false to prevent toggling)
-                sortPeersTable(window.currentSortColumn, false);
-            }} else {{
-                // Just render without sorting
-                renderPeersTable();
-            }}
+                window.peersData = peerEntries.map(([address, peerInfo]) => ({{
+                    address, peerInfo, isTrainer: trainerPkSet.has(ipToPk.get(address))
+                }}));
+
+                window.currentSortColumn ? sortPeersTable(window.currentSortColumn, false) : renderPeersTable();
+            }}).catch(() => {{
+                window.peersData = peerEntries.map(([address, peerInfo]) => ({{ address, peerInfo, isTrainer: false }}));
+                window.currentSortColumn ? sortPeersTable(window.currentSortColumn, false) : renderPeersTable();
+            }});
         }}
         
         // Auto-switch to transactions tab when user starts typing in search
