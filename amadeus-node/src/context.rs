@@ -696,10 +696,8 @@ impl Context {
                         return None; // neither handshake message nor handshaked peer
                     }
 
-                    if matches!(proto.typename(), Catchup::TYPENAME)
-                        && !self.node_anrs.is_within_catchup_limit(&pk).await?
-                    {
-                        return None; // node sends too many catchup requests
+                    if !self.node_anrs.is_within_proto_limit(&pk, proto.typename()).await? {
+                        return None; // node sends too many proto requests
                     }
 
                     self.metrics.add_incoming_proto(proto.typename());

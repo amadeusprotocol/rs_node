@@ -5,16 +5,46 @@ use crate::utils::misc::{TermExt, TermMap, get_unix_secs_now};
 use crate::utils::safe_etf::u32_to_term;
 use crate::utils::version::Ver;
 use eetf::{Atom, Binary, Term};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::debug;
+use tracing::{debug, warn};
 
 const UDP_PACKETS_LIMIT: u64 = 40_000;
-const CATCHUP_REQS_LIMIT: u64 = 20;
+
+pub static PROTO_RATE_LIMITS: Lazy<HashMap<&'static str, u64>> = Lazy::new(|| {
+    use crate::consensus::doms::attestation::EventAttestation;
+    use crate::consensus::doms::entry::Entry;
+    use crate::consensus::doms::sol::Solution;
+    use crate::node::protocol::{
+        Catchup, CatchupReply, EventTip, EventTx, GetPeerAnrs, GetPeerAnrsReply, NewPhoneWhoDis, NewPhoneWhoDisReply,
+        Ping, PingReply, SpecialBusiness, SpecialBusinessReply,
+    };
+
+    [
+        (Ping::TYPENAME, 30),
+        (PingReply::TYPENAME, 30),
+        (EventTip::TYPENAME, 30),
+        (EventTx::TYPENAME, 8000),
+        (GetPeerAnrs::TYPENAME, 10),
+        (GetPeerAnrsReply::TYPENAME, 10),
+        (NewPhoneWhoDis::TYPENAME, 20),
+        (NewPhoneWhoDisReply::TYPENAME, 20),
+        (SpecialBusiness::TYPENAME, 200),
+        (SpecialBusinessReply::TYPENAME, 200),
+        (Catchup::TYPENAME, 20),
+        (CatchupReply::TYPENAME, 20),
+        (Entry::TYPENAME, 30),
+        (EventAttestation::TYPENAME, 8000),
+        (Solution::TYPENAME, 10_000),
+    ]
+    .into_iter()
+    .collect()
+});
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
 pub enum Error {
@@ -80,7 +110,7 @@ pub struct Anr {
     #[serde(skip)]
     pub pk_b3_f4: [u8; 4],
     #[serde(skip)]
-    pub catchup_reqs: u64,
+    pub proto_reqs: HashMap<String, u64>,
     #[serde(skip)]
     pub udp_packets: u64,
 }
@@ -109,7 +139,7 @@ impl From<SeedANR> for Anr {
             next_check: seed.ts + 3,
             pk_b3,
             pk_b3_f4,
-            catchup_reqs: 0,
+            proto_reqs: HashMap::new(),
             udp_packets: 0,
         }
     }
@@ -165,7 +195,7 @@ impl Anr {
             next_check: ts_s + 3,
             pk_b3,
             pk_b3_f4,
-            catchup_reqs: 0,
+            proto_reqs: HashMap::new(),
             udp_packets: 0,
         };
 
@@ -238,7 +268,7 @@ impl Anr {
             next_check: ts + 3,
             pk_b3,
             pk_b3_f4,
-            catchup_reqs: 0,
+            proto_reqs: HashMap::new(),
             udp_packets: 0,
         })
     }
@@ -355,7 +385,7 @@ impl Anr {
                 error: None,
                 error_tries: 0,
                 next_check: 0,
-                catchup_reqs: 0,
+                proto_reqs: HashMap::new(),
                 udp_packets: 0,
             })
         } else {
@@ -382,7 +412,7 @@ impl Anr {
             error: None,
             error_tries: 0,
             next_check: 0,
-            catchup_reqs: 0,
+            proto_reqs: HashMap::new(),
             udp_packets: 0,
         }
     }
@@ -481,12 +511,16 @@ impl NodeAnrs {
         None
     }
 
-    /// Increment the catchup counter
-    pub async fn is_within_catchup_limit(&self, pk: &[u8]) -> Option<bool> {
+    /// Check if protocol message is within rate limit for this peer
+    pub async fn is_within_proto_limit(&self, pk: &[u8], typename: &str) -> Option<bool> {
         let mut map = self.store.write().await;
         if let Some(anr) = map.get_mut(pk) {
-            anr.catchup_reqs += 1;
-            return Some(anr.catchup_reqs < CATCHUP_REQS_LIMIT);
+            if let Some(limit) = PROTO_RATE_LIMITS.get(typename) {
+                let counter = anr.proto_reqs.entry(typename.to_string()).or_insert(0);
+                *counter += 1;
+                return Some(*counter < *limit);
+            }
+            warn!("No rate limit for {typename}");
         }
         None
     }
@@ -496,7 +530,12 @@ impl NodeAnrs {
         let mut map = self.store.write().await;
         for anr in map.values_mut() {
             anr.udp_packets = anr.udp_packets.saturating_sub(UDP_PACKETS_LIMIT / 2);
-            anr.catchup_reqs = anr.catchup_reqs.saturating_sub(CATCHUP_REQS_LIMIT / 2);
+            // decrement all proto counters by half their limits
+            for (typename, limit) in PROTO_RATE_LIMITS.iter() {
+                if let Some(counter) = anr.proto_reqs.get_mut(*typename) {
+                    *counter = counter.saturating_sub(*limit / 2);
+                }
+            }
         }
     }
 
@@ -716,7 +755,7 @@ mod tests {
             next_check: 1234567893,
             pk_b3,
             pk_b3_f4,
-            catchup_reqs: 0,
+            proto_reqs: HashMap::new(),
             udp_packets: 0,
         };
 
@@ -793,7 +832,7 @@ mod tests {
             next_check: 1003,
             pk_b3,
             pk_b3_f4,
-            catchup_reqs: 0,
+            proto_reqs: HashMap::new(),
             udp_packets: 0,
         };
         registry.insert(anr1).await;
@@ -817,7 +856,7 @@ mod tests {
             next_check: 1002,
             pk_b3,
             pk_b3_f4,
-            catchup_reqs: 0,
+            proto_reqs: HashMap::new(),
             udp_packets: 0,
         };
         registry.insert(anr2).await;
@@ -846,7 +885,7 @@ mod tests {
             next_check: 2003,
             pk_b3,
             pk_b3_f4,
-            catchup_reqs: 0,
+            proto_reqs: HashMap::new(),
             udp_packets: 0,
         };
         registry.insert(anr3).await;
@@ -874,7 +913,7 @@ mod tests {
             next_check: 3003,
             pk_b3,
             pk_b3_f4,
-            catchup_reqs: 0,
+            proto_reqs: HashMap::new(),
             udp_packets: 0,
         };
         registry.insert(anr4).await;
@@ -922,7 +961,7 @@ mod tests {
                 next_check: 2000,
                 pk_b3,
                 pk_b3_f4,
-                catchup_reqs: 0,
+                proto_reqs: HashMap::new(),
                 udp_packets: 0,
             };
 
@@ -981,7 +1020,7 @@ mod tests {
             next_check: 0,
             pk_b3,
             pk_b3_f4,
-            catchup_reqs: 0,
+            proto_reqs: HashMap::new(),
             udp_packets: 0,
         };
 
