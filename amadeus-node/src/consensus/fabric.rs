@@ -3,17 +3,14 @@ use crate::consensus::doms::entry::Entry;
 use crate::utils::misc::{TermExt, bin_to_bitvec, bitvec_to_bin};
 use crate::utils::rocksdb::RocksDb;
 use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
-use amadeus_utils::constants::{
-    CF_CONSENSUS_BY_ENTRYHASH, CF_ENTRY, CF_ENTRY_BY_HEIGHT, CF_ENTRY_BY_SLOT, CF_MUTS, CF_MUTS_REV,
-    CF_MY_ATTESTATION_FOR_ENTRY, CF_MY_SEEN_TIME_FOR_ENTRY, CF_SYSCONF, CF_TX, CF_TX_ACCOUNT_NONCE,
-};
+use amadeus_utils::constants::{CF_ATTESTATION, CF_ENTRY, CF_ENTRY_META, CF_SYSCONF, CF_TX, CF_TX_ACCOUNT_NONCE};
 use amadeus_utils::misc::get_bits_percentage;
 use amadeus_utils::rocksdb::{Direction, IteratorMode, ReadOptions};
 use amadeus_utils::safe_etf::u32_to_term;
 use bitvec::prelude::*;
-use eetf::{Atom, BigInteger, Binary, Term};
+use eetf::{Atom, Binary, Term};
 use std::collections::HashMap;
-use tracing::{Instrument, debug, info};
+use tracing::Instrument;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -44,7 +41,6 @@ async fn init_kvdb(base: &str) -> Result<RocksDb, Error> {
     let long_init_hint = tokio::spawn(
         async {
             tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-            info!("rocksdb needs time to seal memtables to SST and compact L0 files...");
         }
         .instrument(tracing::Span::current()),
     );
@@ -136,41 +132,37 @@ impl Fabric {
         entry_bin: &[u8],
         seen_millis: u64,
     ) -> Result<(), Error> {
+        use amadeus_utils::database::pad_integer;
+
         let cf_entry = self.db.inner.cf_handle(CF_ENTRY).unwrap();
-        let cf_seen_time = self.db.inner.cf_handle(CF_MY_SEEN_TIME_FOR_ENTRY).unwrap();
-        let cf_by_height = self.db.inner.cf_handle(CF_ENTRY_BY_HEIGHT).unwrap();
-        let cf_by_slot = self.db.inner.cf_handle(CF_ENTRY_BY_SLOT).unwrap();
+        let cf_entry_meta = self.db.inner.cf_handle(CF_ENTRY_META).unwrap();
 
         let txn = self.db.begin_transaction();
         if txn.get_cf(&cf_entry, hash)?.is_none() {
             txn.put_cf(&cf_entry, hash, entry_bin)?;
-            let seen_time_term = Term::from(BigInteger { value: seen_millis.into() });
-            let seen_time_bin = encode_safe_deterministic(&seen_time_term);
-            txn.put_cf(&cf_seen_time, hash, &seen_time_bin)?;
+
+            let seentime_key = format!("entry:{}:seentime", hex::encode(hash));
+            txn.put_cf(&cf_entry_meta, seentime_key.as_bytes(), &seen_millis.to_le_bytes())?;
         }
 
-        // ALWAYS index by height and slot, even if entry already exists, it is
-        // crucial for entries loaded from snapshots that aren't indexed yet
-        let mut height_key = height.to_string().into_bytes();
-        height_key.push(b':');
-        height_key.extend_from_slice(hash);
-        txn.put_cf(&cf_by_height, &height_key, hash)?;
+        // ALWAYS index by height and slot, even if entry already exists
+        let height_key = format!("by_height:{}:{}", pad_integer(height), hex::encode(hash));
+        txn.put_cf(&cf_entry_meta, height_key.as_bytes(), hash)?;
 
-        let mut slot_key = slot.to_string().into_bytes();
-        slot_key.push(b':');
-        slot_key.extend_from_slice(hash);
-        txn.put_cf(&cf_by_slot, &slot_key, hash)?;
+        let slot_key = format!("by_slot:{}:{}", pad_integer(slot), hex::encode(hash));
+        txn.put_cf(&cf_entry_meta, slot_key.as_bytes(), hash)?;
 
         txn.commit()?;
         Ok(())
     }
 
     pub fn entries_by_height(&self, height: u64) -> Result<Vec<Vec<u8>>, Error> {
-        let mut height_prefix = height.to_string().into_bytes();
-        height_prefix.push(b':');
+        use amadeus_utils::database::pad_integer;
+
+        let height_prefix = format!("by_height:{}:", pad_integer(height));
         let mut out = Vec::new();
-        for (_, v) in self.db.iter_prefix(CF_ENTRY_BY_HEIGHT, &height_prefix)?.iter() {
-            if let Some(entry_bin) = self.db.get(CF_ENTRY, v)? {
+        for (_, v) in self.db.iter_prefix(CF_ENTRY_META, height_prefix.as_bytes())?.iter() {
+            if let Some(entry_bin) = self.db.get(CF_ENTRY, &v)? {
                 out.push(entry_bin);
             }
         }
@@ -179,10 +171,11 @@ impl Fabric {
     }
 
     pub fn entries_by_slot(&self, slot: u64) -> Result<Vec<Vec<u8>>, Error> {
-        let mut slot_prefix = slot.to_string().into_bytes();
-        slot_prefix.push(b':');
+        use amadeus_utils::database::pad_integer;
+
+        let slot_prefix = format!("by_slot:{}:", pad_integer(slot));
         let mut out = Vec::new();
-        for (_, v) in self.db.iter_prefix(CF_ENTRY_BY_SLOT, &slot_prefix)?.iter() {
+        for (_, v) in self.db.iter_prefix(CF_ENTRY_META, slot_prefix.as_bytes())?.iter() {
             if let Some(entry_bin) = self.db.get(CF_ENTRY, &v)? {
                 out.push(entry_bin);
             }
@@ -193,16 +186,25 @@ impl Fabric {
 
     pub fn get_entry_by_hash(&self, hash: &[u8; 32]) -> Option<Entry> {
         let bin = self.db.get(CF_ENTRY, hash).ok()??;
-        let entry = Entry::unpack(&bin).ok()?;
-        Some(entry)
+        Entry::unpack_from_db(Some(bin))
     }
 
     pub fn get_seen_time_for_entry(&self, hash: &[u8; 32]) -> Result<Option<u64>, Error> {
-        if let Some(bin) = self.db.get(CF_MY_SEEN_TIME_FOR_ENTRY, hash)? {
-            let term = Term::decode(bin.as_slice())?;
-            if let Some(integer_val) = TermExt::get_integer(&term) {
-                let seen_millis: u64 = integer_val.try_into().map_err(|_| Error::BadEtf("seen_time"))?;
-                return Ok(Some(seen_millis));
+        let key = format!("entry:{}:seentime", hex::encode(hash));
+        if let Some(bin) = self.db.get(CF_ENTRY_META, key.as_bytes())? {
+            if bin.len() == 8 {
+                let bytes: [u8; 8] = bin.try_into().unwrap();
+                return Ok(Some(u64::from_le_bytes(bytes)));
+            } else if bin.len() == 16 {
+                let bytes: [u8; 16] = bin.try_into().unwrap();
+                return Ok(Some(u128::from_le_bytes(bytes) as u64));
+            }
+            // fallback: try ETF for backward compatibility
+            if let Ok(term) = Term::decode(bin.as_slice()) {
+                if let Some(integer_val) = TermExt::get_integer(&term) {
+                    let seen_millis: u64 = integer_val.try_into().map_err(|_| Error::BadEtf("seen_time"))?;
+                    return Ok(Some(seen_millis));
+                }
             }
             return Err(Error::BadEtf("seen_time_format"));
         }
@@ -210,10 +212,26 @@ impl Fabric {
     }
 
     pub fn my_attestation_by_entryhash(&self, hash: &[u8]) -> Result<Option<Attestation>, Error> {
-        if let Some(bin) = self.db.get(CF_MY_ATTESTATION_FOR_ENTRY, hash)? {
-            let a = Attestation::from_etf_bin(&bin)?;
-            return Ok(Some(a));
+        use amadeus_utils::database::pad_integer;
+
+        let entry = self.get_entry_by_hash(hash.try_into().map_err(|_| Error::BadEtf("hash_len"))?);
+        let entry = entry.ok_or(Error::BadEtf("entry_not_found"))?;
+
+        let my_signer = self.db.get(CF_SYSCONF, b"trainer_pk")?.ok_or(Error::BadEtf("no_trainer_pk"))?;
+
+        let prefix = format!(
+            "attestation:{}:{}:{}:",
+            pad_integer(entry.header.height),
+            hex::encode(hash),
+            hex::encode(&my_signer)
+        );
+
+        for (_, value) in self.db.iter_prefix(CF_ATTESTATION, prefix.as_bytes())?.iter() {
+            if let Some(att) = Attestation::unpack_from_db(value) {
+                return Ok(Some(att));
+            }
         }
+
         Ok(None)
     }
 
@@ -222,51 +240,68 @@ impl Fabric {
         config: &crate::config::Config,
         entry_hash: &[u8; 32],
     ) -> Result<Option<Attestation>, Error> {
-        let packed = self.db.get(CF_MY_ATTESTATION_FOR_ENTRY, entry_hash)?;
-        let Some(bin) = packed else { return Ok(None) };
-        let att = Attestation::from_etf_bin(&bin)?;
-        if att.signer == config.get_pk() {
-            return Ok(Some(att));
-        }
-        debug!("imported database, resigning attestation {}", bs58::encode(entry_hash).into_string());
-        let pk = config.get_pk();
-        let sk = config.get_sk();
-        let new_a = Attestation::sign_with(&pk, &sk, entry_hash, &att.mutations_hash)?;
-        let packed = new_a.to_etf_bin()?;
+        use amadeus_utils::database::pad_integer;
 
-        let cf_attestation = self.db.inner.cf_handle(CF_MY_ATTESTATION_FOR_ENTRY).unwrap();
-        let txn = self.db.begin_transaction();
-        txn.put_cf(&cf_attestation, entry_hash, packed.as_slice())?;
-        txn.commit()?;
+        let entry = self.get_entry_by_hash(entry_hash).ok_or(Error::BadEtf("entry_not_found"))?;
+        let my_pk = config.get_pk();
 
-        Ok(Some(new_a))
-    }
+        let prefix = format!(
+            "attestation:{}:{}:{}:",
+            pad_integer(entry.header.height),
+            hex::encode(entry_hash),
+            hex::encode(&my_pk)
+        );
 
-    pub fn insert_consensus(&self, consensus: &crate::consensus::consensus::Consensus) -> Result<(), Error> {
-        let cf_consensus = self.db.inner.cf_handle(CF_CONSENSUS_BY_ENTRYHASH).unwrap();
-        let txn = self.db.begin_transaction();
+        for (_, value) in self.db.iter_prefix(CF_ATTESTATION, prefix.as_bytes())?.iter() {
+            if let Some(att) = Attestation::unpack_from_db(value) {
+                if att.signer == my_pk {
+                    return Ok(Some(att));
+                }
+                let sk = config.get_sk();
+                let new_a = Attestation::sign_with(&my_pk, &sk, entry_hash, &att.mutations_hash)?;
 
-        let mut map = match txn.get_cf(&cf_consensus, &consensus.entry_hash)? {
-            Some(bin) => unpack_consensus_map(&bin)?,
-            None => HashMap::new(),
-        };
+                let key = format!(
+                    "attestation:{}:{}:{}:{}",
+                    pad_integer(entry.header.height),
+                    hex::encode(entry_hash),
+                    hex::encode(&my_pk),
+                    hex::encode(&new_a.mutations_hash)
+                );
+                self.db.put(CF_ATTESTATION, key.as_bytes(), &new_a.pack_for_db())?;
 
-        if let Some(existing) = map.get(&consensus.mutations_hash) {
-            if existing.mask.all()
-                || (!consensus.mask.is_empty() && existing.mask.count_ones() >= consensus.mask.count_ones())
-            {
-                return Ok(());
+                return Ok(Some(new_a));
             }
         }
 
-        // mask in the consensus is optimized away if all trainers signed
+        Ok(None)
+    }
+
+    pub fn insert_consensus(&self, consensus: &crate::consensus::consensus::Consensus) -> Result<(), Error> {
+        use amadeus_utils::vecpak::{self, Term as VTerm};
+
+        let key =
+            format!("consensus:{}:{}", hex::encode(&consensus.entry_hash), hex::encode(&consensus.mutations_hash));
+
+        if let Some(existing_bin) = self.db.get(CF_ATTESTATION, key.as_bytes())? {
+            if let Ok(existing_term) = vecpak::decode(&existing_bin) {
+                if let Some(existing_mask) = extract_mask_from_consensus_term(&existing_term) {
+                    if existing_mask.all()
+                        || (!consensus.mask.is_empty() && existing_mask.count_ones() >= consensus.mask.count_ones())
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         let mask = self.validate_consensus(&consensus)?;
 
-        map.insert(consensus.mutations_hash, StoredConsensus { mask, agg_sig: consensus.agg_sig });
-        let packed = pack_consensus_map(&map)?;
+        let consensus_term = VTerm::PropList(vec![
+            (VTerm::Binary(b"mask".to_vec()), VTerm::Binary(bitvec_to_bin(&mask))),
+            (VTerm::Binary(b"agg_sig".to_vec()), VTerm::Binary(consensus.agg_sig.to_vec())),
+        ]);
 
-        txn.put_cf(&cf_consensus, &consensus.entry_hash, &packed)?;
-        txn.commit()?;
+        self.db.put(CF_ATTESTATION, key.as_bytes(), &vecpak::encode(consensus_term))?;
 
         Ok(())
     }
@@ -320,19 +355,39 @@ impl Fabric {
         trainers: &[[u8; 48]],
         entry_hash: &[u8],
     ) -> Result<(Option<[u8; 32]>, Option<f64>, Option<StoredConsensus>), Error> {
-        let Some(bin) = self.db.get(CF_CONSENSUS_BY_ENTRYHASH, entry_hash)? else {
-            debug!("no consensus found for entry {}", bs58::encode(entry_hash).into_string());
+        use amadeus_utils::vecpak;
+
+        let prefix = format!("consensus:{}:", hex::encode(entry_hash));
+        let items = self.db.iter_prefix(CF_ATTESTATION, prefix.as_bytes())?;
+
+        if items.is_empty() {
             return Ok((None, None, None));
-        };
+        }
 
-        let map = unpack_consensus_map(&bin)?;
-        debug!("unpacked {} consensus entries", map.len());
+        let mut consensuses = Vec::new();
+        for (key, value) in items {
+            if let Ok(key_str) = std::str::from_utf8(&key) {
+                let parts: Vec<&str> = key_str.split(':').collect();
+                if parts.len() >= 3 {
+                    if let Ok(mutations_hash) = hex::decode(parts[2]) {
+                        if mutations_hash.len() == 32 {
+                            if let Ok(term) = vecpak::decode(&value) {
+                                if let Some(stored) = parse_stored_consensus_from_vecpak(term) {
+                                    let mut hash_array = [0u8; 32];
+                                    hash_array.copy_from_slice(&mutations_hash);
+                                    consensuses.push((hash_array, stored));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
-        let best = map
+        let best = consensuses
             .into_iter()
             .map(|(hash, consensus)| {
                 let score = get_bits_percentage(&consensus.mask, trainers.len());
-                debug!("mutations_hash={}, score={:.2}", bs58::encode(&hash).into_string(), score);
                 (hash, score, consensus)
             })
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -365,6 +420,11 @@ impl Fabric {
     }
 
     pub fn get_temporal_height(&self) -> Result<Option<u64>, Error> {
+        // prioritize the actual entry height over stored value (may be stale)
+        if let Some(entry) = self.get_temporal_entry()? {
+            return Ok(Some(entry.header.height));
+        }
+
         match self.db.get(CF_SYSCONF, b"temporal_height")? {
             Some(hb) => {
                 // Try u64 big-endian bytes (8 bytes)
@@ -414,6 +474,11 @@ impl Fabric {
     }
 
     pub fn get_rooted_height(&self) -> Result<Option<u64>, Error> {
+        // prioritize the actual entry height over stored value (may be stale)
+        if let Some(entry) = self.get_rooted_entry()? {
+            return Ok(Some(entry.header.height));
+        }
+
         match self.db.get(CF_SYSCONF, b"rooted_height")? {
             Some(hb) => {
                 // Try u64 big-endian bytes (8 bytes)
@@ -452,120 +517,99 @@ impl Fabric {
     }
 
     pub fn get_muts_rev(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, Error> {
-        Ok(self.db.get(CF_MUTS_REV, hash)?)
+        let key = format!("entry:{}:muts_rev", hex::encode(hash));
+        Ok(self.db.get(CF_ENTRY_META, key.as_bytes())?)
     }
 
     pub fn put_muts_rev(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
-        let cf_muts_rev = self.db.inner.cf_handle(CF_MUTS_REV).unwrap();
-
-        let txn = self.db.begin_transaction();
-        txn.put_cf(&cf_muts_rev, hash, data)?;
-        txn.commit()?;
-
+        let key = format!("entry:{}:muts_rev", hex::encode(hash));
+        self.db.put(CF_ENTRY_META, key.as_bytes(), data)?;
         Ok(())
     }
 
     pub fn delete_muts_rev(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        let cf_muts_rev = self.db.inner.cf_handle(CF_MUTS_REV).unwrap();
-
-        let txn = self.db.begin_transaction();
-        txn.delete_cf(&cf_muts_rev, hash)?;
-        txn.commit()?;
-
+        let key = format!("entry:{}:muts_rev", hex::encode(hash));
+        self.db.delete(CF_ENTRY_META, key.as_bytes())?;
         Ok(())
     }
 
     pub fn get_muts(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, Error> {
-        Ok(self.db.get(CF_MUTS, hash)?)
+        let key = format!("entry:{}:muts", hex::encode(hash));
+        Ok(self.db.get(CF_ENTRY_META, key.as_bytes())?)
     }
 
     pub fn put_muts(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
-        let cf_muts = self.db.inner.cf_handle(CF_MUTS).unwrap();
-
-        let txn = self.db.begin_transaction();
-        txn.put_cf(&cf_muts, hash, data)?;
-        txn.commit()?;
-
+        let key = format!("entry:{}:muts", hex::encode(hash));
+        self.db.put(CF_ENTRY_META, key.as_bytes(), data)?;
         Ok(())
     }
 
     pub fn put_attestation(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
-        let cf_attestation = self.db.inner.cf_handle(CF_MY_ATTESTATION_FOR_ENTRY).unwrap();
+        let attestation = Attestation::from_etf_bin(data)?;
+        let entry = self.get_entry_by_hash(hash).ok_or(Error::BadEtf("entry_not_found"))?;
 
-        let txn = self.db.begin_transaction();
-        txn.put_cf(&cf_attestation, hash, data)?;
-        txn.commit()?;
+        let key = format!(
+            "attestation:{}:{}:{}:{}",
+            amadeus_utils::database::pad_integer(entry.header.height),
+            hex::encode(hash),
+            hex::encode(&attestation.signer),
+            hex::encode(&attestation.mutations_hash)
+        );
+        self.db.put(CF_ATTESTATION, key.as_bytes(), &attestation.pack_for_db())?;
 
         Ok(())
     }
 
     pub fn delete_attestation(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        let cf_attestation = self.db.inner.cf_handle(CF_MY_ATTESTATION_FOR_ENTRY).unwrap();
+        let entry = self.get_entry_by_hash(hash).ok_or(Error::BadEtf("entry_not_found"))?;
+        let my_signer = self.db.get(CF_SYSCONF, b"trainer_pk")?.ok_or(Error::BadEtf("no_trainer_pk"))?;
 
-        let txn = self.db.begin_transaction();
-        txn.delete_cf(&cf_attestation, hash)?;
-        txn.commit()?;
+        let prefix = format!(
+            "attestation:{}:{}:{}:",
+            amadeus_utils::database::pad_integer(entry.header.height),
+            hex::encode(hash),
+            hex::encode(&my_signer)
+        );
+
+        for (key, _) in self.db.iter_prefix(CF_ATTESTATION, prefix.as_bytes())?.iter() {
+            self.db.delete(CF_ATTESTATION, key)?;
+        }
 
         Ok(())
     }
 
     pub fn put_seen_time(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
-        let cf_seen_time = self.db.inner.cf_handle(CF_MY_SEEN_TIME_FOR_ENTRY).unwrap();
-
-        let txn = self.db.begin_transaction();
-        txn.put_cf(&cf_seen_time, hash, data)?;
-        txn.commit()?;
-
+        let key = format!("entry:{}:seentime", hex::encode(hash));
+        self.db.put(CF_ENTRY_META, key.as_bytes(), data)?;
         Ok(())
     }
 
     pub fn delete_seen_time(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        let cf_seen_time = self.db.inner.cf_handle(CF_MY_SEEN_TIME_FOR_ENTRY).unwrap();
-
-        let txn = self.db.begin_transaction();
-        txn.delete_cf(&cf_seen_time, hash)?;
-        txn.commit()?;
-
+        let key = format!("entry:{}:seentime", hex::encode(hash));
+        self.db.delete(CF_ENTRY_META, key.as_bytes())?;
         Ok(())
     }
 
     pub fn delete_consensus(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        let cf_consensus = self.db.inner.cf_handle(CF_CONSENSUS_BY_ENTRYHASH).unwrap();
-
-        let txn = self.db.begin_transaction();
-        txn.delete_cf(&cf_consensus, hash)?;
-        txn.commit()?;
-
+        let prefix = format!("consensus:{}:", hex::encode(hash));
+        for (key, _) in self.db.iter_prefix(CF_ATTESTATION, prefix.as_bytes())?.iter() {
+            self.db.delete(CF_ATTESTATION, &key)?;
+        }
         Ok(())
     }
 
     pub fn delete_entry(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        let cf_entry = self.db.inner.cf_handle(CF_ENTRY).unwrap();
-
-        let txn = self.db.begin_transaction();
-        txn.delete_cf(&cf_entry, hash)?;
-        txn.commit()?;
-
+        self.db.delete(CF_ENTRY, hash)?;
         Ok(())
     }
 
     pub fn delete_entry_by_height(&self, height_key: &[u8]) -> Result<(), Error> {
-        let cf_by_height = self.db.inner.cf_handle(CF_ENTRY_BY_HEIGHT).unwrap();
-
-        let txn = self.db.begin_transaction();
-        txn.delete_cf(&cf_by_height, height_key)?;
-        txn.commit()?;
-
+        self.db.delete(CF_ENTRY_META, height_key)?;
         Ok(())
     }
 
     pub fn delete_entry_by_slot(&self, slot_key: &[u8]) -> Result<(), Error> {
-        let cf_by_slot = self.db.inner.cf_handle(CF_ENTRY_BY_SLOT).unwrap();
-
-        let txn = self.db.begin_transaction();
-        txn.delete_cf(&cf_by_slot, slot_key)?;
-        txn.commit()?;
-
+        self.db.delete(CF_ENTRY_META, slot_key)?;
         Ok(())
     }
 
@@ -625,26 +669,38 @@ impl Fabric {
     }
 
     fn clean_muts_rev_range(&self, start: u64, end: u64) -> Result<(), crate::utils::rocksdb::Error> {
-        let cf_by_height = self.db.inner.cf_handle(CF_ENTRY_BY_HEIGHT).unwrap();
-        let cf_muts_rev = self.db.inner.cf_handle(CF_MUTS_REV).unwrap();
+        use amadeus_utils::database::pad_integer;
 
-        let start_key = format!("{}:", start).into_bytes();
-        let end_key = format!("{}:", end + 1).into_bytes();
+        let cf_entry_meta = self.db.inner.cf_handle(CF_ENTRY_META).unwrap();
+
+        let start_key = format!("by_height:{}:", pad_integer(start));
+        let end_key = format!("by_height:{}:", pad_integer(end + 1));
 
         let txn = self.db.begin_transaction();
         let mut opts = ReadOptions::default();
         opts.set_total_order_seek(true);
-        let iter = txn.iterator_cf_opt(&cf_by_height, opts, IteratorMode::From(&start_key, Direction::Forward));
+        let iter =
+            txn.iterator_cf_opt(&cf_entry_meta, opts, IteratorMode::From(start_key.as_bytes(), Direction::Forward));
 
-        let mut ops = 0;
+        let mut deleted_hashes = Vec::new();
         for item in iter {
             let (k, v) = item?;
-            if k.as_ref() >= end_key.as_slice() {
+            if k.as_ref() >= end_key.as_bytes() {
                 break;
             }
-            let _ = txn.delete_cf(&cf_muts_rev, &v);
-            ops += 1;
+            if let Ok(key_str) = std::str::from_utf8(&k) {
+                if key_str.starts_with("by_height:") {
+                    deleted_hashes.push(v.to_vec());
+                }
+            }
         }
+
+        let ops = deleted_hashes.len();
+        for hash in deleted_hashes {
+            let muts_rev_key = format!("entry:{}:muts_rev", hex::encode(&hash));
+            let _ = txn.delete_cf(&cf_entry_meta, muts_rev_key.as_bytes());
+        }
+
         if ops > 0 {
             txn.commit()?;
         }
@@ -920,6 +976,7 @@ pub struct StoredConsensus {
     pub agg_sig: [u8; 96],
 }
 
+#[allow(dead_code)]
 fn pack_consensus_map(map: &HashMap<[u8; 32], StoredConsensus>) -> Result<Vec<u8>, Error> {
     // Encode as ETF map: key: mutations_hash (binary 32); val: map{mask: bitstring, aggsig: binary}
     let mut outer = HashMap::<Term, Term>::new();
@@ -937,6 +994,7 @@ fn pack_consensus_map(map: &HashMap<[u8; 32], StoredConsensus>) -> Result<Vec<u8
     Ok(out)
 }
 
+#[allow(dead_code)]
 fn unpack_consensus_map(bin: &[u8]) -> Result<HashMap<[u8; 32], StoredConsensus>, Error> {
     let term = Term::decode(bin)?;
     let Some(map) = TermExt::get_term_map(&term) else { return Ok(HashMap::new()) };
@@ -955,6 +1013,58 @@ fn unpack_consensus_map(bin: &[u8]) -> Result<HashMap<[u8; 32], StoredConsensus>
         out.insert(mh, StoredConsensus { mask, agg_sig });
     }
     Ok(out)
+}
+
+fn extract_mask_from_consensus_term(term: &amadeus_utils::vecpak::Term) -> Option<BitVec<u8, Msb0>> {
+    use amadeus_utils::vecpak::Term as VTerm;
+
+    if let VTerm::PropList(props) = term {
+        for (k, v) in props {
+            if let VTerm::Binary(key_bytes) = k {
+                if key_bytes == b"mask" {
+                    if let VTerm::Binary(mask_bytes) = v {
+                        return Some(bin_to_bitvec(mask_bytes.clone()));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn parse_stored_consensus_from_vecpak(term: amadeus_utils::vecpak::Term) -> Option<StoredConsensus> {
+    use amadeus_utils::vecpak::Term as VTerm;
+
+    if let VTerm::PropList(props) = term {
+        let mut mask = None;
+        let mut agg_sig = None;
+
+        for (k, v) in props {
+            if let VTerm::Binary(key_bytes) = k {
+                match key_bytes.as_slice() {
+                    b"mask" => {
+                        if let VTerm::Binary(m) = v {
+                            mask = Some(bin_to_bitvec(m));
+                        }
+                    }
+                    b"agg_sig" => {
+                        if let VTerm::Binary(s) = v {
+                            if s.len() == 96 {
+                                let mut arr = [0u8; 96];
+                                arr.copy_from_slice(&s);
+                                agg_sig = Some(arr);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Some(StoredConsensus { mask: mask?, agg_sig: agg_sig? })
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -1002,8 +1112,6 @@ mod tests {
 
         let empty_slot = fab.entries_by_slot(99999).unwrap();
         assert!(empty_slot.is_empty());
-
-        println!("height/slot indexing test passed");
     }
 
     #[tokio::test]
@@ -1021,19 +1129,19 @@ mod tests {
         fab.insert_entry(&h2, 101, 1001, &[2], 0).unwrap();
         fab.insert_entry(&h3, 102, 1002, &[3], 0).unwrap();
         fab.insert_entry(&h4, 103, 1003, &[4], 0).unwrap();
-        fab.db.put(CF_MUTS_REV, &h0, b"data0").unwrap();
-        fab.db.put(CF_MUTS_REV, &h1, b"data1").unwrap();
-        fab.db.put(CF_MUTS_REV, &h2, b"data2").unwrap();
-        fab.db.put(CF_MUTS_REV, &h3, b"data3").unwrap();
-        fab.db.put(CF_MUTS_REV, &h4, b"data4").unwrap();
+        fab.put_muts_rev(&h0, b"data0").unwrap();
+        fab.put_muts_rev(&h1, b"data1").unwrap();
+        fab.put_muts_rev(&h2, b"data2").unwrap();
+        fab.put_muts_rev(&h3, b"data3").unwrap();
+        fab.put_muts_rev(&h4, b"data4").unwrap();
 
         fab.clean_muts_rev_range(100, 102).unwrap();
 
-        assert!(fab.db.get(CF_MUTS_REV, &h0).unwrap().is_some());
-        assert!(fab.db.get(CF_MUTS_REV, &h1).unwrap().is_none());
-        assert!(fab.db.get(CF_MUTS_REV, &h2).unwrap().is_none());
-        assert!(fab.db.get(CF_MUTS_REV, &h3).unwrap().is_none());
-        assert!(fab.db.get(CF_MUTS_REV, &h4).unwrap().is_some());
+        assert!(fab.get_muts_rev(&h0).unwrap().is_some());
+        assert!(fab.get_muts_rev(&h1).unwrap().is_none());
+        assert!(fab.get_muts_rev(&h2).unwrap().is_none());
+        assert!(fab.get_muts_rev(&h3).unwrap().is_none());
+        assert!(fab.get_muts_rev(&h4).unwrap().is_some());
     }
 
     #[test]
@@ -1171,11 +1279,6 @@ mod tests {
         // check what Consensus::from_etf_bin produces
         use crate::consensus::consensus::Consensus;
         let consensus_via_lib = Consensus::from_etf_bin(&consensus_bin).unwrap();
-        println!(
-            "Consensus::from_etf_bin mask: len={}, ones={}",
-            consensus_via_lib.mask.len(),
-            consensus_via_lib.mask.count_ones()
-        );
 
         let term = Term::decode(&consensus_bin[..]).unwrap();
         let map = term.get_term_map().unwrap();

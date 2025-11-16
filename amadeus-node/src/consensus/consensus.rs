@@ -5,7 +5,7 @@ use crate::consensus::fabric;
 use crate::consensus::fabric::Fabric;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381 as bls;
-use crate::utils::misc::{TermExt, bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
+use crate::utils::misc::{bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
 use crate::utils::rocksdb::RocksDb;
 use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
 use amadeus_runtime::consensus::consensus_apply::ApplyEnv;
@@ -61,63 +61,80 @@ pub struct Consensus {
 }
 
 impl Consensus {
-    /// Parse mask from raw ETF bytes, handling BitBinary format properly
-    /// Returns None if the mask field is not found in the expected BitBinary format
-    fn parse_mask_from_raw_etf(bin: &[u8]) -> Option<BitVec<u8, Msb0>> {
-        // BitBinary ETF format: 119 (tag), 4, 'm', 'a', 's', 'k', 77 (BitBinary tag)
-        let mask_pattern = &[119u8, 4, b'm', b'a', b's', b'k', 77];
-        let mask_start = bin.windows(7).position(|w| w == mask_pattern)?;
-        let bitbin_start = mask_start + 6; // Skip the atom header
+    /// Decode from vecpak format (data from Elixir now uses vecpak)
+    pub fn from_etf_bin(bin: &[u8]) -> Result<Self, Error> {
+        use amadeus_utils::vecpak;
 
-        // Parse BitBinary: 77 (tag), 4-byte length, tail_bits, bytes
-        if bin.get(bitbin_start)? != &77 {
-            return None;
-        }
+        let consensus_term = vecpak::decode(bin).map_err(|_e| Error::WrongType("vecpak decode failed"))?;
 
-        // Get the byte length (4-byte big-endian)
-        let mask_len = u32::from_be_bytes([
-            *bin.get(bitbin_start + 1)?,
-            *bin.get(bitbin_start + 2)?,
-            *bin.get(bitbin_start + 3)?,
-            *bin.get(bitbin_start + 4)?,
-        ]) as usize;
-
-        // Get the tail bits (number of bits in the last byte)
-        let tail_bits = *bin.get(bitbin_start + 5)? as usize;
-
-        // Get the mask bytes
-        let mask_bytes = bin.get(bitbin_start + 6..bitbin_start + 6 + mask_len)?;
-
-        // Build the BitVec with proper bit count
-        let mut mask = BitVec::<u8, Msb0>::new();
-
-        // Add all complete bytes except the last one
-        if mask_bytes.len() > 1 {
-            for byte in &mask_bytes[..mask_bytes.len() - 1] {
-                mask.extend_from_bitslice(&byte.view_bits::<Msb0>());
-            }
-        }
-
-        // Add the last byte with only tail_bits
-        if let Some(&last_byte) = mask_bytes.last() {
-            if tail_bits > 0 {
-                mask.extend_from_bitslice(&last_byte.view_bits::<Msb0>()[..tail_bits]);
-            }
-        }
-
-        Some(mask)
+        Self::from_vecpak_term(consensus_term).ok_or(Error::WrongType("from_vecpak_term failed"))
     }
 
-    /// Decode from ETF map; supported keys: entry_hash, mutations_hash, mask (bitvec), aggsig
-    pub fn from_etf_bin(bin: &[u8]) -> Result<Self, Error> {
-        let map = Term::decode(bin)?.get_term_map().ok_or(Error::WrongType("consensus map"))?;
-        let entry_hash = map.get_binary("entry_hash").ok_or(Error::Missing("entry_hash"))?;
-        let mutations_hash = map.get_binary("mutations_hash").ok_or(Error::Missing("mutations_hash"))?;
-        let mask = Self::parse_mask_from_raw_etf(bin)
-            .or_else(|| map.get_binary::<Vec<u8>>("mask").map(|bytes| bin_to_bitvec(bytes)))
-            .unwrap_or(BitVec::new());
-        let agg_sig = map.get_binary("aggsig").ok_or(Error::Missing("aggsig"))?;
-        Ok(Self { entry_hash, mutations_hash, mask, agg_sig })
+    /// Parse Consensus from vecpak term
+    fn from_vecpak_term(term: amadeus_utils::vecpak::Term) -> Option<Self> {
+        use amadeus_utils::vecpak::Term as VTerm;
+
+        if let VTerm::PropList(props) = term {
+            let mut entry_hash = None;
+            let mut mutations_hash = None;
+            let mut mask = None;
+            let mut agg_sig = None;
+
+            for (k, v) in &props {
+                if let VTerm::Binary(key_bytes) = k {
+                    match key_bytes.as_slice() {
+                        b"entry_hash" => {
+                            if let VTerm::Binary(h) = v {
+                                if h.len() == 32 {
+                                    let mut arr = [0u8; 32];
+                                    arr.copy_from_slice(h);
+                                    entry_hash = Some(arr);
+                                }
+                            }
+                        }
+                        b"mutations_hash" => {
+                            if let VTerm::Binary(h) = v {
+                                if h.len() == 32 {
+                                    let mut arr = [0u8; 32];
+                                    arr.copy_from_slice(h);
+                                    mutations_hash = Some(arr);
+                                }
+                            }
+                        }
+                        b"mask" => {
+                            if let VTerm::Binary(m) = v {
+                                mask = Some(bin_to_bitvec(m.clone()));
+                            }
+                        }
+                        b"aggsig" => {
+                            if let VTerm::Binary(s) = v {
+                                if s.len() == 96 {
+                                    let mut arr = [0u8; 96];
+                                    arr.copy_from_slice(s);
+                                    agg_sig = Some(arr);
+                                }
+                            }
+                        }
+                        _ => {
+                            // Unknown key in consensus proplist
+                        }
+                    }
+                }
+            }
+
+            if entry_hash.is_none() || mutations_hash.is_none() || agg_sig.is_none() {
+                return None;
+            }
+
+            Some(Self {
+                entry_hash: entry_hash?,
+                mutations_hash: mutations_hash?,
+                mask: mask.unwrap_or_else(BitVec::new),
+                agg_sig: agg_sig?,
+            })
+        } else {
+            None
+        }
     }
 
     /// Encode into an ETF map with deterministic field set (Elixir Map.take and term_to_binary)
@@ -529,15 +546,6 @@ pub fn apply_entry(
         tx_results.push(TxResult { error, logs });
     }
 
-    // print actual logs when running tests
-    #[cfg(test)]
-    {
-        println!("\n=== Actual logs from apply_entry (tx_results) ===");
-        for (i, result) in tx_results.iter().enumerate() {
-            println!("Transaction {} result: error={:?}, logs={:?}", i, result.error, result.logs);
-        }
-    }
-
     // Clear mutations before call_exit to avoid collecting the last transaction's mutations twice
     env.muts.clear();
     env.muts_rev.clear();
@@ -584,7 +592,7 @@ pub fn apply_entry(
     fabric.put_muts_rev(&next_entry.hash, &muts_rev_bin)?;
 
     // store entry itself and index it (fabric.insert_entry handles both)
-    let entry_bin = next_entry.pack()?;
+    let entry_bin = next_entry.pack_for_db()?;
     fabric.insert_entry(
         &next_entry.hash,
         next_entry.header.height,
@@ -602,7 +610,7 @@ pub fn apply_entry(
             fabric.put_tx_account_nonce(key.as_bytes(), &txu.hash)?;
 
             // find position in entry binary for indexing
-            let entry_bin = next_entry.pack()?;
+            let entry_bin = next_entry.pack_for_db()?;
             if let Some(pos) = entry_bin.windows(tx_packed.len()).position(|w| w == tx_packed) {
                 // Build tx metadata map matching Elixir structure
                 let mut tx_meta = HashMap::new();
@@ -1022,10 +1030,17 @@ pub async fn proc_entries(fabric: &Fabric, config: &crate::config::Config, ctx: 
         let mut next_entries: Vec<Entry> = fabric
             .entries_by_height(next_height as u64)?
             .into_iter()
-            .filter_map(|entry_bin| {
-                Entry::unpack(&entry_bin)
-                    .map_err(|e| warn!("failed to unpack entry at height {}: {}", next_height, e))
-                    .ok()
+            .filter_map(|entry_bin| match Entry::unpack_from_db(Some(entry_bin.clone())) {
+                Some(entry) => Some(entry),
+                None => {
+                    warn!("failed to unpack entry at height {}", next_height);
+                    warn!(
+                        "entry_bin length: {}, first 32 bytes: {:?}",
+                        entry_bin.len(),
+                        &entry_bin[..entry_bin.len().min(32)]
+                    );
+                    None
+                }
             })
             .filter(|next_entry| {
                 // all conditions must be true (matches Elixir cond logic)
@@ -1079,7 +1094,7 @@ async fn broadcast_attestation(ctx: &crate::Context, attestation_packed: &[u8], 
         return;
     };
 
-    let event_att = EventAttestation { attestation };
+    let event_att = EventAttestation { attestations: vec![attestation] };
 
     if let Ok(peers) = ctx.node_peers.get_all().await {
         for peer in peers {

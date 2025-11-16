@@ -32,6 +32,7 @@ num-bigint = "0.4.6"
 num-traits = "0.2.19"
 bincode = { version = "=2.0.1", features = ["derive"] }
 bs58 = "0.5.1"
+vecpak = { git = "https://github.com/amadeusprotocol/chain", package = "vecpak" }
 
 [dependencies.rust-rocksdb]
 git = "https://github.com/vans163/rust-rocksdb"

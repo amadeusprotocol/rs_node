@@ -27,3 +27,11 @@ pub trait Database: Send + Sync {
     /// Iterate over keys with a given prefix
     fn iter_prefix(&self, column_family: &str, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, DatabaseError>;
 }
+
+pub fn pad_integer(key: u64) -> String {
+    format!("{:012}", key)
+}
+
+pub fn pad_integer_20(key: u64) -> String {
+    format!("{:020}", key)
+}

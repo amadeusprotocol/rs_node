@@ -310,7 +310,7 @@ impl Context {
         let behind_temporal = peers_temporal.saturating_sub(temporal_height);
         let behind_rooted = peers_rooted.saturating_sub(rooted_height);
         let behind_bft = peers_bft.saturating_sub(temporal_height);
-        let rooting_stuck = (temporal_height - rooted_height) > 1000;
+        let rooting_stuck = temporal_height.saturating_sub(rooted_height) > 1000;
 
         if rooting_stuck {
             warn!(
@@ -382,7 +382,6 @@ impl Context {
                 .chunks(20)
                 .map(|chunk| chunk.to_vec())
                 .collect();
-            println!("Fetching {} chunks", chunks.len());
             self.fetch_heights(chunks, online_trainer_ips).await?;
             return Ok(false);
         }
@@ -683,28 +682,30 @@ impl Context {
 
         // Process encrypted message shards
         match self.reassembler.add_shard(buf, &self.config.get_sk()).await {
-            Ok(Some((packet, pk))) => match parse_etf_bin(&packet) {
-                Ok(proto) => {
-                    self.node_peers.update_peer_from_proto(src, proto.typename()).await;
-                    let has_handshake =
-                        matches!(proto.typename(), NewPhoneWhoDis::TYPENAME | NewPhoneWhoDisReply::TYPENAME)
-                            || self.node_anrs.handshaked_and_valid_ip4(&pk, &src).await;
+            Ok(Some((packet, pk))) => {
+                match parse_etf_bin(&packet) {
+                    Ok(proto) => {
+                        self.node_peers.update_peer_from_proto(src, proto.typename()).await;
+                        let has_handshake =
+                            matches!(proto.typename(), NewPhoneWhoDis::TYPENAME | NewPhoneWhoDisReply::TYPENAME)
+                                || self.node_anrs.handshaked_and_valid_ip4(&pk, &src).await;
 
-                    if !has_handshake {
-                        self.node_anrs.unset_handshaked(&pk).await;
-                        self.metrics.add_error(&Error::String(format!("handshake needed {src}")));
-                        return None; // neither handshake message nor handshaked peer
+                        if !has_handshake {
+                            self.node_anrs.unset_handshaked(&pk).await;
+                            self.metrics.add_error(&Error::String(format!("handshake needed {src}")));
+                            return None; // neither handshake message nor handshaked peer
+                        }
+
+                        if !self.node_anrs.is_within_proto_limit(&pk, proto.typename()).await? {
+                            return None; // node sends too many proto requests
+                        }
+
+                        self.metrics.add_incoming_proto(proto.typename());
+                        return Some(proto);
                     }
-
-                    if !self.node_anrs.is_within_proto_limit(&pk, proto.typename()).await? {
-                        return None; // node sends too many proto requests
-                    }
-
-                    self.metrics.add_incoming_proto(proto.typename());
-                    return Some(proto);
+                    Err(e) => self.metrics.add_error(&e),
                 }
-                Err(e) => self.metrics.add_error(&e),
-            },
+            }
             Ok(None) => {} // waiting for more shards, not an error
             Err(e) => self.metrics.add_error(&Error::String(format!("bad udp frame from {src} - {e}"))),
         }

@@ -468,3 +468,65 @@ pub fn unpack(tx_packed: &[u8]) -> Result<TxU, Error> {
     let txu = TxU::from_vanilla(tx_packed)?;
     Ok(txu.normalize_atoms())
 }
+
+pub mod db {
+    use amadeus_utils::database::pad_integer_20;
+    use amadeus_utils::rocksdb::RocksDb;
+    use amadeus_utils::vecpak::{self, Term as VTerm};
+
+    #[derive(Debug, Clone)]
+    pub struct TxPointer {
+        pub entry_hash: Vec<u8>,
+        pub index_start: usize,
+        pub index_size: usize,
+    }
+
+    impl TxPointer {
+        pub fn pack(&self) -> Vec<u8> {
+            let term = VTerm::PropList(vec![
+                (VTerm::Binary(b"entry_hash".to_vec()), VTerm::Binary(self.entry_hash.clone())),
+                (VTerm::Binary(b"index_start".to_vec()), VTerm::VarInt(self.index_start as i128)),
+                (VTerm::Binary(b"index_size".to_vec()), VTerm::VarInt(self.index_size as i128)),
+            ]);
+            vecpak::encode(term)
+        }
+    }
+
+    pub fn store_tx_pointer(
+        tx_hash: &[u8],
+        tx_packed: &[u8],
+        entry_hash: &[u8],
+        entry_packed: &[u8],
+        db: &RocksDb,
+    ) -> Result<(), amadeus_utils::rocksdb::Error> {
+        if let Some(index_start) = entry_packed.windows(tx_packed.len()).position(|window| window == tx_packed) {
+            let tx_ptr = TxPointer { entry_hash: entry_hash.to_vec(), index_start, index_size: tx_packed.len() };
+
+            db.put("tx", tx_hash, &tx_ptr.pack())?;
+        }
+
+        Ok(())
+    }
+
+    pub fn store_tx_nonce_index(
+        tx_hash: &[u8],
+        signer: &[u8],
+        nonce: u64,
+        db: &RocksDb,
+    ) -> Result<(), amadeus_utils::rocksdb::Error> {
+        let key = format!("{}:{}", hex::encode(signer), pad_integer_20(nonce));
+        db.put("tx_account_nonce", key.as_bytes(), tx_hash)?;
+        Ok(())
+    }
+
+    pub fn store_tx_receiver_nonce_index(
+        tx_hash: &[u8],
+        receiver: &[u8],
+        nonce: u64,
+        db: &RocksDb,
+    ) -> Result<(), amadeus_utils::rocksdb::Error> {
+        let key = format!("{}:{}", hex::encode(receiver), pad_integer_20(nonce));
+        db.put("tx_receiver_nonce", key.as_bytes(), tx_hash)?;
+        Ok(())
+    }
+}

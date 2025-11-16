@@ -20,6 +20,8 @@ pub enum Error {
     WrongType(&'static str),
     #[error("missing field: {0}")]
     Missing(&'static str),
+    #[error("attestation is not a binary")]
+    AttestationNotBinary,
     #[error("too large")]
     TooLarge,
     #[error("not deterministically encoded")]
@@ -36,7 +38,7 @@ pub enum Error {
 
 #[derive(Debug, Clone)]
 pub struct EventAttestation {
-    pub attestation: Attestation,
+    pub attestations: Vec<Attestation>,
 }
 
 #[derive(Clone)]
@@ -67,17 +69,39 @@ impl crate::utils::misc::Typename for EventAttestation {
 impl Protocol for EventAttestation {
     #[instrument(skip(map), name = "EventAttestation::from_etf_map_validated")]
     fn from_etf_map_validated(map: TermMap) -> Result<Self, protocol::Error> {
-        let bin = map.get_binary("attestation_packed").ok_or(Error::Missing("attestations_packed"))?;
-        let attestation = Attestation::from_etf_bin(bin)?;
+        let attestations_list = map.get_list("attestations").ok_or(Error::Missing("attestations"))?;
 
-        Ok(Self { attestation })
+        let mut attestations = Vec::new();
+
+        for term in attestations_list.iter() {
+            match term {
+                Term::Map(att_map) => {
+                    // The attestations come as unpacked maps from the Elixir node
+                    let attestation = Attestation::from_etf_map(&att_map)?;
+                    attestations.push(attestation);
+                }
+                Term::Binary(bin) => {
+                    // Also support binary format for backwards compatibility
+                    let attestation = Attestation::from_etf_bin(&bin.bytes)?;
+                    attestations.push(attestation);
+                }
+                _ => return Err(Error::AttestationNotBinary.into()),
+            }
+        }
+
+        Ok(Self { attestations })
     }
 
     fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        let attestation = self.attestation.to_etf_bin()?;
+        let mut attestations_list = Vec::new();
+        for attestation in &self.attestations {
+            let attestation_bin = attestation.to_etf_bin()?;
+            attestations_list.push(Term::from(Binary { bytes: attestation_bin }));
+        }
+
         let mut m = HashMap::new();
         m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
-        m.insert(Term::Atom(Atom::from("attestation_packed")), Term::from(Binary { bytes: attestation }));
+        m.insert(Term::Atom(Atom::from("attestations")), Term::List(eetf::List { elements: attestations_list }));
         let term = Term::from(eetf::Map { map: m });
         let etf_data = encode_safe(&term);
         Ok(etf_data)
@@ -98,30 +122,43 @@ impl Attestation {
     #[instrument(skip(bin), name = "Attestation::from_etf_bin", err)]
     pub fn from_etf_bin(bin: &[u8]) -> Result<Self, Error> {
         let term = Term::decode(bin)?;
+
         let map = match term {
-            Term::Map(m) => m.map,
+            Term::Map(m) => m,
             _ => return Err(Error::WrongType("attestation map")),
         };
+        Self::from_etf_map(&map)
+    }
+
+    #[instrument(skip(map), name = "Attestation::from_etf_map", err)]
+    pub fn from_etf_map(map: &eetf::Map) -> Result<Self, Error> {
         let entry_hash_v = map
+            .map
             .get(&Term::Atom(Atom::from("entry_hash")))
             .and_then(|t| t.get_binary())
             .map(|b| b.to_vec())
-            .ok_or(Error::Missing("entry_hash"))?;
+            .ok_or_else(|| Error::Missing("entry_hash"))?;
+
         let mutations_hash_v = map
+            .map
             .get(&Term::Atom(Atom::from("mutations_hash")))
             .and_then(|t| t.get_binary())
             .map(|b| b.to_vec())
-            .ok_or(Error::Missing("mutations_hash"))?;
+            .ok_or_else(|| Error::Missing("mutations_hash"))?;
+
         let signer_v = map
+            .map
             .get(&Term::Atom(Atom::from("signer")))
             .and_then(|t| t.get_binary())
             .map(|b| b.to_vec())
-            .ok_or(Error::Missing("signer"))?;
+            .ok_or_else(|| Error::Missing("signer"))?;
+
         let signature_v = map
+            .map
             .get(&Term::Atom(Atom::from("signature")))
             .and_then(|t| t.get_binary())
             .map(|b| b.to_vec())
-            .ok_or(Error::Missing("signature"))?;
+            .ok_or_else(|| Error::Missing("signature"))?;
 
         Ok(Attestation {
             entry_hash: entry_hash_v.try_into().map_err(|_| Error::InvalidLength("entry_hash"))?,
@@ -181,5 +218,113 @@ impl Attestation {
         let signer: [u8; 48] = pk_g1_48.try_into().map_err(|_| Error::InvalidLength("signer"))?;
         let signature: [u8; 96] = signature.as_slice().try_into().map_err(|_| Error::InvalidLength("signature"))?;
         Ok(Self { entry_hash: *entry_hash, mutations_hash: *mutations_hash, signer, signature })
+    }
+
+    pub fn pack_for_db(&self) -> Vec<u8> {
+        use amadeus_utils::vecpak::{self, Term as VTerm};
+
+        let proplist = VTerm::PropList(vec![
+            (VTerm::Binary(b"entry_hash".to_vec()), VTerm::Binary(self.entry_hash.to_vec())),
+            (VTerm::Binary(b"mutations_hash".to_vec()), VTerm::Binary(self.mutations_hash.to_vec())),
+            (VTerm::Binary(b"signer".to_vec()), VTerm::Binary(self.signer.to_vec())),
+            (VTerm::Binary(b"signature".to_vec()), VTerm::Binary(self.signature.to_vec())),
+        ]);
+
+        vecpak::encode(proplist)
+    }
+
+    pub fn unpack_from_db(data: &[u8]) -> Option<Self> {
+        use amadeus_utils::vecpak::{self, Term as VTerm};
+
+        let term = vecpak::decode(data).ok()?;
+
+        if let VTerm::PropList(props) = term {
+            let mut entry_hash = None;
+            let mut mutations_hash = None;
+            let mut signer = None;
+            let mut signature = None;
+
+            for (k, v) in props {
+                if let VTerm::Binary(key_bytes) = k {
+                    match key_bytes.as_slice() {
+                        b"entry_hash" => {
+                            if let VTerm::Binary(h) = v {
+                                if h.len() == 32 {
+                                    let mut arr = [0u8; 32];
+                                    arr.copy_from_slice(&h);
+                                    entry_hash = Some(arr);
+                                }
+                            }
+                        }
+                        b"mutations_hash" => {
+                            if let VTerm::Binary(m) = v {
+                                if m.len() == 32 {
+                                    let mut arr = [0u8; 32];
+                                    arr.copy_from_slice(&m);
+                                    mutations_hash = Some(arr);
+                                }
+                            }
+                        }
+                        b"signer" => {
+                            if let VTerm::Binary(s) = v {
+                                if s.len() == 48 {
+                                    let mut arr = [0u8; 48];
+                                    arr.copy_from_slice(&s);
+                                    signer = Some(arr);
+                                }
+                            }
+                        }
+                        b"signature" => {
+                            if let VTerm::Binary(s) = v {
+                                if s.len() == 96 {
+                                    let mut arr = [0u8; 96];
+                                    arr.copy_from_slice(&s);
+                                    signature = Some(arr);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            Some(Self {
+                entry_hash: entry_hash?,
+                mutations_hash: mutations_hash?,
+                signer: signer?,
+                signature: signature?,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+pub mod db {
+    use super::Attestation;
+    use amadeus_utils::database::pad_integer;
+    use amadeus_utils::rocksdb::RocksDb;
+
+    pub fn by_height(height: u64, db: &RocksDb) -> Vec<Attestation> {
+        let prefix = format!("attestation:{}:", pad_integer(height));
+
+        db.iter_prefix("attestation", prefix.as_bytes())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_key, value)| Attestation::unpack_from_db(&value))
+            .collect()
+    }
+
+    pub fn put(attestation: &Attestation, height: u64, db: &RocksDb) -> Result<(), amadeus_utils::rocksdb::Error> {
+        let key = format!(
+            "attestation:{}:{}:{}:{}",
+            pad_integer(height),
+            hex::encode(&attestation.entry_hash),
+            hex::encode(&attestation.signer),
+            hex::encode(&attestation.mutations_hash)
+        );
+        let value = attestation.pack_for_db();
+        db.put("attestation", key.as_bytes(), &value)?;
+        Ok(())
     }
 }

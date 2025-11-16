@@ -107,8 +107,12 @@ fn compare_terms(a: &Term, b: &Term) -> Ordering {
                 (Term::FixInteger(_), Term::BigInteger(_)) => Ordering::Less,
                 (Term::BigInteger(_), Term::FixInteger(_)) => Ordering::Greater,
 
-                // atoms are compared alphabetically
-                (Term::Atom(a_atom), Term::Atom(b_atom)) => a_atom.name.cmp(&b_atom.name),
+                // atoms are compared by size first, then lexicographically
+                // this matches erlang's term ordering for :deterministic map encoding
+                (Term::Atom(a_atom), Term::Atom(b_atom)) => match a_atom.name.len().cmp(&b_atom.name.len()) {
+                    Ordering::Equal => a_atom.name.as_bytes().cmp(b_atom.name.as_bytes()),
+                    other => other,
+                },
 
                 // binaries are sorted by lexicographic byte comparison
                 (Term::Binary(a_bin), Term::Binary(b_bin)) => a_bin.bytes.cmp(&b_bin.bytes),
@@ -148,15 +152,16 @@ fn encode_map_safe_deterministic(term: &Term, buf: &mut Vec<u8>) {
 fn encode_term_safe_deterministic(term: &Term, buf: &mut Vec<u8>) {
     match term {
         Term::Atom(atom) => {
-            // Use small atom (tag 119) instead of legacy atom (tag 100)
+            // Use SMALL_ATOM_UTF8_EXT (tag 119) for UTF-8 atoms
+            // This matches modern Erlang OTP 20+ behavior with :deterministic
             let name_bytes = atom.name.as_bytes();
             if name_bytes.len() <= 255 {
-                buf.push(119); // small atom
+                buf.push(119); // SMALL_ATOM_UTF8_EXT
                 buf.push(name_bytes.len() as u8);
                 buf.extend_from_slice(name_bytes);
             } else {
-                // For atoms longer than 255 bytes, use atom_utf8 (tag 118)
-                buf.push(118); // atom_utf8
+                // For atoms longer than 255 bytes, use ATOM_UTF8_EXT (tag 118)
+                buf.push(118); // ATOM_UTF8_EXT
                 buf.extend_from_slice(&(name_bytes.len() as u16).to_be_bytes());
                 buf.extend_from_slice(name_bytes);
             }

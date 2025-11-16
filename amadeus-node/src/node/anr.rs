@@ -12,8 +12,6 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
-
 const UDP_PACKETS_LIMIT: u64 = 40_000;
 
 pub static PROTO_RATE_LIMITS: Lazy<HashMap<&'static str, u64>> = Lazy::new(|| {
@@ -199,8 +197,8 @@ impl Anr {
             udp_packets: 0,
         };
 
-        // create signature over erlang term format like elixir
-        let to_sign = anr.to_etf_bin_for_signing();
+        // create signature over vecpak format (matching Elixir's RDB.vecpak_encode)
+        let to_sign = anr.to_vecpak_for_signing();
         let dst = crate::consensus::DST_ANR;
         let sig_array = sign(sk, &to_sign, dst)?;
         anr.signature = sig_array.to_vec();
@@ -235,7 +233,7 @@ impl Anr {
         let version_str = String::from_utf8_lossy(&version_bytes);
         let version = Ver::try_from(version_str.as_ref()).map_err(|_| Error::BadEtf("invalid_version_format"))?;
 
-        // parse optional anr_name and anr_desc fields (they may be nil or missing)
+        // parse optional anr_name and anr_desc fields (they may be nil atom or binary)
         let anr_name = map
             .get_binary::<Vec<u8>>("anr_name")
             .and_then(|bytes| String::from_utf8(bytes).ok())
@@ -245,6 +243,9 @@ impl Anr {
             .get_binary::<Vec<u8>>("anr_desc")
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .filter(|s| !s.is_empty());
+
+        // NOTE: if anr_name/anr_desc are nil atoms, get_binary returns None,
+        // which is correct - they become Option::None
 
         // Compute Blake3 hash fields for indexing (v1.1.8 compatibility)
         let pk_b3 = blake3::hash(&pk);
@@ -275,15 +276,19 @@ impl Anr {
 
     // verify anr signature and proof of possession
     pub fn verify_signature(&self) -> bool {
-        let to_sign = self.to_etf_bin_for_signing();
+        // verify proof of possession (pop is signature of pk with pk as key)
+        // this proves the sender owns the private key for pk
+        if verify(&self.pk, &self.pop, &self.pk, crate::consensus::DST_POP).is_err() {
+            return false;
+        }
 
-        // verify main signature
+        // verify main signature using vecpak encoding (matching Elixir's RDB.vecpak_encode)
+        let to_sign = self.to_vecpak_for_signing();
         if verify(&self.pk, &self.signature, &to_sign, crate::consensus::DST_ANR).is_err() {
             return false;
         }
 
-        // verify proof of possession (pop is signature of pk with pk as key)
-        verify(&self.pk, &self.pop, &self.pk, crate::consensus::DST_POP).is_ok()
+        true
     }
 
     // verify and unpack anr from untrusted source
@@ -308,9 +313,16 @@ impl Anr {
         Ok(packed_anr)
     }
 
+    pub fn to_vecpak_for_signing(&self) -> Vec<u8> {
+        // Convert ANR to vecpak format for signing (matching Elixir's RDB.vecpak_encode)
+        use crate::utils::vecpak_compat::encode_etf_as_vecpak;
+        let term = self.to_etf_term_without_signature();
+        encode_etf_as_vecpak(&term)
+    }
+
     pub fn to_etf_bin_for_signing(&self) -> Vec<u8> {
-        use crate::utils::safe_etf::encode_safe_deterministic;
-        encode_safe_deterministic(&self.to_etf_term_without_signature())
+        // DEPRECATED: Use to_vecpak_for_signing instead
+        self.to_vecpak_for_signing()
     }
 
     pub fn to_etf_bin(&self) -> Vec<u8> {
@@ -331,21 +343,18 @@ impl Anr {
     fn to_etf_term_without_signature(&self) -> Term {
         let mut map = TermMap::default();
 
-        match &self.anr_desc {
-            Some(desc) => {
-                let anr_desc = Term::Binary(Binary::from(desc.as_bytes().to_vec()));
-                map.insert(Term::Atom(Atom::from("anr_desc")), anr_desc);
-            }
-            None => {}
-        };
+        // NOTE: anr_desc and anr_name are only included if they have a value.
+        // if they're None, the field is NOT added to the map. this matches
+        // elixir behavior where nil fields are not added during signing.
+        if let Some(desc) = &self.anr_desc {
+            let anr_desc = Term::Binary(Binary::from(desc.as_bytes().to_vec()));
+            map.insert(Term::Atom(Atom::from("anr_desc")), anr_desc);
+        }
 
-        match &self.anr_name {
-            Some(name) => {
-                let anr_name = Term::Binary(Binary::from(name.as_bytes().to_vec()));
-                map.insert(Term::Atom(Atom::from("anr_name")), anr_name);
-            }
-            None => {}
-        };
+        if let Some(name) = &self.anr_name {
+            let anr_name = Term::Binary(Binary::from(name.as_bytes().to_vec()));
+            map.insert(Term::Atom(Atom::from("anr_name")), anr_name);
+        }
 
         map.insert(Term::Atom(Atom::from("ip4")), Term::Binary(Binary::from(self.ip4.to_string().as_bytes().to_vec())));
         map.insert(Term::Atom(Atom::from("pk")), Term::Binary(Binary::from(self.pk.to_vec())));
@@ -520,7 +529,6 @@ impl NodeAnrs {
                 *counter += 1;
                 return Some(*counter < *limit);
             }
-            warn!("No rate limit for {typename}");
         }
         None
     }
@@ -697,9 +705,6 @@ impl NodeAnrs {
             self.insert(my_anr).await;
             self.set_handshaked(&config.get_pk()).await;
         }
-
-        let all = self.get_all().await;
-        debug!("seeded {} ANRs from config", all.len());
     }
 }
 
@@ -971,7 +976,6 @@ mod tests {
         // Test multiple calls to ensure randomness and correct count
         for run in 1..=10 {
             let result = registry.get_random_not_verified(3).await;
-            println!("Run {}: got {} results", run, result.len());
 
             // Should return 3 results since we have 5 candidates
             assert_eq!(result.len(), 3, "Run {}: expected 3 results, got {}", run, result.len());
@@ -980,7 +984,6 @@ mod tests {
             let mut ips = std::collections::HashSet::new();
             for ip in &result {
                 assert!(ips.insert(*ip), "Run {}: duplicate IP found: {}", run, ip);
-                println!("  - IP: {}", ip);
             }
         }
 
@@ -1026,42 +1029,31 @@ mod tests {
 
         let encoded = anr_with_optionals.to_etf_bin_for_signing();
 
-        println!("Encoded bytes: {:?}", encoded);
-
-        // Try to decode the ETF - this should reveal the problems
+        // Try to decode the ETF
         match Term::decode(&encoded[..]) {
             Ok(decoded) => {
-                println!("Successfully decoded: {:?}", decoded);
                 if let Term::Map(map) = decoded {
-                    println!("Map has {} entries", map.map.len());
                     // Verify the map has the expected number of entries after the fix
                     let actual_count = map.map.len();
                     let expected_count = 8; // 6 base + 2 optional fields
+                    assert_eq!(actual_count, expected_count, "Map should have {} entries", expected_count);
 
-                    if actual_count == expected_count {
-                        println!("SUCCESS: Map correctly has {} entries", actual_count);
-
-                        // Verify all expected fields are present
-                        let expected_fields = ["ip4", "pk", "pop", "port", "ts", "version", "anr_name", "anr_desc"];
-                        for field_name in &expected_fields {
-                            let field_key = Term::Atom(Atom::from(*field_name));
-                            if map.map.contains_key(&field_key) {
-                                println!("✓ Field '{}' present", field_name);
-                            } else {
-                                println!("✗ Field '{}' missing", field_name);
-                            }
-                        }
-                    } else {
-                        println!("ERROR: Map has {} entries, expected {}", actual_count, expected_count);
+                    // Verify all expected fields are present
+                    let expected_fields = ["ip4", "pk", "pop", "port", "ts", "version", "anr_name", "anr_desc"];
+                    for field_name in &expected_fields {
+                        let field_key = Term::Atom(Atom::from(*field_name));
+                        assert!(map.map.contains_key(&field_key), "Field '{}' should be present", field_name);
                     }
                 } else {
-                    println!("ERROR: Decoded term is not a map!");
+                    panic!("Decoded term is not a map!");
                 }
             }
             Err(e) => {
-                println!("ERROR: Failed to decode ETF: {:?}", e);
-                println!("This indicates the original function produces invalid ETF!");
+                panic!("Failed to decode ETF: {:?}", e);
             }
         }
     }
 }
+
+#[cfg(test)]
+mod test_anr_signature;

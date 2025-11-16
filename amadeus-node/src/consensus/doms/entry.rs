@@ -15,7 +15,6 @@ use eetf::{Atom, Binary, Map, Term};
 use std::collections::HashMap;
 use std::fmt;
 use std::net::Ipv4Addr;
-// use tracing::{instrument, warn};
 
 const MAX_TXS: usize = 100; // maximum number of transactions in an entry
 
@@ -72,10 +71,31 @@ impl EntrySummary {
         if map.0.is_empty() {
             return Ok(Self::empty());
         }
-        let header_bin: Vec<u8> = map.get_binary("header").ok_or(Error::BadEtf("header"))?;
+
+        // Handle header field - it can be either:
+        // 1. A binary (encoded header) - original ETF format
+        // 2. A map (header fields) - vecpak format from Elixir
+        let header = if let Some(header_bin) = map.get_binary::<Vec<u8>>("header") {
+            // Case 1: header is already encoded as binary (original format)
+            EntryHeader::from_etf_bin(&header_bin).map_err(|_| Error::BadEtf("header"))?
+        } else if let Some(header_map) = map.get_term_map("header") {
+            // Case 2: header is a map with fields (vecpak format)
+            let height = header_map.get_integer("height").ok_or(Error::BadEtf("height"))?;
+            let slot = header_map.get_integer("slot").ok_or(Error::BadEtf("slot"))?;
+            let prev_slot = header_map.get_integer("prev_slot").ok_or(Error::BadEtf("prev_slot"))?;
+            let prev_hash = header_map.get_binary("prev_hash").ok_or(Error::BadEtf("prev_hash"))?;
+            let dr = header_map.get_binary("dr").ok_or(Error::BadEtf("dr"))?;
+            let vr = header_map.get_binary("vr").ok_or(Error::BadEtf("vr"))?;
+            let signer = header_map.get_binary("signer").ok_or(Error::BadEtf("signer"))?;
+            let txs_hash = header_map.get_binary("txs_hash").ok_or(Error::BadEtf("txs_hash"))?;
+
+            EntryHeader { height, slot, prev_slot, prev_hash, dr, vr, signer, txs_hash }
+        } else {
+            return Err(Error::BadEtf("header"));
+        };
+
         let signature = map.get_binary("signature").ok_or(Error::BadEtf("signature"))?;
         let mask = map.get_binary("mask").map(bin_to_bitvec);
-        let header = EntryHeader::from_etf_bin(&header_bin).map_err(|_| Error::BadEtf("header"))?;
         Ok(Self { header, signature, mask })
     }
 
@@ -204,21 +224,254 @@ impl Entry {
         Ok(out)
     }
 
-    /// Unpack entry from ETF deterministic format (like Elixir Entry.unpack/1)
+    /// Unpack entry from vecpak format (data from Elixir now uses vecpak)
     pub fn unpack(entry_packed: &[u8]) -> Result<Self, Error> {
-        let term = Term::decode(entry_packed)?;
+        use amadeus_utils::vecpak;
+
+        let entry_term = vecpak::decode(entry_packed).map_err(|_e| Error::BadEtf("vecpak decode failed"))?;
+
+        Self::from_vecpak_term(entry_term).ok_or(Error::BadEtf("from_vecpak_term failed"))
+    }
+
+    pub fn pack_for_db(&self) -> Result<Vec<u8>, Error> {
+        use amadeus_utils::vecpak::{self, Term as VTerm};
+
+        let header_proplist = VTerm::PropList(vec![
+            (VTerm::Binary(b"height".to_vec()), VTerm::VarInt(self.header.height as i128)),
+            (VTerm::Binary(b"slot".to_vec()), VTerm::VarInt(self.header.slot as i128)),
+            (VTerm::Binary(b"prev_slot".to_vec()), VTerm::VarInt(self.header.prev_slot as i128)),
+            (VTerm::Binary(b"prev_hash".to_vec()), VTerm::Binary(self.header.prev_hash.to_vec())),
+            (VTerm::Binary(b"dr".to_vec()), VTerm::Binary(self.header.dr.to_vec())),
+            (VTerm::Binary(b"vr".to_vec()), VTerm::Binary(self.header.vr.to_vec())),
+            (VTerm::Binary(b"signer".to_vec()), VTerm::Binary(self.header.signer.to_vec())),
+            (VTerm::Binary(b"txs_hash".to_vec()), VTerm::Binary(self.header.txs_hash.to_vec())),
+        ]);
+
+        let header_packed = vecpak::encode(header_proplist);
+
+        let txs_list = VTerm::List(self.txs.iter().map(|tx| VTerm::Binary(tx.clone())).collect());
+
+        let mut entry_props = vec![
+            (VTerm::Binary(b"header".to_vec()), VTerm::Binary(header_packed)),
+            (VTerm::Binary(b"txs".to_vec()), txs_list),
+            (VTerm::Binary(b"hash".to_vec()), VTerm::Binary(self.hash.to_vec())),
+            (VTerm::Binary(b"signature".to_vec()), VTerm::Binary(self.signature.to_vec())),
+        ];
+
+        if let Some(mask) = &self.mask {
+            entry_props.push((VTerm::Binary(b"mask".to_vec()), VTerm::Binary(bitvec_to_bin(mask))));
+        }
+
+        let entry_map = VTerm::PropList(entry_props);
+        Ok(vecpak::encode(entry_map))
+    }
+
+    pub fn unpack_from_db(entry_packed: Option<Vec<u8>>) -> Option<Self> {
+        use amadeus_utils::vecpak;
+
+        let entry_packed = entry_packed?;
+
+        // try vecpak format first (new format)
+        match vecpak::decode(&entry_packed) {
+            Ok(entry_term) => {
+                if let Some(entry) = Self::from_vecpak_term(entry_term) {
+                    return Some(entry);
+                }
+            }
+            Err(_) => {}
+        }
+
+        // fallback to ETF format (legacy format)
+        if let Ok(entry) = Self::from_etf_direct(&entry_packed) {
+            return Some(entry);
+        }
+
+        None
+    }
+
+    /// decode entry from ETF format (legacy database format)
+    fn from_etf_direct(bin: &[u8]) -> Result<Self, Error> {
+        let term = Term::decode(bin).map_err(Error::EtfDecode)?;
         let map = term.get_term_map().ok_or(Error::BadEtf("entry"))?;
 
-        let hash = map.get_binary("hash").ok_or(Error::BadEtf("hash"))?;
+        // decode header (binary encoded)
         let header_bin: Vec<u8> = map.get_binary("header").ok_or(Error::BadEtf("header"))?;
-        let signature = map.get_binary("signature").ok_or(Error::BadEtf("signature"))?;
-        let mask = map.get_binary("mask").map(bin_to_bitvec);
-        let txs: Vec<Vec<u8>> =
-            map.get_list("txs").unwrap_or_default().iter().filter_map(TermExt::get_binary).map(Into::into).collect();
-
         let header = EntryHeader::from_etf_bin(&header_bin)?;
 
-        Ok(Entry { hash, header, signature, mask, txs })
+        // decode txs (list of binaries)
+        let txs_list = map.get_list("txs").ok_or(Error::BadEtf("txs"))?;
+        let mut txs = Vec::new();
+        for tx_term in txs_list {
+            if let Some(bytes) = tx_term.get_binary() {
+                txs.push(bytes.to_vec());
+            }
+        }
+
+        // decode hash
+        let hash: [u8; 32] = map.get_binary("hash").ok_or(Error::BadEtf("hash"))?;
+
+        // decode signature
+        let signature: [u8; 96] = map.get_binary("signature").ok_or(Error::BadEtf("signature"))?;
+
+        // decode optional mask
+        let mask = map.get_binary::<Vec<u8>>("mask").map(bin_to_bitvec);
+
+        Ok(Self { header, txs, hash, signature, mask })
+    }
+
+    fn from_vecpak_term(term: amadeus_utils::vecpak::Term) -> Option<Self> {
+        use amadeus_utils::vecpak::{self, Term as VTerm};
+
+        if let VTerm::PropList(props) = term {
+            let mut hash = None;
+            let mut header_bin = None;
+            let mut signature = None;
+            let mut mask = None;
+            let mut txs = Vec::new();
+
+            for (k, v) in &props {
+                if let VTerm::Binary(key_bytes) = k {
+                    match key_bytes.as_slice() {
+                        b"hash" => {
+                            if let VTerm::Binary(h) = v {
+                                if h.len() == 32 {
+                                    let mut arr = [0u8; 32];
+                                    arr.copy_from_slice(h);
+                                    hash = Some(arr);
+                                }
+                            }
+                        }
+                        b"header" => match v {
+                            VTerm::Binary(h) => {
+                                header_bin = Some(h.clone());
+                            }
+                            VTerm::PropList(_) => {
+                                // header is inline PropList, encode it to binary for parsing
+                                header_bin = Some(vecpak::encode(v.clone()));
+                            }
+                            _ => {}
+                        },
+                        b"signature" => {
+                            if let VTerm::Binary(s) = v {
+                                if s.len() == 96 {
+                                    let mut arr = [0u8; 96];
+                                    arr.copy_from_slice(s);
+                                    signature = Some(arr);
+                                }
+                            }
+                        }
+                        b"mask" => {
+                            if let VTerm::Binary(m) = v {
+                                mask = Some(bin_to_bitvec(m.clone()));
+                            }
+                        }
+                        b"txs" => {
+                            if let VTerm::List(tx_list) = v {
+                                for tx_term in tx_list {
+                                    if let VTerm::Binary(tx_bin) = tx_term {
+                                        txs.push(tx_bin.clone());
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            if hash.is_none() || header_bin.is_none() || signature.is_none() {
+                return None;
+            }
+
+            let header = Self::parse_vecpak_header(header_bin?)?;
+
+            Some(Entry { hash: hash?, header, signature: signature?, mask, txs })
+        } else {
+            None
+        }
+    }
+
+    fn parse_vecpak_header(header_bin: Vec<u8>) -> Option<EntryHeader> {
+        use amadeus_utils::vecpak::{self, Term as VTerm};
+
+        let header_term = vecpak::decode(&header_bin).ok()?;
+
+        if let VTerm::PropList(props) = header_term {
+            let mut height = 0u64;
+            let mut slot = 0u64;
+            let mut prev_slot = 0i64;
+            let mut prev_hash = [0u8; 32];
+            let mut dr = [0u8; 32];
+            let mut vr = [0u8; 96];
+            let mut signer = [0u8; 48];
+            let mut txs_hash = [0u8; 32];
+
+            for (k, v) in props {
+                if let VTerm::Binary(key_bytes) = k {
+                    match key_bytes.as_slice() {
+                        b"height" => {
+                            if let VTerm::VarInt(h) = v {
+                                if h >= 0 {
+                                    height = h as u64;
+                                }
+                            }
+                        }
+                        b"slot" => {
+                            if let VTerm::VarInt(s) = v {
+                                if s >= 0 {
+                                    slot = s as u64;
+                                }
+                            }
+                        }
+                        b"prev_slot" => {
+                            if let VTerm::VarInt(ps) = v {
+                                prev_slot = ps as i64;
+                            }
+                        }
+                        b"prev_hash" => {
+                            if let VTerm::Binary(ph) = v {
+                                if ph.len() == 32 {
+                                    prev_hash.copy_from_slice(&ph);
+                                }
+                            }
+                        }
+                        b"dr" => {
+                            if let VTerm::Binary(d) = v {
+                                if d.len() == 32 {
+                                    dr.copy_from_slice(&d);
+                                }
+                            }
+                        }
+                        b"vr" => {
+                            if let VTerm::Binary(v_bin) = v {
+                                if v_bin.len() == 96 {
+                                    vr.copy_from_slice(&v_bin);
+                                }
+                            }
+                        }
+                        b"signer" => {
+                            if let VTerm::Binary(s) = v {
+                                if s.len() == 48 {
+                                    signer.copy_from_slice(&s);
+                                }
+                            }
+                        }
+                        b"txs_hash" => {
+                            if let VTerm::Binary(th) = v {
+                                if th.len() == 32 {
+                                    txs_hash.copy_from_slice(&th);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            Some(EntryHeader { height, slot, prev_slot, prev_hash, dr, vr, signer, txs_hash })
+        } else {
+            None
+        }
     }
 }
 
@@ -280,7 +533,7 @@ impl Protocol for Entry {
         if height >= rooted_height {
             let hash = self.hash;
             let slot = self.header.slot;
-            let bin: Vec<u8> = self.clone().try_into()?;
+            let bin = self.pack_for_db()?;
 
             ctx.fabric.insert_entry(&hash, height, slot, &bin, get_unix_millis_now())?;
 
@@ -523,5 +776,88 @@ mod tests {
                 // It's okay if it fails due to archiver not being initialized
             }
         }
+    }
+}
+
+pub mod db {
+    use super::Entry;
+    use amadeus_utils::database::pad_integer;
+    use amadeus_utils::rocksdb::RocksDb;
+
+    pub fn by_hash(hash: &[u8], db: &RocksDb) -> Option<Entry> {
+        let entry_packed = db.get("entry", hash).ok()??;
+        Entry::unpack_from_db(Some(entry_packed))
+    }
+
+    pub fn by_height(height: u64, db: &RocksDb) -> Vec<Entry> {
+        let prefix = format!("by_height:{}:", pad_integer(height));
+
+        db.iter_prefix("entry_meta", prefix.as_bytes())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_key, value)| by_hash(&value, db))
+            .collect()
+    }
+
+    pub fn by_height_return_hashes(height: u64, db: &RocksDb) -> Vec<Vec<u8>> {
+        let prefix = format!("by_height:{}:", pad_integer(height));
+
+        db.iter_prefix("entry_meta", prefix.as_bytes())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_key, value)| value)
+            .collect()
+    }
+
+    pub fn by_height_in_main_chain(height: u64, db: &RocksDb) -> Option<Vec<u8>> {
+        let key = format!("by_height_in_main_chain:{}", pad_integer(height));
+        db.get("entry_meta", key.as_bytes()).ok()?
+    }
+
+    pub fn seentime(hash: &[u8], db: &RocksDb) -> Option<i64> {
+        let key = format!("entry:{}:seentime", hex::encode(hash));
+        let bytes = db.get("entry_meta", key.as_bytes()).ok()??;
+        if bytes.len() == 8 {
+            Some(i64::from_le_bytes(bytes.try_into().unwrap()))
+        } else if bytes.len() == 16 {
+            Some(u128::from_le_bytes(bytes.try_into().unwrap()) as i64)
+        } else {
+            None
+        }
+    }
+
+    pub fn muts_hash(hash: &[u8], db: &RocksDb) -> Option<Vec<u8>> {
+        let key = format!("entry:{}:muts_hash", hex::encode(hash));
+        db.get("entry_meta", key.as_bytes()).ok()?
+    }
+
+    pub fn prev(hash: &[u8], db: &RocksDb) -> Option<Vec<u8>> {
+        let key = format!("entry:{}:prev", hex::encode(hash));
+        db.get("entry_meta", key.as_bytes()).ok()?
+    }
+
+    pub fn next(hash: &[u8], db: &RocksDb) -> Option<Vec<u8>> {
+        let key = format!("entry:{}:next", hex::encode(hash));
+        db.get("entry_meta", key.as_bytes()).ok()?
+    }
+
+    pub fn in_chain(hash: &[u8], db: &RocksDb) -> bool {
+        let key = format!("entry:{}:in_chain", hex::encode(hash));
+        db.get("entry_meta", key.as_bytes()).ok().flatten().is_some()
+    }
+
+    pub fn insert(entry: &Entry, db: &RocksDb) -> Result<(), Box<dyn std::error::Error>> {
+        let entry_packed = entry.pack_for_db()?;
+
+        db.put("entry", &entry.hash, &entry_packed)?;
+
+        let height_key = format!("by_height:{}:{}", pad_integer(entry.header.height), hex::encode(&entry.hash));
+        db.put("entry_meta", height_key.as_bytes(), &entry.hash)?;
+
+        let seentime_key = format!("entry:{}:seentime", hex::encode(&entry.hash));
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+        db.put("entry_meta", seentime_key.as_bytes(), &now.to_le_bytes())?;
+
+        Ok(())
     }
 }

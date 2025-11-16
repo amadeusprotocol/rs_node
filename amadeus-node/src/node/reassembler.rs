@@ -53,12 +53,16 @@ impl Message {
         (data_shards, parity_shards, total_shards, shards_to_send)
     }
     /// Derive AES-256 key using Elixir-compatible method: SHA256(shared_secret + timestamp_in_nanoseconds + iv)
+    /// IMPORTANT: Elixir uses :binary.encode_unsigned which strips leading zeros
     fn derive_aes_key(shared_secret: &[u8], ts_nano: u64, iv: &[u8]) -> [u8; 32] {
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
         hasher.update(shared_secret);
-        hasher.update(&ts_nano.to_be_bytes());
+        // encode_unsigned strips leading zeros - match Elixir behavior
+        let ts_bytes = ts_nano.to_be_bytes();
+        let first_nonzero = ts_bytes.iter().position(|&b| b != 0).unwrap_or(7);
+        hasher.update(&ts_bytes[first_nonzero..]);
         hasher.update(iv);
 
         let result = hasher.finalize();
@@ -77,8 +81,12 @@ impl Message {
     ) -> Result<Vec<Self>, Error> {
         let ts_nano = get_unix_nanos_now() as u64;
 
-        // Compress first (consistent with build_shards)
-        let compressed = crate::utils::compression::compress_with_zlib(plaintext)?;
+        // Compress first - use zstd for v1.2.3+, zlib for older versions
+        let compressed = if version >= Ver::new(1, 2, 3) {
+            zstd::encode_all(plaintext, 3).map_err(|e| Error::CompressionError(e.into()))?
+        } else {
+            crate::utils::compression::compress_with_zlib(plaintext)?
+        };
 
         // AES-256-GCM encryption with Elixir-compatible key derivation
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
@@ -102,7 +110,7 @@ impl Message {
                 shard_index: 0,
                 shard_total: 1,
                 ts_nano,
-                original_size: plaintext.len() as u32,
+                original_size: encrypted_payload.len() as u32,
                 payload: encrypted_payload,
             }])
         } else {
@@ -123,7 +131,7 @@ impl Message {
                     shard_index: shard_index as u16,
                     shard_total: total_shards,
                     ts_nano,
-                    original_size: plaintext.len() as u32,
+                    original_size: encrypted_payload.len() as u32,
                     payload: shard_payload,
                 });
             }
@@ -135,8 +143,13 @@ impl Message {
     /// Decrypt a single Message (includes decompression for direct use)
     pub fn decrypt(&self, shared_secret: &[u8]) -> Result<Vec<u8>, Error> {
         let compressed = self.decrypt_raw(shared_secret)?;
-        // Decompress (reverse of encrypt process)
-        let plaintext = crate::utils::compression::decompress_with_zlib(&compressed)?;
+        // Decompress based on sender version
+        // v1.2.3+ uses zstd, older uses deflate
+        let plaintext = if self.version >= Ver::new(1, 2, 3) {
+            zstd::decode_all(compressed.as_slice()).map_err(|e| Error::CompressionError(e.into()))?
+        } else {
+            crate::utils::compression::decompress_with_zlib(&compressed)?
+        };
         Ok(plaintext)
     }
 
@@ -162,7 +175,18 @@ impl Message {
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
         let nonce = Nonce::from_slice(nonce_bytes);
 
-        cipher.decrypt(nonce, ciphertext_with_tag.as_slice()).map_err(|_| Error::AesError)
+        cipher.decrypt(nonce, ciphertext_with_tag.as_slice()).map_err(|_e| {
+            tracing::debug!(
+                "AES decrypt failed. pk={} ts_nano={} nonce={} tag={} ciphertext_len={} key={}",
+                hex::encode(&self.pk),
+                self.ts_nano,
+                hex::encode(nonce_bytes),
+                hex::encode(tag_bytes),
+                ciphertext.len(),
+                hex::encode(&key_bytes)
+            );
+            Error::AesError
+        })
     }
 
     /// Serialize to binary format
@@ -340,7 +364,12 @@ impl ReedSolomonReassembler {
             let shared_secret = bls12_381::get_shared_secret(&key.pk, config_sk)?;
             // Decrypt and then decompress (reverse of build_shards process)
             let decrypted_compressed = encrypted_msg.decrypt_raw(&shared_secret)?;
-            let payload = crate::utils::compression::decompress_with_zlib(&decrypted_compressed)?;
+            // Decompress based on sender version - must match what Message::encrypt uses
+            let payload = if key.version >= Ver::new(1, 2, 3) {
+                zstd::decode_all(decrypted_compressed.as_slice()).map_err(|e| Error::CompressionError(e.into()))?
+            } else {
+                crate::utils::compression::decompress_with_zlib(&decrypted_compressed)?
+            };
             return Ok(Some((payload, key.pk)));
         }
 
@@ -400,7 +429,12 @@ impl ReedSolomonReassembler {
 
             // Decrypt and then decompress (reverse of build_shards process)
             let decrypted_compressed = temp_msg.decrypt_raw(&shared_secret)?;
-            let payload = crate::utils::compression::decompress_with_zlib(&decrypted_compressed)?;
+            // Decompress based on sender version - must match what Message::encrypt uses
+            let payload = if key.version >= Ver::new(1, 2, 3) {
+                zstd::decode_all(decrypted_compressed.as_slice()).map_err(|e| Error::CompressionError(e.into()))?
+            } else {
+                crate::utils::compression::decompress_with_zlib(&decrypted_compressed)?
+            };
             return Ok(Some((payload, key.pk)));
         }
 
@@ -479,7 +513,8 @@ mod tests {
         assert_eq!(encrypted_msg.pk, pk_alice);
         assert_eq!(encrypted_msg.shard_index, 0);
         assert_eq!(encrypted_msg.shard_total, 1);
-        assert_eq!(encrypted_msg.original_size, test_message.len() as u32);
+        // original_size is the encrypted payload size (nonce + tag + ciphertext), not plaintext size
+        assert_eq!(encrypted_msg.original_size, encrypted_msg.payload.len() as u32);
 
         // Bob decrypts the message
         let decrypted = encrypted_msg.decrypt(&shared_secret_bob).expect("decryption should succeed");
@@ -502,8 +537,6 @@ mod tests {
         let decrypted2 =
             deserialized.decrypt(&shared_secret_bob).expect("decryption of deserialized message should succeed");
         assert_eq!(decrypted2, test_message, "Decrypted deserialized message should match original");
-
-        println!("✓ Message round-trip test passed with BLS-compatible encryption");
     }
 
     #[test]
@@ -530,8 +563,6 @@ mod tests {
             encrypted_messages[0].decrypt(&shared_secret_bob).expect("64-byte key decryption should succeed");
 
         assert_eq!(decrypted, test_message, "64-byte key messages should round-trip correctly");
-
-        println!("✓ Message 64-byte key compatibility test passed");
     }
 
     #[tokio::test]
@@ -557,8 +588,6 @@ mod tests {
             let result = reassembler.add_shard(&serialized, &sk_bob).await.expect("reassembly should succeed");
             assert_eq!(result.map(|(msg, _)| msg), Some(test_message.to_vec()));
         }
-
-        println!("✓ MessageReassembler test passed");
     }
 
     #[tokio::test]
@@ -589,8 +618,6 @@ mod tests {
             assert!(shard.len() > 20, "Shard should be large enough to contain header");
             assert_eq!(&shard[0..3], b"AMA", "Shard should start with AMA magic");
         }
-
-        println!("✓ build_shards test passed - created {} shards", shards.len());
     }
 
     #[tokio::test]
@@ -618,8 +645,6 @@ mod tests {
             assert!(shard.len() > 20, "Shard should be large enough to contain header");
             assert_eq!(&shard[0..3], b"AMA", "Shard should start with AMA magic");
         }
-
-        println!("✓ build_broadcast_shards test passed - created {} shards", shards.len());
     }
 
     #[test]
@@ -691,11 +716,5 @@ mod tests {
         // Verify decrypted content
         assert_eq!(decrypted.len(), 29, "Decrypted length should match original_size");
         assert!(!decrypted.is_empty(), "Decrypted message should not be empty");
-
-        println!("✓ Special compatibility test passed:");
-        println!("  - Shared secret computation verified");
-        println!("  - Message parsing successful");
-        println!("  - Decryption successful");
-        println!("  - Decrypted {} bytes", decrypted.len());
     }
 }

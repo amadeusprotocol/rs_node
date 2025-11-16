@@ -64,20 +64,14 @@ impl std::fmt::Debug for RocksDb {
 fn cf_names() -> &'static [&'static str] {
     &[
         "default",
-        "entry",
-        "entry_by_height|height->entryhash",
-        "entry_by_slot|slot->entryhash",
-        "my_seen_time_entry|entryhash->ts_sec",
-        "my_attestation_for_entry|entryhash->attestation",
-        "tx|txhash->entryhash",
-        "tx_account_nonce|account:nonce->txhash",
-        "tx_receiver_nonce|receiver:nonce->txhash",
-        "consensus",
-        "consensus_by_entryhash|Map<mutationshash,consensus>",
-        "contractstate",
-        "muts",
-        "muts_rev",
         "sysconf",
+        "entry",
+        "entry_meta",
+        "attestation",
+        "tx",
+        "tx_account_nonce",
+        "tx_receiver_nonce",
+        "contractstate",
     ]
 }
 
@@ -422,40 +416,28 @@ pub trait RocksDbTrait {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Cf {
     Default,
+    SysConf,
     Entry,
-    EntryByHeight,
-    EntryBySlot,
+    EntryMeta,
+    Attestation,
     Tx,
     TxAccountNonce,
     TxReceiverNonce,
-    MySeenTimeEntry,
-    MyAttestationForEntry,
-    Consensus,
-    ConsensusByEntryhash,
     ContractState,
-    Muts,
-    MutsRev,
-    SysConf,
 }
 
 impl Cf {
     pub fn as_str(&self) -> &'static str {
         match self {
             Cf::Default => "default",
-            Cf::Entry => "entry",
-            Cf::EntryByHeight => "entry_by_height|height->entryhash",
-            Cf::EntryBySlot => "entry_by_slot|slot->entryhash",
-            Cf::Tx => "tx|txhash->entryhash",
-            Cf::TxAccountNonce => "tx_account_nonce|account:nonce->txhash",
-            Cf::TxReceiverNonce => "tx_receiver_nonce|receiver:nonce->txhash",
-            Cf::MySeenTimeEntry => "my_seen_time_entry|entryhash->ts_sec",
-            Cf::MyAttestationForEntry => "my_attestation_for_entry|entryhash->attestation",
-            Cf::Consensus => "consensus",
-            Cf::ConsensusByEntryhash => "consensus_by_entryhash|Map<mutationshash,consensus>",
-            Cf::ContractState => "contractstate",
-            Cf::Muts => "muts",
-            Cf::MutsRev => "muts_rev",
             Cf::SysConf => "sysconf",
+            Cf::Entry => "entry",
+            Cf::EntryMeta => "entry_meta",
+            Cf::Attestation => "attestation",
+            Cf::Tx => "tx",
+            Cf::TxAccountNonce => "tx_account_nonce",
+            Cf::TxReceiverNonce => "tx_receiver_nonce",
+            Cf::ContractState => "contractstate",
         }
     }
 }
