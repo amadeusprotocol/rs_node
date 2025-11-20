@@ -683,7 +683,7 @@ impl Context {
         // Process encrypted message shards
         match self.reassembler.add_shard(buf, &self.config.get_sk()).await {
             Ok(Some((packet, pk))) => {
-                match parse_etf_bin(&packet) {
+                match parse_vecpak_bin(&packet) {
                     Ok(proto) => {
                         self.node_peers.update_peer_from_proto(src, proto.typename()).await;
                         let has_handshake =

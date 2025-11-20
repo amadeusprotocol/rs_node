@@ -3,7 +3,7 @@ use crate::node::protocol;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381 as bls;
 use crate::utils::bls12_381::Error as BlsError;
-use crate::utils::misc::{TermExt, TermMap};
+use crate::utils::misc::TermExt;
 use crate::utils::safe_etf::encode_safe;
 use amadeus_utils::constants::DST_ATT;
 use eetf::DecodeError as EtfDecodeError;
@@ -67,22 +67,25 @@ impl crate::utils::misc::Typename for EventAttestation {
 
 #[async_trait::async_trait]
 impl Protocol for EventAttestation {
-    #[instrument(skip(map), name = "EventAttestation::from_etf_map_validated")]
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, protocol::Error> {
-        let attestations_list = map.get_list("attestations").ok_or(Error::Missing("attestations"))?;
+    #[instrument(skip(map), name = "EventAttestation::from_vecpak_map_validated")]
+    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
+        use amadeus_utils::vecpak::{Term as VTerm, VecpakExt};
+
+        let attestations_list = map.get_list(b"attestations").ok_or(Error::Missing("attestations"))?;
 
         let mut attestations = Vec::new();
 
         for term in attestations_list.iter() {
             match term {
-                Term::Map(att_map) => {
-                    // The attestations come as unpacked maps from the Elixir node
-                    let attestation = Attestation::from_etf_map(&att_map)?;
+                VTerm::PropList(_) => {
+                    // The attestations come as PropList from the Elixir node
+                    let att_map = term.get_proplist_map().ok_or(Error::AttestationNotBinary)?;
+                    let attestation = Attestation::from_vecpak_map(&att_map)?;
                     attestations.push(attestation);
                 }
-                Term::Binary(bin) => {
+                VTerm::Binary(bin) => {
                     // Also support binary format for backwards compatibility
-                    let attestation = Attestation::from_etf_bin(&bin.bytes)?;
+                    let attestation = Attestation::from_etf_bin(bin)?;
                     attestations.push(attestation);
                 }
                 _ => return Err(Error::AttestationNotBinary.into()),
@@ -130,6 +133,25 @@ impl Attestation {
         Self::from_etf_map(&map)
     }
 
+    /// Parse from vecpak PropListMap (primary format)
+    #[instrument(skip(map), name = "Attestation::from_vecpak_map", err)]
+    pub fn from_vecpak_map(map: &amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        use amadeus_utils::vecpak::VecpakExt;
+
+        let entry_hash_v = map.get_binary::<Vec<u8>>(b"entry_hash").ok_or(Error::Missing("entry_hash"))?;
+        let mutations_hash_v = map.get_binary::<Vec<u8>>(b"mutations_hash").ok_or(Error::Missing("mutations_hash"))?;
+        let signer_v = map.get_binary::<Vec<u8>>(b"signer").ok_or(Error::Missing("signer"))?;
+        let signature_v = map.get_binary::<Vec<u8>>(b"signature").ok_or(Error::Missing("signature"))?;
+
+        Ok(Attestation {
+            entry_hash: entry_hash_v.try_into().map_err(|_| Error::InvalidLength("entry_hash"))?,
+            mutations_hash: mutations_hash_v.try_into().map_err(|_| Error::InvalidLength("mutations_hash"))?,
+            signer: signer_v.try_into().map_err(|_| Error::InvalidLength("signer"))?,
+            signature: signature_v.try_into().map_err(|_| Error::InvalidLength("signature"))?,
+        })
+    }
+
+    /// Parse from legacy ETF map (for backwards compatibility)
     #[instrument(skip(map), name = "Attestation::from_etf_map", err)]
     pub fn from_etf_map(map: &eetf::Map) -> Result<Self, Error> {
         let entry_hash_v = map
@@ -236,7 +258,14 @@ impl Attestation {
     pub fn unpack_from_db(data: &[u8]) -> Option<Self> {
         use amadeus_utils::vecpak::{self, Term as VTerm};
 
-        let term = vecpak::decode(data).ok()?;
+        // try vecpak format first (new format)
+        let term = match vecpak::decode_seemingly_etf_to_vecpak(data) {
+            Ok(t) => t,
+            Err(_) => {
+                // fallback to ETF format (legacy format)
+                return Self::from_etf_bin(data).ok();
+            }
+        };
 
         if let VTerm::PropList(props) = term {
             let mut entry_hash = None;

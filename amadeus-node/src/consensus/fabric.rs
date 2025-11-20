@@ -283,7 +283,7 @@ impl Fabric {
             format!("consensus:{}:{}", hex::encode(&consensus.entry_hash), hex::encode(&consensus.mutations_hash));
 
         if let Some(existing_bin) = self.db.get(CF_ATTESTATION, key.as_bytes())? {
-            if let Ok(existing_term) = vecpak::decode(&existing_bin) {
+            if let Ok(existing_term) = vecpak::decode_seemingly_etf_to_vecpak(&existing_bin) {
                 if let Some(existing_mask) = extract_mask_from_consensus_term(&existing_term) {
                     if existing_mask.all()
                         || (!consensus.mask.is_empty() && existing_mask.count_ones() >= consensus.mask.count_ones())
@@ -371,7 +371,7 @@ impl Fabric {
                 if parts.len() >= 3 {
                     if let Ok(mutations_hash) = hex::decode(parts[2]) {
                         if mutations_hash.len() == 32 {
-                            if let Ok(term) = vecpak::decode(&value) {
+                            if let Ok(term) = vecpak::decode_seemingly_etf_to_vecpak(&value) {
                                 if let Some(stored) = parse_stored_consensus_from_vecpak(term) {
                                     let mut hash_array = [0u8; 32];
                                     hash_array.copy_from_slice(&mutations_hash);

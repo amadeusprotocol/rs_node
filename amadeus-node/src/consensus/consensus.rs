@@ -65,7 +65,8 @@ impl Consensus {
     pub fn from_etf_bin(bin: &[u8]) -> Result<Self, Error> {
         use amadeus_utils::vecpak;
 
-        let consensus_term = vecpak::decode(bin).map_err(|_e| Error::WrongType("vecpak decode failed"))?;
+        let consensus_term =
+            vecpak::decode_seemingly_etf_to_vecpak(bin).map_err(|_e| Error::WrongType("vecpak decode failed"))?;
 
         Self::from_vecpak_term(consensus_term).ok_or(Error::WrongType("from_vecpak_term failed"))
     }
@@ -1015,8 +1016,10 @@ pub fn get_softfork_settings() -> SoftforkSettings {
 }
 
 pub async fn proc_entries(fabric: &Fabric, config: &crate::config::Config, ctx: &crate::Context) -> Result<(), Error> {
-    // Skip processing if no temporal_tip or if entry data not available yet
-    fabric.get_temporal_entry()?.ok_or(Error::Missing("temporal_tip"))?;
+    // skip processing if no temporal_tip or if entry data not available yet
+    if fabric.get_temporal_entry()?.is_none() {
+        return Ok(());
+    }
 
     let softfork_settings = get_softfork_settings();
 

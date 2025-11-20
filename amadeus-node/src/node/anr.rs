@@ -4,6 +4,7 @@ use crate::utils::bls12_381::{sign, verify};
 use crate::utils::misc::{TermExt, TermMap, get_unix_secs_now};
 use crate::utils::safe_etf::u32_to_term;
 use crate::utils::version::Ver;
+use amadeus_utils::vecpak;
 use eetf::{Atom, Binary, Term};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -213,6 +214,68 @@ impl Anr {
         Self::from_etf_term_map(anr_map)
     }
 
+    /// Parse ANR from vecpak PropListMap (primary format)
+    pub fn from_vecpak_map(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        use amadeus_utils::vecpak::VecpakExt;
+
+        // ip4 is stored as string in elixir format: "127.0.0.1"
+        let ip4_str = map.get_string(b"ip4").ok_or(Error::BadEtf("ip4"))?;
+        let ip4 = ip4_str.parse::<Ipv4Addr>().map_err(|_| Error::BadEtf("ip4_parse"))?;
+
+        let pk = map.get_binary::<[u8; 48]>(b"pk").ok_or(Error::BadEtf("pk"))?;
+        let pop = map.get_binary::<Vec<u8>>(b"pop").ok_or(Error::BadEtf("pop"))?;
+        let port = map.get_integer::<u16>(b"port").ok_or(Error::BadEtf("port"))?;
+        let signature = map.get_binary::<Vec<u8>>(b"signature").ok_or(Error::BadEtf("signature"))?;
+
+        // handle timestamp - try u32 first, fallback to u64 for compatibility
+        let ts = map
+            .get_integer::<u32>(b"ts")
+            .or_else(|| map.get_integer::<u64>(b"ts").map(|v| v as u32))
+            .ok_or(Error::BadEtf("ts"))?;
+
+        let version_bytes = map.get_binary::<Vec<u8>>(b"version").ok_or(Error::BadEtf("version"))?;
+        let version_str = String::from_utf8_lossy(&version_bytes);
+        let version = Ver::try_from(version_str.as_ref()).map_err(|_| Error::BadEtf("invalid_version_format"))?;
+
+        // parse optional anr_name and anr_desc fields (they may be nil atom or binary)
+        let anr_name = map
+            .get_binary::<Vec<u8>>(b"anr_name")
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .filter(|s| !s.is_empty());
+
+        let anr_desc = map
+            .get_binary::<Vec<u8>>(b"anr_desc")
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .filter(|s| !s.is_empty());
+
+        // Compute Blake3 hash fields for indexing (v1.1.8 compatibility)
+        let pk_b3 = blake3::hash(&pk);
+        let mut pk_b3_f4 = [0u8; 4];
+        pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+
+        Ok(Self {
+            ip4,
+            pk,
+            pop,
+            port,
+            signature,
+            ts,
+            version,
+            anr_name,
+            anr_desc,
+            handshaked: false,
+            hasChainPop: false,
+            error: None,
+            error_tries: 0,
+            next_check: 0,
+            pk_b3,
+            pk_b3_f4,
+            proto_reqs: HashMap::new(),
+            udp_packets: 0,
+        })
+    }
+
+    /// Parse ANR from legacy ETF TermMap (for backwards compatibility)
     pub fn from_etf_term_map(map: TermMap) -> Result<Self, Error> {
         // ip4 is stored as string in elixir format: "127.0.0.1"
         let ip4_str = map.get_string("ip4").ok_or(Error::BadEtf("ip4"))?;
@@ -314,10 +377,10 @@ impl Anr {
     }
 
     pub fn to_vecpak_for_signing(&self) -> Vec<u8> {
-        // Convert ANR to vecpak format for signing (matching Elixir's RDB.vecpak_encode)
-        use crate::utils::vecpak_compat::encode_etf_as_vecpak;
-        let term = self.to_etf_term_without_signature();
-        encode_etf_as_vecpak(&term)
+        // convert ANR to vecpak format for signing (matching Elixir's RDB.vecpak_encode)
+        use amadeus_utils::vecpak::encode;
+        let term = self.to_vecpak_term_without_signature();
+        encode(term)
     }
 
     pub fn to_etf_bin_for_signing(&self) -> Vec<u8> {
@@ -367,6 +430,44 @@ impl Anr {
         );
 
         map.into_term()
+    }
+
+    pub fn to_vecpak_term(&self) -> vecpak::Term {
+        let mut pairs = self.to_vecpak_term_without_signature();
+        if let vecpak::Term::PropList(ref mut p) = pairs {
+            p.push((vecpak::Term::Binary(b"signature".to_vec()), vecpak::Term::Binary(self.signature.clone())));
+        }
+        pairs
+    }
+
+    fn to_vecpak_term_without_signature(&self) -> vecpak::Term {
+        let mut pairs = Vec::new();
+
+        // NOTE: anr_desc and anr_name are only included if they have a value.
+        // if they're None, the field is NOT added to the map. this matches
+        // elixir behavior where nil fields are not added during signing.
+        if let Some(desc) = &self.anr_desc {
+            pairs.push((vecpak::Term::Binary(b"anr_desc".to_vec()), vecpak::Term::Binary(desc.as_bytes().to_vec())));
+        }
+
+        if let Some(name) = &self.anr_name {
+            pairs.push((vecpak::Term::Binary(b"anr_name".to_vec()), vecpak::Term::Binary(name.as_bytes().to_vec())));
+        }
+
+        pairs.push((
+            vecpak::Term::Binary(b"ip4".to_vec()),
+            vecpak::Term::Binary(self.ip4.to_string().as_bytes().to_vec()),
+        ));
+        pairs.push((vecpak::Term::Binary(b"pk".to_vec()), vecpak::Term::Binary(self.pk.to_vec())));
+        pairs.push((vecpak::Term::Binary(b"pop".to_vec()), vecpak::Term::Binary(self.pop.clone())));
+        pairs.push((vecpak::Term::Binary(b"port".to_vec()), vecpak::Term::VarInt(self.port as i128)));
+        pairs.push((vecpak::Term::Binary(b"ts".to_vec()), vecpak::Term::VarInt(self.ts as i128)));
+        pairs.push((
+            vecpak::Term::Binary(b"version".to_vec()),
+            vecpak::Term::Binary(self.version.to_string().as_bytes().to_vec()),
+        ));
+
+        vecpak::Term::PropList(pairs)
     }
 
     // unpack anr with port validation like elixir
@@ -1029,27 +1130,34 @@ mod tests {
 
         let encoded = anr_with_optionals.to_etf_bin_for_signing();
 
-        // Try to decode the ETF
-        match Term::decode(&encoded[..]) {
+        // Try to decode the vecpak
+        use amadeus_utils::vecpak::{Term as VTerm, VecpakExt, decode_seemingly_etf_to_vecpak};
+        match decode_seemingly_etf_to_vecpak(&encoded) {
             Ok(decoded) => {
-                if let Term::Map(map) = decoded {
+                if let Some(map) = decoded.get_proplist_map() {
                     // Verify the map has the expected number of entries after the fix
-                    let actual_count = map.map.len();
+                    let actual_count = map.0.len();
                     let expected_count = 8; // 6 base + 2 optional fields
                     assert_eq!(actual_count, expected_count, "Map should have {} entries", expected_count);
 
                     // Verify all expected fields are present
-                    let expected_fields = ["ip4", "pk", "pop", "port", "ts", "version", "anr_name", "anr_desc"];
-                    for field_name in &expected_fields {
-                        let field_key = Term::Atom(Atom::from(*field_name));
-                        assert!(map.map.contains_key(&field_key), "Field '{}' should be present", field_name);
+                    let expected_fields: &[&[u8]] =
+                        &[b"ip4", b"pk", b"pop", b"port", b"ts", b"version", b"anr_name", b"anr_desc"];
+                    for field_name in expected_fields {
+                        assert!(
+                            map.get_binary::<Vec<u8>>(field_name).is_some()
+                                || map.get_string(field_name).is_some()
+                                || map.get_varint::<i64>(field_name).is_some(),
+                            "Field '{:?}' should be present",
+                            std::str::from_utf8(field_name)
+                        );
                     }
                 } else {
                     panic!("Decoded term is not a map!");
                 }
             }
             Err(e) => {
-                panic!("Failed to decode ETF: {:?}", e);
+                panic!("Failed to decode vecpak: {:?}", e);
             }
         }
     }

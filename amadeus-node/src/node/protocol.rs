@@ -14,7 +14,7 @@ use crate::utils::bls12_381;
 use crate::utils::misc::{TermExt, TermMap, Typename, get_unix_millis_now, serialize_list};
 use crate::utils::safe_etf::{encode_safe, u64_to_term};
 use crate::utils::vecpak_compat;
-use eetf::convert::TryAsRef;
+use amadeus_utils::vecpak::{self as vecpak, PropListMap, VecpakExt};
 use eetf::{Atom, Binary, DecodeError as EtfDecodeError, EncodeError as EtfEncodeError, List, Map, Term};
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -23,27 +23,32 @@ use std::net::{Ipv4Addr, SocketAddr};
 use tracing::instrument;
 use tracing::warn;
 
-/// Every object that has this trait must be convertible from an Erlang ETF
+/// Every object that has this trait must be convertible from a Vecpak
 /// Binary representation and must be able to handle itself as a message
 #[async_trait::async_trait]
 pub trait Protocol: Typename + Debug + Send + Sync {
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error>
+    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error>
     where
         Self: Sized;
     /// Convert to ETF binary format for network transmission
     fn to_etf_bin(&self) -> Result<Vec<u8>, Error>;
+    /// Convert to vecpak binary format (default converts from ETF, override for direct vecpak)
+    fn to_vecpak_bin(&self) -> Result<Vec<u8>, Error> {
+        // default implementation: convert ETF to vecpak (can be overridden for direct encoding)
+        let etf_bin = self.to_etf_bin()?;
+        let etf_term = Term::decode(&etf_bin[..]).map_err(Error::EtfDecode)?;
+        Ok(vecpak_compat::encode_etf_as_vecpak(&etf_term))
+    }
     /// Handle a message returning instructions for upper layers
     async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error>;
 
     /// Convert to binary format based on version (vecpak for v1.2.3+, ETF for older)
     fn to_bin(&self, version: crate::Ver) -> Result<Vec<u8>, Error> {
-        let etf_bin = self.to_etf_bin()?;
         if version >= crate::Ver::new(1, 2, 3) {
             // v1.2.3+ uses vecpak encoding
-            let etf_term = Term::decode(&etf_bin[..]).map_err(Error::EtfDecode)?;
-            Ok(vecpak_compat::encode_etf_as_vecpak(&etf_term))
+            self.to_vecpak_bin()
         } else {
-            Ok(etf_bin)
+            self.to_etf_bin()
         }
     }
 
@@ -99,7 +104,7 @@ pub enum Error {
     #[error("No ANR found for destination IP: {0}")]
     NoAnrForDestination(Ipv4Addr),
     #[error("vecpak decode error: {0}")]
-    VecpakDecode(String),
+    Vecpak(String),
 }
 
 impl Typename for Error {
@@ -134,43 +139,35 @@ impl Typename for Instruction {
 }
 
 /// Does proto parsing and validation
-/// Supports both ETF (Erlang Term Format) and Vecpak (version 7) formats
-#[instrument(skip(bin), name = "Proto::from_etf_validated")]
-pub fn parse_etf_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
-    // determine format based on first byte
-    // ETF starts with version 131, vecpak with tags 0-7
-    let term = if vecpak_compat::is_vecpak(bin) {
-        vecpak_compat::parse_vecpak_to_etf(bin).map_err(Error::VecpakDecode)?
-    } else {
-        Term::decode(bin)?
-    };
+/// Primary format is Vecpak; legacy ETF is auto-converted
+#[instrument(skip(bin), name = "Proto::from_vecpak_validated")]
+pub fn parse_vecpak_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
+    use amadeus_utils::vecpak::{VecpakExt, decode_seemingly_etf_to_vecpak};
 
-    let map = term.get_term_map().ok_or(Error::BadEtf("map"))?;
+    // decode as vecpak (auto-detects and converts legacy ETF if needed)
+    let term = decode_seemingly_etf_to_vecpak(bin).map_err(|e| Error::Vecpak(e.to_string()))?;
 
-    // `op` determines the variant (can be atom or binary string from vecpak)
-    let op_name = if let Some(atom) = map.get_atom("op") {
-        atom.name.clone()
-    } else if let Some(s) = map.get_string("op") {
-        s
-    } else {
-        return Err(Error::BadEtf("op"));
-    };
+    // get PropListMap from the term
+    let map = term.get_proplist_map().ok_or(Error::BadEtf("map"))?;
+
+    // `op` determines the variant (binary string key in vecpak)
+    let op_name = map.get_string(b"op").ok_or(Error::BadEtf("op"))?;
     let proto: Box<dyn Protocol> = match op_name.as_str() {
-        Ping::TYPENAME => Box::new(Ping::from_etf_map_validated(map)?),
-        PingReply::TYPENAME => Box::new(PingReply::from_etf_map_validated(map)?),
-        Entry::TYPENAME => Box::new(Entry::from_etf_map_validated(map)?),
-        EventTip::TYPENAME => Box::new(EventTip::from_etf_map_validated(map)?),
-        EventAttestation::TYPENAME => Box::new(EventAttestation::from_etf_map_validated(map)?),
-        Solution::TYPENAME => Box::new(Solution::from_etf_map_validated(map)?),
-        EventTx::TYPENAME => Box::new(EventTx::from_etf_map_validated(map)?),
-        GetPeerAnrs::TYPENAME => Box::new(GetPeerAnrs::from_etf_map_validated(map)?),
-        GetPeerAnrsReply::TYPENAME => Box::new(GetPeerAnrsReply::from_etf_map_validated(map)?),
-        NewPhoneWhoDis::TYPENAME => Box::new(NewPhoneWhoDis::from_etf_map_validated(map)?),
-        NewPhoneWhoDisReply::TYPENAME => Box::new(NewPhoneWhoDisReply::from_etf_map_validated(map)?),
-        SpecialBusiness::TYPENAME => Box::new(SpecialBusiness::from_etf_map_validated(map)?),
-        SpecialBusinessReply::TYPENAME => Box::new(SpecialBusinessReply::from_etf_map_validated(map)?),
-        Catchup::TYPENAME => Box::new(Catchup::from_etf_map_validated(map)?),
-        CatchupReply::TYPENAME => Box::new(CatchupReply::from_etf_map_validated(map)?),
+        Ping::TYPENAME => Box::new(Ping::from_vecpak_map_validated(map)?),
+        PingReply::TYPENAME => Box::new(PingReply::from_vecpak_map_validated(map)?),
+        Entry::TYPENAME => Box::new(Entry::from_vecpak_map_validated(map)?),
+        EventTip::TYPENAME => Box::new(EventTip::from_vecpak_map_validated(map)?),
+        EventAttestation::TYPENAME => Box::new(EventAttestation::from_vecpak_map_validated(map)?),
+        Solution::TYPENAME => Box::new(Solution::from_vecpak_map_validated(map)?),
+        EventTx::TYPENAME => Box::new(EventTx::from_vecpak_map_validated(map)?),
+        GetPeerAnrs::TYPENAME => Box::new(GetPeerAnrs::from_vecpak_map_validated(map)?),
+        GetPeerAnrsReply::TYPENAME => Box::new(GetPeerAnrsReply::from_vecpak_map_validated(map)?),
+        NewPhoneWhoDis::TYPENAME => Box::new(NewPhoneWhoDis::from_vecpak_map_validated(map)?),
+        NewPhoneWhoDisReply::TYPENAME => Box::new(NewPhoneWhoDisReply::from_vecpak_map_validated(map)?),
+        SpecialBusiness::TYPENAME => Box::new(SpecialBusiness::from_vecpak_map_validated(map)?),
+        SpecialBusinessReply::TYPENAME => Box::new(SpecialBusinessReply::from_vecpak_map_validated(map)?),
+        Catchup::TYPENAME => Box::new(Catchup::from_vecpak_map_validated(map)?),
+        CatchupReply::TYPENAME => Box::new(CatchupReply::from_vecpak_map_validated(map)?),
         _ => return Err(Error::BadEtf("op")),
     };
 
@@ -191,11 +188,11 @@ impl Typename for EventTip {
 
 #[async_trait::async_trait]
 impl Protocol for EventTip {
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let temporal_term = map.get_term_map("temporal").ok_or(Error::BadEtf("temporal"))?;
-        let rooted_term = map.get_term_map("rooted").ok_or(Error::BadEtf("rooted"))?;
-        let temporal = EntrySummary::from_etf_term(&temporal_term)?;
-        let rooted = EntrySummary::from_etf_term(&rooted_term)?;
+    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        let temporal_term = map.get_proplist_map(b"temporal").ok_or(Error::BadEtf("temporal"))?;
+        let rooted_term = map.get_proplist_map(b"rooted").ok_or(Error::BadEtf("rooted"))?;
+        let temporal = EntrySummary::from_vecpak_map(&temporal_term)?;
+        let rooted = EntrySummary::from_vecpak_map(&rooted_term)?;
 
         Ok(Self { temporal, rooted })
     }
@@ -208,6 +205,16 @@ impl Protocol for EventTip {
         let etf_data = encode_safe(&term);
 
         Ok(etf_data)
+    }
+
+    fn to_vecpak_bin(&self) -> Result<Vec<u8>, Error> {
+        use amadeus_utils::vecpak::encode;
+        let pairs = vec![
+            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
+            (vecpak::Term::Binary(b"temporal".to_vec()), self.temporal.to_vecpak_term()),
+            (vecpak::Term::Binary(b"rooted".to_vec()), self.rooted.to_vecpak_term()),
+        ];
+        Ok(encode(vecpak::Term::PropList(pairs)))
     }
 
     #[instrument(skip(self, ctx), fields(src = %src), name = "EventTip::handle")]
@@ -300,19 +307,19 @@ impl Typename for Catchup {
 
 #[async_trait::async_trait]
 impl Protocol for Catchup {
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let height_flags_term = map.get_list("height_flags").ok_or(Error::BadEtf("height_flags"))?;
+    fn from_vecpak_map_validated(map: PropListMap) -> Result<Self, Error> {
+        let height_flags_term = map.get_list(b"height_flags").ok_or(Error::BadEtf("height_flags"))?;
         let mut height_flags = Vec::new();
 
         for item in height_flags_term {
-            if let Some(flag_map) = item.get_term_map() {
-                let height = flag_map.get_integer::<u64>("height").ok_or(Error::BadEtf("height"))?;
+            if let Some(flag_map) = item.get_proplist_map() {
+                let height = flag_map.get_integer::<u64>(b"height").ok_or(Error::BadEtf("height"))?;
 
-                let c = flag_map.get_atom("c").map(|a| a.name == "true");
-                let e = flag_map.get_atom("e").map(|a| a.name == "true");
-                let a = flag_map.get_atom("a").map(|a| a.name == "true");
+                let c = flag_map.get_string(b"c").map(|s| s == "true");
+                let e = flag_map.get_string(b"e").map(|s| s == "true");
+                let a = flag_map.get_string(b"a").map(|s| s == "true");
 
-                let hashes = flag_map.get_list("hashes").map(|hashes_list| {
+                let hashes = flag_map.get_list(b"hashes").map(|hashes_list| {
                     hashes_list.iter().filter_map(|h| h.get_binary().map(|bytes| bytes.to_vec())).collect()
                 });
 
@@ -390,26 +397,26 @@ impl Typename for CatchupReply {
 }
 
 impl CatchupReply {
-    /// Helper to parse Entry from ETF Map term
-    fn parse_entry_from_etf_map(map: &TermMap) -> Result<Entry, Error> {
+    /// Helper to parse Entry from vecpak PropListMap
+    fn parse_entry_from_vecpak_map(map: &amadeus_utils::vecpak::PropListMap) -> Result<Entry, Error> {
         use crate::consensus::doms::entry::{Entry, EntryHeader};
 
         // Extract header - it can be either:
         // 1. A binary (encoded header) - original ETF format
         // 2. A map (header fields) - vecpak/network format from Elixir
-        let header = if let Some(header_bin) = map.get_binary::<Vec<u8>>("header") {
+        let header = if let Some(header_bin) = map.get_binary::<Vec<u8>>(b"header") {
             // Case 1: header is already encoded as binary (original format)
             EntryHeader::from_etf_bin(&header_bin)?
-        } else if let Some(header_map) = map.get_term_map("header") {
+        } else if let Some(header_map) = map.get_proplist_map(b"header") {
             // Case 2: header is a map with fields (vecpak/network format)
-            let height = header_map.get_integer("height").ok_or(Error::BadEtf("height"))?;
-            let slot = header_map.get_integer("slot").ok_or(Error::BadEtf("slot"))?;
-            let prev_slot = header_map.get_integer("prev_slot").ok_or(Error::BadEtf("prev_slot"))?;
-            let prev_hash = header_map.get_binary("prev_hash").ok_or(Error::BadEtf("prev_hash"))?;
-            let dr = header_map.get_binary("dr").ok_or(Error::BadEtf("dr"))?;
-            let vr = header_map.get_binary("vr").ok_or(Error::BadEtf("vr"))?;
-            let signer = header_map.get_binary("signer").ok_or(Error::BadEtf("signer"))?;
-            let txs_hash = header_map.get_binary("txs_hash").ok_or(Error::BadEtf("txs_hash"))?;
+            let height = header_map.get_integer(b"height").ok_or(Error::BadEtf("height"))?;
+            let slot = header_map.get_integer(b"slot").ok_or(Error::BadEtf("slot"))?;
+            let prev_slot = header_map.get_integer(b"prev_slot").ok_or(Error::BadEtf("prev_slot"))?;
+            let prev_hash = header_map.get_binary(b"prev_hash").ok_or(Error::BadEtf("prev_hash"))?;
+            let dr = header_map.get_binary(b"dr").ok_or(Error::BadEtf("dr"))?;
+            let vr = header_map.get_binary(b"vr").ok_or(Error::BadEtf("vr"))?;
+            let signer = header_map.get_binary(b"signer").ok_or(Error::BadEtf("signer"))?;
+            let txs_hash = header_map.get_binary(b"txs_hash").ok_or(Error::BadEtf("txs_hash"))?;
 
             EntryHeader { height, slot, prev_slot, prev_hash, dr, vr, signer, txs_hash }
         } else {
@@ -417,16 +424,16 @@ impl CatchupReply {
         };
 
         // Extract txs
-        let txs_list = map.get_list("txs").ok_or_else(|| Error::BadEtf("entry txs"))?;
+        let txs_list = map.get_list(b"txs").ok_or_else(|| Error::BadEtf("entry txs"))?;
         let txs: Vec<Vec<u8>> =
             txs_list.iter().filter_map(|term| term.get_binary().map(|b: &[u8]| b.to_vec())).collect();
 
         // Extract hash
-        let hash_bytes: &[u8] = map.get_binary("hash").ok_or_else(|| Error::BadEtf("entry hash"))?;
+        let hash_bytes: &[u8] = map.get_binary(b"hash").ok_or_else(|| Error::BadEtf("entry hash"))?;
         let hash: [u8; 32] = hash_bytes.try_into().map_err(|_| Error::BadEtf("entry hash size"))?;
 
         // Extract signature
-        let sig_bytes: &[u8] = map.get_binary("signature").ok_or_else(|| Error::BadEtf("entry signature"))?;
+        let sig_bytes: &[u8] = map.get_binary(b"signature").ok_or_else(|| Error::BadEtf("entry signature"))?;
         let signature: [u8; 96] = sig_bytes.try_into().map_err(|_| Error::BadEtf("entry signature size"))?;
 
         // mask is optional
@@ -435,33 +442,33 @@ impl CatchupReply {
         Ok(Entry { header, txs, hash, signature, mask })
     }
 
-    /// Helper to parse Consensus from ETF Map term
-    fn parse_consensus_from_etf_map(map: &TermMap) -> Result<Consensus, Error> {
+    /// Helper to parse Consensus from vecpak PropListMap
+    fn parse_consensus_from_vecpak_map(map: &amadeus_utils::vecpak::PropListMap) -> Result<Consensus, Error> {
         use crate::consensus::consensus::Consensus;
         use crate::utils::misc::bin_to_bitvec;
 
         // Extract entry_hash
         let entry_hash_bytes: &[u8] =
-            map.get_binary("entry_hash").ok_or_else(|| Error::BadEtf("consensus entry_hash"))?;
+            map.get_binary(b"entry_hash").ok_or_else(|| Error::BadEtf("consensus entry_hash"))?;
         let entry_hash: [u8; 32] =
             entry_hash_bytes.try_into().map_err(|_| Error::BadEtf("consensus entry_hash size"))?;
 
         // Extract mutations_hash
         let mutations_hash_bytes: &[u8] =
-            map.get_binary("mutations_hash").ok_or_else(|| Error::BadEtf("consensus mutations_hash"))?;
+            map.get_binary(b"mutations_hash").ok_or_else(|| Error::BadEtf("consensus mutations_hash"))?;
         let mutations_hash: [u8; 32] =
             mutations_hash_bytes.try_into().map_err(|_| Error::BadEtf("consensus mutations_hash size"))?;
 
         // Extract aggsig map
-        let aggsig_map = map.get_term_map("aggsig").ok_or_else(|| Error::BadEtf("consensus aggsig"))?;
+        let aggsig_map = map.get_proplist_map(b"aggsig").ok_or_else(|| Error::BadEtf("consensus aggsig"))?;
 
         // Extract mask from aggsig
-        let mask_bytes: &[u8] = aggsig_map.get_binary("mask").ok_or_else(|| Error::BadEtf("consensus aggsig mask"))?;
+        let mask_bytes: &[u8] = aggsig_map.get_binary(b"mask").ok_or_else(|| Error::BadEtf("consensus aggsig mask"))?;
         let mask = bin_to_bitvec(mask_bytes.to_vec());
 
         // Extract aggsig signature
         let agg_sig_bytes: &[u8] =
-            aggsig_map.get_binary("aggsig").ok_or_else(|| Error::BadEtf("consensus aggsig aggsig"))?;
+            aggsig_map.get_binary(b"aggsig").ok_or_else(|| Error::BadEtf("consensus aggsig aggsig"))?;
         let agg_sig: [u8; 96] = agg_sig_bytes.try_into().map_err(|_| Error::BadEtf("consensus aggsig size"))?;
 
         Ok(Consensus { entry_hash, mutations_hash, mask, agg_sig })
@@ -470,22 +477,22 @@ impl CatchupReply {
 
 #[async_trait::async_trait]
 impl Protocol for CatchupReply {
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let tries_term = map.get_list("tries").ok_or(Error::BadEtf("tries"))?;
+    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        let tries_term = map.get_list(b"tries").ok_or(Error::BadEtf("tries"))?;
         let mut tries = Vec::new();
 
         for item in tries_term.iter() {
-            if let Some(trie_map) = item.get_term_map() {
-                let height = trie_map.get_integer::<u64>("height").ok_or(Error::BadEtf("height"))?;
+            if let Some(trie_map) = item.get_proplist_map() {
+                let height = trie_map.get_integer::<u64>(b"height").ok_or(Error::BadEtf("height"))?;
 
-                let entries = trie_map.get_list("entries").and_then(|list| {
+                let entries = trie_map.get_list(b"entries").and_then(|list| {
                     let parsed: Vec<Entry> = list
                         .iter()
                         .filter_map(|term| {
                             if let Some(bytes) = term.get_binary() {
                                 Entry::unpack(bytes).ok()
-                            } else if let Some(entry_map) = term.get_term_map() {
-                                Self::parse_entry_from_etf_map(&entry_map).ok()
+                            } else if let Some(entry_map) = term.get_proplist_map() {
+                                Self::parse_entry_from_vecpak_map(&entry_map).ok()
                             } else {
                                 None
                             }
@@ -494,29 +501,31 @@ impl Protocol for CatchupReply {
                     if parsed.is_empty() { None } else { Some(parsed) }
                 });
 
-                let attestations = trie_map.get_list("attestations").and_then(|list| {
+                let attestations = trie_map.get_list(b"attestations").and_then(|list| {
                     let parsed: Vec<Attestation> = list
                         .iter()
                         .filter_map(|term| {
+                            // Try binary format first, then PropList format
                             if let Some(bytes) = term.get_binary() {
                                 Attestation::from_etf_bin(bytes).ok()
+                            } else if let Some(att_map) = term.get_proplist_map() {
+                                Attestation::from_vecpak_map(&att_map).ok()
                             } else {
-                                let etf_bytes = encode_safe(term);
-                                Attestation::from_etf_bin(&etf_bytes).ok()
+                                None
                             }
                         })
                         .collect();
                     if parsed.is_empty() { None } else { Some(parsed) }
                 });
 
-                let consensuses = trie_map.get_list("consensuses").and_then(|list| {
+                let consensuses = trie_map.get_list(b"consensuses").and_then(|list| {
                     let parsed: Vec<Consensus> = list
                         .iter()
                         .filter_map(|term| {
                             if let Some(bytes) = term.get_binary() {
                                 Consensus::from_etf_bin(bytes).ok()
-                            } else if let Some(consensus_map) = term.get_term_map() {
-                                Self::parse_consensus_from_etf_map(&consensus_map).ok()
+                            } else if let Some(consensus_map) = term.get_proplist_map() {
+                                Self::parse_consensus_from_vecpak_map(&consensus_map).ok()
                             } else {
                                 None
                             }
@@ -626,8 +635,8 @@ impl Typename for Ping {
 
 #[async_trait::async_trait]
 impl Protocol for Ping {
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let ts_m = map.get_integer("ts_m").ok_or(Error::BadEtf("ts_m"))?;
+    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        let ts_m = map.get_integer(b"ts_m").ok_or(Error::BadEtf("ts_m"))?;
         Ok(Self { ts_m })
     }
 
@@ -669,8 +678,8 @@ impl Typename for PingReply {
 
 #[async_trait::async_trait]
 impl Protocol for PingReply {
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let ts_m = map.get_integer("ts_m").ok_or(Error::BadEtf("ts_m"))?;
+    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        let ts_m = map.get_integer(b"ts_m").ok_or(Error::BadEtf("ts_m"))?;
         let seen_time_ms = get_unix_millis_now();
         // check what else must be validated
         Ok(Self { ts_m: ts_m, seen_time: seen_time_ms })
@@ -709,9 +718,9 @@ impl Typename for EventTx {
 
 #[async_trait::async_trait]
 impl Protocol for EventTx {
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
+    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
         // txs_packed is a list of binary transaction packets, not a single binary
-        let txs_list = map.get_list("txs_packed").ok_or(Error::BadEtf("txs_packed"))?;
+        let txs_list = map.get_list(b"txs_packed").ok_or(Error::BadEtf("txs_packed"))?;
         let valid_txs = EventTx::get_valid_txs_from_list(txs_list)?;
         Ok(Self { valid_txs })
     }
@@ -736,13 +745,15 @@ impl Protocol for EventTx {
 impl EventTx {
     pub const TYPENAME: &'static str = "event_tx";
 
-    fn get_valid_txs_from_list(txs_list: &[Term]) -> Result<Vec<Vec<u8>>, Error> {
+    fn get_valid_txs_from_list(txs_list: &[amadeus_utils::vecpak::Term]) -> Result<Vec<Vec<u8>>, Error> {
+        use amadeus_utils::vecpak::Term as VTerm;
+
         let mut good: Vec<Vec<u8>> = Vec::with_capacity(txs_list.len());
 
         for t in txs_list {
             // each item must be a binary (a packed transaction)
-            let bin = if let Some(b) = TryAsRef::<Binary>::try_as_ref(t) {
-                b.bytes.as_slice()
+            let bin = if let VTerm::Binary(b) = t {
+                b.as_slice()
             } else {
                 // skip non-binary entries silently
                 continue;
@@ -771,8 +782,8 @@ impl Typename for GetPeerAnrs {
 
 #[async_trait::async_trait]
 impl Protocol for GetPeerAnrs {
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let list = map.get_list("hasPeersb3f4").ok_or(Error::BadEtf("hasPeersb3f4"))?;
+    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        let list = map.get_list(b"hasPeersb3f4").ok_or(Error::BadEtf("hasPeersb3f4"))?;
         let mut has_peers_b3f4 = Vec::<[u8; 4]>::new();
         for t in list {
             use std::convert::TryInto;
@@ -820,12 +831,12 @@ impl Typename for GetPeerAnrsReply {
 
 #[async_trait::async_trait]
 impl Protocol for GetPeerAnrsReply {
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let list = map.get_list("anrs").ok_or(Error::BadEtf("anrs"))?;
+    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        let list = map.get_list(b"anrs").ok_or(Error::BadEtf("anrs"))?;
         let mut anrs = Vec::new();
         for term in list {
-            let anr_map = term.get_term_map().ok_or(Error::BadEtf("anr_map"))?;
-            let anr = Anr::from_etf_term_map(anr_map)?;
+            let anr_map = term.get_proplist_map().ok_or(Error::BadEtf("anr_map"))?;
+            let anr = Anr::from_vecpak_map(anr_map)?;
             if anr.verify_signature() {
                 anrs.push(anr);
             }
@@ -841,6 +852,16 @@ impl Protocol for GetPeerAnrsReply {
         let term = Term::from(Map { map: m });
         let etf_data = encode_safe(&term);
         Ok(etf_data)
+    }
+
+    fn to_vecpak_bin(&self) -> Result<Vec<u8>, Error> {
+        use amadeus_utils::vecpak::encode;
+        let anr_terms: Vec<vecpak::Term> = self.anrs.iter().map(|anr| anr.to_vecpak_term()).collect();
+        let pairs = vec![
+            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
+            (vecpak::Term::Binary(b"anrs".to_vec()), vecpak::Term::List(anr_terms)),
+        ];
+        Ok(encode(vecpak::Term::PropList(pairs)))
     }
 
     async fn handle(&self, ctx: &Context, _src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
@@ -866,7 +887,7 @@ impl Typename for NewPhoneWhoDis {
 
 #[async_trait::async_trait]
 impl Protocol for NewPhoneWhoDis {
-    fn from_etf_map_validated(_map: TermMap) -> Result<Self, Error> {
+    fn from_vecpak_map_validated(_map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
         // v1.1.7+ simplified - no fields to parse
         Ok(Self {})
     }
@@ -907,9 +928,9 @@ impl Typename for NewPhoneWhoDisReply {
 
 #[async_trait::async_trait]
 impl Protocol for NewPhoneWhoDisReply {
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let anr_map = map.get_term_map("anr").ok_or(Error::BadEtf("anr"))?;
-        let anr = Anr::from_etf_term_map(anr_map)?;
+    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        let anr_map = map.get_proplist_map(b"anr").ok_or(Error::BadEtf("anr"))?;
+        let anr = Anr::from_vecpak_map(anr_map)?;
 
         if !anr.verify_signature() {
             return Err(Error::BadEtf("anr_signature_invalid"));
@@ -923,6 +944,15 @@ impl Protocol for NewPhoneWhoDisReply {
         map.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
         map.insert(Term::Atom(Atom::from("anr")), self.anr.to_etf_term());
         Ok(encode_safe(&map.into_term()))
+    }
+
+    fn to_vecpak_bin(&self) -> Result<Vec<u8>, Error> {
+        use amadeus_utils::vecpak::encode;
+        let pairs = vec![
+            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
+            (vecpak::Term::Binary(b"anr".to_vec()), self.anr.to_vecpak_term()),
+        ];
+        Ok(encode(vecpak::Term::PropList(pairs)))
     }
 
     #[instrument(skip(self, ctx), fields(src = %src), name = "NewPhoneWhoDisReply::handle")]
@@ -967,8 +997,8 @@ impl Typename for SpecialBusiness {
 
 #[async_trait::async_trait]
 impl Protocol for SpecialBusiness {
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let business = map.get_binary::<Vec<u8>>("business").ok_or(Error::BadEtf("business"))?;
+    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        let business = map.get_binary::<Vec<u8>>(b"business").ok_or(Error::BadEtf("business"))?;
         Ok(Self { business })
     }
 
@@ -1005,8 +1035,8 @@ impl Typename for SpecialBusinessReply {
 
 #[async_trait::async_trait]
 impl Protocol for SpecialBusinessReply {
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, Error> {
-        let business = map.get_binary::<Vec<u8>>("business").ok_or(Error::BadEtf("business"))?;
+    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        let business = map.get_binary::<Vec<u8>>(b"business").ok_or(Error::BadEtf("business"))?;
         Ok(Self { business })
     }
 
@@ -1048,7 +1078,7 @@ mod tests {
         let bin = ping.to_etf_bin().expect("should serialize");
 
         // deserialize back
-        let result = parse_etf_bin(&bin).expect("should deserialize");
+        let result = parse_vecpak_bin(&bin).expect("should deserialize");
 
         // check that we get the right type
         assert_eq!(result.typename(), "ping");
@@ -1059,7 +1089,7 @@ mod tests {
         let pong = PingReply { ts_m: 1234567890, seen_time: 9876543210 };
 
         let bin = pong.to_etf_bin().expect("should serialize");
-        let result = parse_etf_bin(&bin).expect("should deserialize");
+        let result = parse_vecpak_bin(&bin).expect("should deserialize");
 
         // check that the result type is Pong
         assert_eq!(result.typename(), "ping_reply");
@@ -1070,7 +1100,7 @@ mod tests {
         let event_tx = EventTx { valid_txs: vec![vec![1, 2, 3], vec![4, 5, 6]] };
 
         let bin = event_tx.to_etf_bin().expect("should serialize");
-        let result = parse_etf_bin(&bin).expect("should deserialize");
+        let result = parse_vecpak_bin(&bin).expect("should deserialize");
 
         assert_eq!(result.typename(), "event_tx");
     }
@@ -1080,7 +1110,7 @@ mod tests {
         let peers = GetPeerAnrs { has_peers_b3f4: vec![[192, 168, 1, 1], [10, 0, 0, 1]] };
 
         let bin = peers.to_etf_bin().expect("should serialize");
-        let result = parse_etf_bin(&bin).expect("should deserialize");
+        let result = parse_vecpak_bin(&bin).expect("should deserialize");
 
         assert_eq!(result.typename(), "get_peer_anrs");
     }
@@ -1103,7 +1133,7 @@ mod tests {
 
         // roundtrip serialize/deserialize
         let bin = msg.to_etf_bin().expect("serialize");
-        let parsed = parse_etf_bin(&bin).expect("deserialize");
+        let parsed = parse_vecpak_bin(&bin).expect("deserialize");
         assert_eq!(parsed.typename(), "new_phone_who_dis");
 
         // Test that message can be parsed (handle_inner now does state updates directly)
@@ -1155,13 +1185,14 @@ mod tests {
         let bin = msg.to_etf_bin().expect("serialize NewPhoneWhoDis");
 
         // Deserialize back
-        let parsed = parse_etf_bin(&bin).expect("deserialize NewPhoneWhoDis");
+        let parsed = parse_vecpak_bin(&bin).expect("deserialize NewPhoneWhoDis");
         assert_eq!(parsed.typename(), "new_phone_who_dis");
 
         // Verify it deserializes correctly as NewPhoneWhoDis
-        if let Ok(_parsed_msg) =
-            NewPhoneWhoDis::from_etf_map_validated(Term::decode(&bin[..]).expect("decode").get_term_map().expect("map"))
-        {
+        use amadeus_utils::vecpak::{VecpakExt, decode_seemingly_etf_to_vecpak};
+        let term = decode_seemingly_etf_to_vecpak(&bin).expect("decode");
+        let map = term.get_proplist_map().expect("map");
+        if let Ok(_parsed_msg) = NewPhoneWhoDis::from_vecpak_map_validated(map) {
             // Success - the simplified format works correctly
             assert!(true);
         } else {
@@ -1173,12 +1204,12 @@ mod tests {
     async fn test_ping_ts_m_field_validation() {
         let ping = Ping::with_timestamp(1234567890);
         let valid_bin = ping.to_etf_bin().expect("should serialize");
-        let result = parse_etf_bin(&valid_bin);
+        let result = parse_vecpak_bin(&valid_bin);
         assert!(result.is_ok(), "Valid ping should parse successfully");
 
         let ping_reply = PingReply { ts_m: 1234567890, seen_time: 9876543210 };
         let valid_bin = ping_reply.to_etf_bin().expect("should serialize");
-        let result = parse_etf_bin(&valid_bin);
+        let result = parse_vecpak_bin(&valid_bin);
         assert!(result.is_ok(), "Valid ping_reply should parse successfully");
     }
 
@@ -1234,16 +1265,16 @@ mod tests {
         let decrypted_payload = received_encrypted_msg.decrypt(&shared_secret).expect("decrypt payload");
 
         // parse the decrypted payload back to ping
-        let parsed_proto = parse_etf_bin(&decrypted_payload).expect("parse decrypted payload");
+        let parsed_proto = parse_vecpak_bin(&decrypted_payload).expect("parse decrypted payload");
 
         // verify it's a ping with correct typename
         assert_eq!(parsed_proto.typename(), "ping");
 
         // parse again to get the actual ping struct for comparison
-        let decrypted_ping = Ping::from_etf_map_validated(
-            Term::decode(decrypted_payload.as_slice()).expect("decode").get_term_map().expect("map"),
-        )
-        .expect("parse ping");
+        use amadeus_utils::vecpak::{VecpakExt, decode_seemingly_etf_to_vecpak};
+        let term = decode_seemingly_etf_to_vecpak(&decrypted_payload).expect("decode");
+        let map = term.get_proplist_map().expect("map");
+        let decrypted_ping = Ping::from_vecpak_map_validated(map).expect("parse ping");
 
         // compare original and decrypted ping
         assert_eq!(original_ping.ts_m, decrypted_ping.ts_m, "ping timestamp should match after roundtrip");
@@ -1352,7 +1383,7 @@ mod tests {
 
         // Test Catchup serialization
         let catchup_bin = catchup.to_etf_bin().expect("should serialize catchup");
-        let parsed_catchup = parse_etf_bin(&catchup_bin).expect("should deserialize catchup");
+        let parsed_catchup = parse_vecpak_bin(&catchup_bin).expect("should deserialize catchup");
         assert_eq!(parsed_catchup.typename(), "catchup");
 
         // Test CatchupReply with actual structs
@@ -1395,7 +1426,7 @@ mod tests {
 
         // Test CatchupReply serialization
         let reply_bin = catchup_reply.to_etf_bin().expect("should serialize catchup_reply");
-        let parsed_reply = parse_etf_bin(&reply_bin).expect("should deserialize catchup_reply");
+        let parsed_reply = parse_vecpak_bin(&reply_bin).expect("should deserialize catchup_reply");
         assert_eq!(parsed_reply.typename(), "catchup_reply");
     }
 
@@ -1416,7 +1447,7 @@ mod tests {
         vecpak::encode_term(&mut vecpak_bin, vecpak_ping);
 
         // parse should detect vecpak and convert to protocol
-        let parsed = parse_etf_bin(&vecpak_bin).expect("should parse vecpak ping");
+        let parsed = parse_vecpak_bin(&vecpak_bin).expect("should parse vecpak ping");
         assert_eq!(parsed.typename(), "ping");
     }
 
@@ -1427,14 +1458,14 @@ mod tests {
 
         // ETF format starts with version 131
         let etf_data = [131u8, 104, 2]; // ETF tuple header
-        assert!(!vecpak_compat::is_vecpak(&etf_data));
+        assert!(!vecpak_compat::is_bin_vecpak(&etf_data));
 
         // vecpak format starts with tags 0-7
         let vecpak_data = [7u8, 1]; // proplist with 1 element
-        assert!(vecpak_compat::is_vecpak(&vecpak_data));
+        assert!(vecpak_compat::is_bin_vecpak(&vecpak_data));
 
         // empty data should not be vecpak
-        assert!(!vecpak_compat::is_vecpak(&[]));
+        assert!(!vecpak_compat::is_bin_vecpak(&[]));
     }
 
     #[tokio::test]
@@ -1563,7 +1594,7 @@ mod tests {
         let payload = original.to_bin(version).expect("should encode");
 
         // parse back - should detect vecpak and convert to protocol
-        let parsed = parse_etf_bin(&payload).expect("should parse vecpak");
+        let parsed = parse_vecpak_bin(&payload).expect("should parse vecpak");
         assert_eq!(parsed.typename(), "ping");
 
         // verify contents via dynamic dispatch (we know it's a Ping)
@@ -1578,7 +1609,7 @@ mod tests {
         let version = Ver::new(1, 2, 3);
         let payload = original.to_bin(version).expect("should encode");
 
-        let parsed = parse_etf_bin(&payload).expect("should parse vecpak");
+        let parsed = parse_vecpak_bin(&payload).expect("should parse vecpak");
         assert_eq!(parsed.typename(), "ping_reply");
 
         let re_encoded = parsed.to_bin(version).expect("should re-encode");
@@ -1602,7 +1633,7 @@ mod tests {
         let version = Ver::new(1, 2, 3);
         let payload = original.to_bin(version).expect("should encode");
 
-        let parsed = parse_etf_bin(&payload).expect("should parse vecpak");
+        let parsed = parse_vecpak_bin(&payload).expect("should parse vecpak");
         assert_eq!(parsed.typename(), "new_phone_who_dis_reply");
 
         let re_encoded = parsed.to_bin(version).expect("should re-encode");
@@ -1641,11 +1672,12 @@ mod tests {
         // Create NewPhoneWhoDisReply with our current structure
         let reply = NewPhoneWhoDisReply::new(test_anr.clone());
 
-        // Serialize to ETF using the Protocol trait method
-        let etf_bin = reply.to_etf_bin().unwrap();
+        // Serialize to vecpak using the Protocol trait method
+        let vecpak_bin = reply.to_etf_bin().unwrap();
 
         // Decode back to see the structure
-        let decoded_term = eetf::Term::decode(&etf_bin[..]).unwrap();
+        use amadeus_utils::vecpak::decode_seemingly_etf_to_vecpak;
+        let _decoded_term = decode_seemingly_etf_to_vecpak(&vecpak_bin).unwrap();
 
         // Now let's decode the packet from 72.9.144.110
         let received_hex = "0701020501026f700501176e65775f70686f6e655f77686f5f6469735f7265706c79050103616e720\
@@ -1660,24 +1692,12 @@ a150214e97167753444f6e27484cc0a3bb4c36822e5d4c2a40bd0db3f9264831cf917449ffbd";
 
         let received_bytes = hex::decode(received_hex).unwrap();
 
-        // Try to find and decode the ETF payload
-        // The packet appears to have some framing bytes before the ETF
-        let mut etf_start = None;
-        for i in 0..received_bytes.len() {
-            if received_bytes[i] == 0x83 {
-                // ETF magic byte
-                etf_start = Some(i);
-                break;
-            }
-        }
-
+        // The packet is in vecpak format
         // The packet structure appears to be:
         // {op: "new_phone_who_dis_reply", anr: {pk, ts, ip4, pop, port, version, signature}}
         // which matches our current implementation
         // Validation check - ensure the packet can be decoded
-        if let Some(start) = etf_start {
-            let _ = eetf::Term::decode(&received_bytes[start..]).expect("should decode ETF");
-        }
+        let _ = decode_seemingly_etf_to_vecpak(&received_bytes).expect("should decode vecpak");
     }
 
     #[tokio::test]
@@ -1686,7 +1706,7 @@ a150214e97167753444f6e27484cc0a3bb4c36822e5d4c2a40bd0db3f9264831cf917449ffbd";
         let version = Ver::new(1, 2, 3);
         let payload = original.to_bin(version).expect("should encode");
 
-        let parsed = parse_etf_bin(&payload).expect("should parse vecpak");
+        let parsed = parse_vecpak_bin(&payload).expect("should parse vecpak");
         assert_eq!(parsed.typename(), "get_peer_anrs");
 
         let re_encoded = parsed.to_bin(version).expect("should re-encode");
@@ -1702,7 +1722,7 @@ a150214e97167753444f6e27484cc0a3bb4c36822e5d4c2a40bd0db3f9264831cf917449ffbd";
         let version = Ver::new(1, 2, 3);
         let payload = original.to_bin(version).expect("should encode");
 
-        let parsed = parse_etf_bin(&payload).expect("should parse vecpak");
+        let parsed = parse_vecpak_bin(&payload).expect("should parse vecpak");
         assert_eq!(parsed.typename(), "event_tx");
 
         // re-encoding may differ because validation filters, so just check parsing works
@@ -1713,7 +1733,7 @@ a150214e97167753444f6e27484cc0a3bb4c36822e5d4c2a40bd0db3f9264831cf917449ffbd";
         // real packet from Elixir node at 167.235.169.185
         let packet = hex::decode("0701010501026f700501116e65775f70686f6e655f77686f5f646973").unwrap();
 
-        let parsed = parse_etf_bin(&packet).expect("should parse real elixir packet");
+        let parsed = parse_vecpak_bin(&packet).expect("should parse real elixir packet");
         assert_eq!(parsed.typename(), "new_phone_who_dis");
 
         // re-encode and compare
@@ -1727,7 +1747,7 @@ a150214e97167753444f6e27484cc0a3bb4c36822e5d4c2a40bd0db3f9264831cf917449ffbd";
         // real packet from Elixir node at 167.235.169.185
         let packet = hex::decode("0701020501026f700501176e65775f70686f6e655f77686f5f6469735f7265706c79050103616e72070107050102706b050130b0784b94452d7fe8c3fea4ad888a9d61f651724230c7a2e698dbcfe012f6c296e4697e294424f63387d86975f5625d8c05010274730304691a090105010369703405010f3136372e3233352e3136392e313835050103706f70050160a4f6f26879f471257dfafd80a45bacb37fc41cbdaaef9ac3d8242a1b45848c7e58d5af7c006d530a5a0c38bce2dba3db061c8a9b812f91ab145f6439bcaf8b35813c6136ef019a717986ea9a3f30bb5899549f6181f178c06b372dfad0c42c8d050104706f72740302906905010776657273696f6e050105312e322e350501097369676e6174757265050160a1a650a55aa67187e06b7d6ac7aca6e060ab4fe3a2447ab533502a909632bb729cdad4b9184ac29e8315f84d3124b04917e9e7a76a7c546b06987da0c1088d150d0a20473fa8735f6c6ffe618d5d2477a3be3f517617da090898ac40459f451a").unwrap();
 
-        let parsed = parse_etf_bin(&packet).expect("should parse real elixir new_phone_who_dis_reply");
+        let parsed = parse_vecpak_bin(&packet).expect("should parse real elixir new_phone_who_dis_reply");
         assert_eq!(parsed.typename(), "new_phone_who_dis_reply");
 
         // re-encode and compare structure (signature will differ so just check typename roundtrip)

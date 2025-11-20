@@ -1,4 +1,8 @@
-//! Vecpak to ETF compatibility layer
+//! **DEPRECATED**: Vecpak to ETF compatibility layer
+//!
+//! **This module is legacy code kept for backwards compatibility only.**
+//! The primary format is now vecpak (see vecpak.rs). ETF (Erlang Term Format) is legacy.
+//! Use `vecpak::decode_seemingly_etf_to_vecpak()` to auto-detect and convert ETF if needed.
 //!
 //! Provides conversion from vecpak::Term to eetf::Term for protocol parsing
 
@@ -27,11 +31,9 @@ pub fn to_etf_term(term: &vecpak::Term) -> eetf::Term {
         vecpak::Term::PropList(pairs) => {
             let mut map = HashMap::new();
             for (k, v) in pairs {
-                // convert binary keys to atoms for protocol compatibility
                 // in vecpak, keys are binaries like <<"op">>, but ETF uses atoms like :op
                 let etf_key = match k {
                     vecpak::Term::Binary(bytes) => {
-                        // try to convert to UTF-8 string and use as atom
                         if let Ok(s) = String::from_utf8(bytes.clone()) {
                             eetf::Term::Atom(Atom::from(s.as_str()))
                         } else {
@@ -41,8 +43,6 @@ pub fn to_etf_term(term: &vecpak::Term) -> eetf::Term {
                     }
                     _ => to_etf_term(k),
                 };
-                // values stay as their original type - don't convert binaries to atoms
-                // this is critical for signature verification (ANR fields must stay binary)
                 let etf_value = to_etf_term(v);
                 map.insert(etf_key, etf_value);
             }
@@ -52,7 +52,8 @@ pub fn to_etf_term(term: &vecpak::Term) -> eetf::Term {
 }
 
 /// Check if data might be vecpak format (starts with a valid vecpak tag)
-pub fn is_vecpak(data: &[u8]) -> bool {
+#[inline]
+pub fn is_bin_vecpak(data: &[u8]) -> bool {
     if data.is_empty() {
         return false;
     }
@@ -125,11 +126,11 @@ mod tests {
 
     #[test]
     fn test_is_vecpak() {
-        assert!(is_vecpak(&[7, 1, 2, 3])); // proplist
-        assert!(is_vecpak(&[0])); // nil
-        assert!(is_vecpak(&[6, 0])); // empty list
-        assert!(!is_vecpak(&[131, 104])); // ETF format
-        assert!(!is_vecpak(&[])); // empty
+        assert!(is_bin_vecpak(&[7, 1, 2, 3])); // proplist
+        assert!(is_bin_vecpak(&[0])); // nil
+        assert!(is_bin_vecpak(&[6, 0])); // empty list
+        assert!(!is_bin_vecpak(&[131, 104])); // ETF format
+        assert!(!is_bin_vecpak(&[])); // empty
     }
 
     #[test]

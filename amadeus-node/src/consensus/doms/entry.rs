@@ -10,6 +10,7 @@ use crate::utils::safe_etf::{encode_safe, encode_safe_deterministic, i64_to_term
 use crate::utils::{archiver, blake3};
 /// Entry is a consensus block in Amadeus
 use amadeus_utils::constants::{DST_ENTRY, DST_VRF};
+use amadeus_utils::vecpak;
 use bitvec::prelude::*;
 use eetf::{Atom, Binary, Map, Term};
 use std::collections::HashMap;
@@ -65,7 +66,43 @@ impl From<Entry> for EntrySummary {
 }
 
 impl EntrySummary {
-    /// Helper that reads an EntrySummary from an ETF term.
+    /// Primary: Parse from vecpak PropListMap
+    pub fn from_vecpak_map(map: &amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        use amadeus_utils::vecpak::VecpakExt;
+
+        // allow empty map to represent "no tip" like the Elixir reference
+        if map.0.is_empty() {
+            return Ok(Self::empty());
+        }
+
+        // Handle header field - it can be either:
+        // 1. A binary (encoded header) - compact format
+        // 2. A PropList (header fields) - expanded format from Elixir
+        let header = if let Some(header_bin) = map.get_binary::<Vec<u8>>(b"header") {
+            // Case 1: header is already encoded as binary
+            EntryHeader::from_etf_bin(&header_bin).map_err(|_| Error::BadEtf("header"))?
+        } else if let Some(header_map) = map.get_proplist_map(b"header") {
+            // Case 2: header is a PropList with fields (vecpak format)
+            let height = header_map.get_integer(b"height").ok_or(Error::BadEtf("height"))?;
+            let slot = header_map.get_integer(b"slot").ok_or(Error::BadEtf("slot"))?;
+            let prev_slot = header_map.get_integer(b"prev_slot").ok_or(Error::BadEtf("prev_slot"))?;
+            let prev_hash = header_map.get_binary(b"prev_hash").ok_or(Error::BadEtf("prev_hash"))?;
+            let dr = header_map.get_binary(b"dr").ok_or(Error::BadEtf("dr"))?;
+            let vr = header_map.get_binary(b"vr").ok_or(Error::BadEtf("vr"))?;
+            let signer = header_map.get_binary(b"signer").ok_or(Error::BadEtf("signer"))?;
+            let txs_hash = header_map.get_binary(b"txs_hash").ok_or(Error::BadEtf("txs_hash"))?;
+
+            EntryHeader { height, slot, prev_slot, prev_hash, dr, vr, signer, txs_hash }
+        } else {
+            return Err(Error::BadEtf("header"));
+        };
+
+        let signature = map.get_binary(b"signature").ok_or(Error::BadEtf("signature"))?;
+        let mask = map.get_binary::<Vec<u8>>(b"mask").map(bin_to_bitvec);
+        Ok(Self { header, signature, mask })
+    }
+
+    /// Legacy: Parse from ETF TermMap (for backwards compatibility)
     pub fn from_etf_term(map: &TermMap) -> Result<Self, Error> {
         // allow empty map to represent "no tip" like the Elixir reference
         if map.0.is_empty() {
@@ -108,6 +145,17 @@ impl EntrySummary {
             m.insert(Term::Atom(Atom::from("mask")), Term::from(Binary { bytes: bitvec_to_bin(mask) }));
         }
         Ok(Term::from(Map { map: m }))
+    }
+
+    pub fn to_vecpak_term(&self) -> vecpak::Term {
+        let mut pairs = vec![
+            (vecpak::Term::Binary(b"header".to_vec()), vecpak::Term::Binary(self.header.to_vecpak_bin())),
+            (vecpak::Term::Binary(b"signature".to_vec()), vecpak::Term::Binary(self.signature.to_vec())),
+        ];
+        if let Some(mask) = &self.mask {
+            pairs.push((vecpak::Term::Binary(b"mask".to_vec()), vecpak::Term::Binary(bitvec_to_bin(mask))));
+        }
+        vecpak::Term::PropList(pairs)
     }
 
     /// Empty summary placeholder used when tips are missing
@@ -186,6 +234,21 @@ impl EntryHeader {
         let out = encode_safe_deterministic(&term);
         Ok(out)
     }
+
+    pub fn to_vecpak_bin(&self) -> Vec<u8> {
+        use amadeus_utils::vecpak::encode;
+        let pairs = vec![
+            (vecpak::Term::Binary(b"height".to_vec()), vecpak::Term::VarInt(self.height as i128)),
+            (vecpak::Term::Binary(b"slot".to_vec()), vecpak::Term::VarInt(self.slot as i128)),
+            (vecpak::Term::Binary(b"prev_slot".to_vec()), vecpak::Term::VarInt(self.prev_slot as i128)),
+            (vecpak::Term::Binary(b"prev_hash".to_vec()), vecpak::Term::Binary(self.prev_hash.to_vec())),
+            (vecpak::Term::Binary(b"dr".to_vec()), vecpak::Term::Binary(self.dr.to_vec())),
+            (vecpak::Term::Binary(b"vr".to_vec()), vecpak::Term::Binary(self.vr.to_vec())),
+            (vecpak::Term::Binary(b"signer".to_vec()), vecpak::Term::Binary(self.signer.to_vec())),
+            (vecpak::Term::Binary(b"txs_hash".to_vec()), vecpak::Term::Binary(self.txs_hash.to_vec())),
+        ];
+        encode(vecpak::Term::PropList(pairs))
+    }
 }
 
 #[derive(Clone)]
@@ -228,7 +291,8 @@ impl Entry {
     pub fn unpack(entry_packed: &[u8]) -> Result<Self, Error> {
         use amadeus_utils::vecpak;
 
-        let entry_term = vecpak::decode(entry_packed).map_err(|_e| Error::BadEtf("vecpak decode failed"))?;
+        let entry_term =
+            vecpak::decode_seemingly_etf_to_vecpak(entry_packed).map_err(|_e| Error::BadEtf("vecpak decode failed"))?;
 
         Self::from_vecpak_term(entry_term).ok_or(Error::BadEtf("from_vecpak_term failed"))
     }
@@ -272,7 +336,7 @@ impl Entry {
         let entry_packed = entry_packed?;
 
         // try vecpak format first (new format)
-        match vecpak::decode(&entry_packed) {
+        match vecpak::decode_seemingly_etf_to_vecpak(&entry_packed) {
             Ok(entry_term) => {
                 if let Some(entry) = Self::from_vecpak_term(entry_term) {
                     return Some(entry);
@@ -394,7 +458,7 @@ impl Entry {
     fn parse_vecpak_header(header_bin: Vec<u8>) -> Option<EntryHeader> {
         use amadeus_utils::vecpak::{self, Term as VTerm};
 
-        let header_term = vecpak::decode(&header_bin).ok()?;
+        let header_term = vecpak::decode_seemingly_etf_to_vecpak(&header_bin).ok()?;
 
         if let VTerm::PropList(props) = header_term {
             let mut height = 0u64;
@@ -499,8 +563,8 @@ impl crate::utils::misc::Typename for Entry {
 
 #[async_trait::async_trait]
 impl Protocol for Entry {
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, protocol::Error> {
-        let bin = map.get_binary("entry_packed").ok_or(Error::BadEtf("entry_packed"))?;
+    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
+        let bin = map.get_binary(b"entry_packed").ok_or(Error::BadEtf("entry_packed"))?;
         Entry::from_etf_bin_validated(bin, ENTRY_SIZE).map_err(Into::into)
     }
     fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {

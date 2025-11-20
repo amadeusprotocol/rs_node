@@ -126,7 +126,9 @@ pub fn url_with(url: &str, path: &str) -> String {
     format!("{}{}", url, path)
 }
 
-/// Lightweight helpers so you can keep calling `.atom()`, `.integer()`, etc.
+/// **DEPRECATED**: Lightweight helpers for ETF Term manipulation (legacy)
+/// Use `vecpak::VecpakExt` trait instead for the primary vecpak format.
+/// This trait is kept for backwards compatibility with legacy ETF code only.
 pub trait TermExt {
     fn as_atom(&self) -> Option<&Atom>;
     fn get_integer(&self) -> Option<i128>;
@@ -188,6 +190,9 @@ impl TermExt for Term {
     }
 }
 
+/// **DEPRECATED**: ETF Term-based map wrapper (legacy)
+/// Use `vecpak::PropListMap` instead for the primary vecpak format.
+/// This struct is kept for backwards compatibility with legacy ETF code only.
 #[derive(Default, Clone, Debug)]
 pub struct TermMap(pub HashMap<Term, Term>);
 

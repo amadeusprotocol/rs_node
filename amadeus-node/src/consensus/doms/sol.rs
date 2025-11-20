@@ -1,6 +1,6 @@
 use crate::Context;
 use crate::node::protocol::{self, Protocol};
-use crate::utils::misc::{TermMap, Typename};
+use crate::utils::misc::Typename;
 use crate::utils::safe_etf::encode_safe;
 use amadeus_runtime::consensus::bic::sol::SOL_SIZE;
 use eetf::{Atom, Binary, Map, Term};
@@ -101,8 +101,8 @@ impl Typename for Solution {
 
 #[async_trait::async_trait]
 impl Protocol for Solution {
-    fn from_etf_map_validated(map: TermMap) -> Result<Self, protocol::Error> {
-        let bin = map.get_binary("sol").ok_or(protocol::Error::BadEtf("sol"))?;
+    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
+        let bin = map.get_binary(b"sol").ok_or(protocol::Error::BadEtf("sol"))?;
         Solution::from_etf_validated(bin).map_err(|_| protocol::Error::BadEtf("sol"))
     }
 
