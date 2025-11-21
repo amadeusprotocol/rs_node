@@ -90,7 +90,7 @@ mod tests {
         // get entry at height+1 from db
         let next_height = height + 1;
         let entries = fabric.entries_by_height(next_height as u64)?;
-        let entry = crate::consensus::doms::entry::Entry::unpack(&entries[0])?;
+        let entry = crate::consensus::doms::entry::Entry::from_vecpak_bin(&entries[0])?;
 
         // read and print expected logs from next_logs file
         let expected_logs_path = format!("{}/next_logs", db_path);

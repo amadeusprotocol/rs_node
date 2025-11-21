@@ -1,23 +1,18 @@
 use crate::Context;
-use crate::config::ENTRY_SIZE;
 use crate::consensus::doms::tx::TxU;
 use crate::consensus::fabric;
 use crate::node::protocol;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381;
-use crate::utils::misc::{TermExt, bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
-use crate::utils::safe_etf::{encode_safe_deterministic, i64_to_term, u64_to_term};
+use crate::utils::misc::{bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
 use crate::utils::{archiver, blake3};
 /// Entry is a consensus block in Amadeus
-use amadeus_utils::constants::{DST_ENTRY, DST_VRF};
-use amadeus_utils::vecpak;
+use amadeus_utils::constants::DST_VRF;
+use amadeus_utils::vecpak::{Term, VecpakExt, decode, encode};
 use bitvec::prelude::*;
-use eetf::{Atom, Binary, Map, Term};
-use std::collections::HashMap;
+//use eetf::{Atom, Binary, Map, Term};
 use std::fmt;
 use std::net::Ipv4Addr;
-
-const MAX_TXS: usize = 100; // maximum number of transactions in an entry
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -32,7 +27,7 @@ pub enum Error {
     #[error(transparent)]
     BinEncode(#[from] bincode::error::EncodeError),
     #[error("invalid erlang etf: {0}")]
-    BadEtf(&'static str),
+    BadFormat(&'static str),
     #[error("invalid signature")]
     BadAggSignature,
     #[error("wrong epoch or unsupported aggregate signature path")]
@@ -68,47 +63,38 @@ impl From<Entry> for EntrySummary {
 impl EntrySummary {
     /// Primary: Parse from vecpak PropListMap
     pub fn from_vecpak_map(map: &amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
-        // allow empty map to represent "no tip" like the Elixir reference
-        if map.0.is_empty() {
-            return Ok(Self::empty());
-        }
+        let hmap = map
+            .get_by_key(b"header")
+            .ok_or(Error::BadFormat("entry.header"))?
+            .get_proplist_map()
+            .ok_or(Error::BadFormat("entry.header"))?;
 
-        // Handle header field - it can be either:
-        // 1. A binary (encoded header) - compact format
-        // 2. A PropList (header fields) - expanded format from Elixir
-        let header = if let Some(header_bin) = map.get_binary::<Vec<u8>>(b"header") {
-            // Case 1: header is already encoded as binary
-            EntryHeader::from_etf_bin(&header_bin).map_err(|_| Error::BadEtf("header"))?
-        } else if let Some(header_map) = map.get_proplist_map(b"header") {
-            // Case 2: header is a PropList with fields (vecpak format)
-            let height = header_map.get_integer(b"height").ok_or(Error::BadEtf("height"))?;
-            let slot = header_map.get_integer(b"slot").ok_or(Error::BadEtf("slot"))?;
-            let prev_slot = header_map.get_integer(b"prev_slot").ok_or(Error::BadEtf("prev_slot"))?;
-            let prev_hash = header_map.get_binary(b"prev_hash").ok_or(Error::BadEtf("prev_hash"))?;
-            let dr = header_map.get_binary(b"dr").ok_or(Error::BadEtf("dr"))?;
-            let vr = header_map.get_binary(b"vr").ok_or(Error::BadEtf("vr"))?;
-            let signer = header_map.get_binary(b"signer").ok_or(Error::BadEtf("signer"))?;
-            let txs_hash = header_map.get_binary(b"txs_hash").ok_or(Error::BadEtf("txs_hash"))?;
-
-            EntryHeader { height, slot, prev_slot, prev_hash, dr, vr, signer, txs_hash }
-        } else {
-            return Err(Error::BadEtf("header"));
+        let header = EntryHeader {
+            height: hmap.get_integer(b"height").ok_or(Error::BadFormat("entry.header.height"))?,
+            slot: hmap.get_integer(b"slot").ok_or(Error::BadFormat("entry.header.slot"))?,
+            prev_slot: hmap.get_integer(b"prev_slot").ok_or(Error::BadFormat("entry.header.prev_slot"))?,
+            prev_hash: hmap.get_binary(b"prev_hash").ok_or(Error::BadFormat("entry.header.prev_hash"))?,
+            dr: hmap.get_binary(b"dr").ok_or(Error::BadFormat("entry.header.dr"))?,
+            vr: hmap.get_binary(b"vr").ok_or(Error::BadFormat("entry.header.vr"))?,
+            signer: hmap.get_binary(b"signer").ok_or(Error::BadFormat("entry.header.signer"))?,
+            txs_hash: hmap.get_binary(b"txs_hash").ok_or(Error::BadFormat("entry.header.txs_hash"))?,
         };
 
-        let signature = map.get_binary(b"signature").ok_or(Error::BadEtf("signature"))?;
         let mask = map.get_binary::<Vec<u8>>(b"mask").map(bin_to_bitvec);
+        let signature: [u8; 96] = map.get_binary(b"signature").ok_or(Error::BadFormat("entry.signature"))?;
+
         Ok(Self { header, signature, mask })
     }
 
-    pub fn to_vecpak_term(&self) -> vecpak::Term {
-        let mut pairs = vec![
-            (vecpak::Term::Binary(b"header".to_vec()), vecpak::Term::Binary(self.header.to_vecpak_bin())),
-            (vecpak::Term::Binary(b"signature".to_vec()), vecpak::Term::Binary(self.signature.to_vec())),
+    pub fn to_vecpak_term(&self) -> Term {
+        let mut props = vec![
+            (Term::Binary(b"header".to_vec()), self.header.to_vecpak_term()),
+            (Term::Binary(b"signature".to_vec()), Term::Binary(self.signature.to_vec())),
         ];
         if let Some(mask) = &self.mask {
-            pairs.push((vecpak::Term::Binary(b"mask".to_vec()), vecpak::Term::Binary(bitvec_to_bin(mask))));
+            props.push((Term::Binary(b"mask".to_vec()), Term::Binary(bitvec_to_bin(mask))));
         }
-        vecpak::Term::PropList(pairs)
+        Term::PropList(props)
     }
 
     /// Empty summary placeholder used when tips are missing
@@ -155,52 +141,35 @@ impl fmt::Debug for EntryHeader {
 }
 
 impl EntryHeader {
-    pub fn from_etf_bin(bin: &[u8]) -> Result<Self, Error> {
-        let term = Term::decode(bin).map_err(Error::EtfDecode)?;
-        let map = term.get_term_map().ok_or(Error::BadEtf("entry-header-map"))?;
-
-        let height = map.get_integer("height").ok_or(Error::BadEtf("height"))?;
-        let slot = map.get_integer("slot").ok_or(Error::BadEtf("slot"))?;
-        let prev_slot = map.get_integer("prev_slot").ok_or(Error::BadEtf("prev_slot"))?;
-        let prev_hash = map.get_binary("prev_hash").ok_or(Error::BadEtf("prev_hash"))?;
-        let dr = map.get_binary("dr").ok_or(Error::BadEtf("dr"))?;
-        let vr = map.get_binary("vr").ok_or(Error::BadEtf("vr"))?;
-        let signer = map.get_binary("signer").ok_or(Error::BadEtf("signer"))?;
-        let txs_hash = map.get_binary("txs_hash").ok_or(Error::BadEtf("txs_hash"))?;
-
-        Ok(EntryHeader { height, slot, prev_slot, prev_hash, dr, vr, signer, txs_hash })
+    pub fn from_vecpak_map(map: &amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        Ok(EntryHeader {
+            height: map.get_integer(b"height").ok_or(Error::BadFormat("entry.header.height"))?,
+            slot: map.get_integer(b"slot").ok_or(Error::BadFormat("entry.header.slot"))?,
+            prev_slot: map.get_integer(b"prev_slot").ok_or(Error::BadFormat("entry.header.prev_slot"))?,
+            prev_hash: map.get_binary(b"prev_hash").ok_or(Error::BadFormat("entry.header.prev_hash"))?,
+            dr: map.get_binary(b"dr").ok_or(Error::BadFormat("entry.header.dr"))?,
+            vr: map.get_binary(b"vr").ok_or(Error::BadFormat("entry.header.vr"))?,
+            signer: map.get_binary(b"signer").ok_or(Error::BadFormat("entry.header.signer"))?,
+            txs_hash: map.get_binary(b"txs_hash").ok_or(Error::BadFormat("entry.header.txs_hash"))?,
+        })
     }
 
-    // Always deterministic
-    pub fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
-        let mut map = HashMap::new();
-        map.insert(Term::Atom(Atom::from("height")), u64_to_term(self.height));
-        map.insert(Term::Atom(Atom::from("slot")), u64_to_term(self.slot));
-        map.insert(Term::Atom(Atom::from("prev_slot")), i64_to_term(self.prev_slot));
-        map.insert(Term::Atom(Atom::from("prev_hash")), Term::from(Binary { bytes: self.prev_hash.to_vec() }));
-        map.insert(Term::Atom(Atom::from("dr")), Term::from(Binary { bytes: self.dr.to_vec() }));
-        map.insert(Term::Atom(Atom::from("vr")), Term::from(Binary { bytes: self.vr.to_vec() }));
-        map.insert(Term::Atom(Atom::from("signer")), Term::from(Binary { bytes: self.signer.to_vec() }));
-        map.insert(Term::Atom(Atom::from("txs_hash")), Term::from(Binary { bytes: self.txs_hash.to_vec() }));
-
-        let term = Term::Map(Map { map });
-        let out = encode_safe_deterministic(&term);
-        Ok(out)
+    pub fn to_vecpak_term(&self) -> Term {
+        Term::PropList(vec![
+            (Term::Binary(b"height".to_vec()), Term::VarInt(self.height as i128)),
+            (Term::Binary(b"slot".to_vec()), Term::VarInt(self.slot as i128)),
+            (Term::Binary(b"prev_slot".to_vec()), Term::VarInt(self.prev_slot as i128)),
+            (Term::Binary(b"prev_hash".to_vec()), Term::Binary(self.prev_hash.to_vec())),
+            (Term::Binary(b"dr".to_vec()), Term::Binary(self.dr.to_vec())),
+            (Term::Binary(b"vr".to_vec()), Term::Binary(self.vr.to_vec())),
+            (Term::Binary(b"signer".to_vec()), Term::Binary(self.signer.to_vec())),
+            (Term::Binary(b"txs_hash".to_vec()), Term::Binary(self.txs_hash.to_vec())),
+        ])
     }
 
     pub fn to_vecpak_bin(&self) -> Vec<u8> {
-        use amadeus_utils::vecpak::encode;
-        let pairs = vec![
-            (vecpak::Term::Binary(b"height".to_vec()), vecpak::Term::VarInt(self.height as i128)),
-            (vecpak::Term::Binary(b"slot".to_vec()), vecpak::Term::VarInt(self.slot as i128)),
-            (vecpak::Term::Binary(b"prev_slot".to_vec()), vecpak::Term::VarInt(self.prev_slot as i128)),
-            (vecpak::Term::Binary(b"prev_hash".to_vec()), vecpak::Term::Binary(self.prev_hash.to_vec())),
-            (vecpak::Term::Binary(b"dr".to_vec()), vecpak::Term::Binary(self.dr.to_vec())),
-            (vecpak::Term::Binary(b"vr".to_vec()), vecpak::Term::Binary(self.vr.to_vec())),
-            (vecpak::Term::Binary(b"signer".to_vec()), vecpak::Term::Binary(self.signer.to_vec())),
-            (vecpak::Term::Binary(b"txs_hash".to_vec()), vecpak::Term::Binary(self.txs_hash.to_vec())),
-        ];
-        encode(vecpak::Term::PropList(pairs))
+        let term = self.to_vecpak_term();
+        encode(term)
     }
 }
 
@@ -214,297 +183,52 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// Pack entry to ETF deterministic format (like Elixir Entry.pack/1)
-    pub fn pack(&self) -> Result<Vec<u8>, Error> {
-        let mut map = HashMap::new();
-
-        // Convert header to ETF binary first
-        let header_bin = self.header.to_etf_bin()?;
-        map.insert(Term::Atom(Atom::from("header")), Term::from(Binary { bytes: header_bin }));
-
-        // Convert txs to ETF list of binaries
-        let txs_terms: Vec<Term> = self.txs.iter().map(|tx| Term::from(Binary { bytes: tx.clone() })).collect();
-        map.insert(Term::Atom(Atom::from("txs")), Term::from(eetf::List { elements: txs_terms }));
-
-        map.insert(Term::Atom(Atom::from("hash")), Term::from(Binary { bytes: self.hash.to_vec() }));
-        map.insert(Term::Atom(Atom::from("signature")), Term::from(Binary { bytes: self.signature.to_vec() }));
-
-        // Handle optional mask
-        if let Some(mask) = &self.mask {
-            let mask_bytes = bitvec_to_bin(mask);
-            map.insert(Term::Atom(Atom::from("mask")), Term::from(Binary { bytes: mask_bytes }));
-        }
-
-        let term = Term::from(eetf::Map { map });
-        let out = encode_safe_deterministic(&term);
-        Ok(out)
+    pub fn from_vecpak_bin(bin: &[u8]) -> Result<Self, Error> {
+        let map = decode(bin)
+            .map_err(|_| Error::BadFormat("entry_packed"))?
+            .get_proplist_map()
+            .ok_or(Error::BadFormat("entry_packed"))?;
+        Self::from_vecpak_map(&map)
     }
 
-    /// Unpack entry from vecpak format (data from Elixir now uses vecpak)
-    pub fn unpack(entry_packed: &[u8]) -> Result<Self, Error> {
-        use amadeus_utils::vecpak;
-
-        let entry_term =
-            vecpak::decode_seemingly_etf_to_vecpak(entry_packed).map_err(|_e| Error::BadEtf("vecpak decode failed"))?;
-
-        Self::from_vecpak_term(entry_term).ok_or(Error::BadEtf("from_vecpak_term failed"))
+    pub fn to_vecpak_bin(&self) -> Vec<u8> {
+        let term = self.to_vecpak_term();
+        encode(term)
     }
 
-    pub fn pack_for_db(&self) -> Result<Vec<u8>, Error> {
-        use amadeus_utils::vecpak::{self, Term as VTerm};
+    pub fn from_vecpak_map(map: &amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        let hash: [u8; 32] = map.get_binary(b"hash").ok_or(Error::BadFormat("entry.hash"))?;
+        let signature: [u8; 96] = map.get_binary(b"signature").ok_or(Error::BadFormat("entry.signature"))?;
 
-        let header_proplist = VTerm::PropList(vec![
-            (VTerm::Binary(b"height".to_vec()), VTerm::VarInt(self.header.height as i128)),
-            (VTerm::Binary(b"slot".to_vec()), VTerm::VarInt(self.header.slot as i128)),
-            (VTerm::Binary(b"prev_slot".to_vec()), VTerm::VarInt(self.header.prev_slot as i128)),
-            (VTerm::Binary(b"prev_hash".to_vec()), VTerm::Binary(self.header.prev_hash.to_vec())),
-            (VTerm::Binary(b"dr".to_vec()), VTerm::Binary(self.header.dr.to_vec())),
-            (VTerm::Binary(b"vr".to_vec()), VTerm::Binary(self.header.vr.to_vec())),
-            (VTerm::Binary(b"signer".to_vec()), VTerm::Binary(self.header.signer.to_vec())),
-            (VTerm::Binary(b"txs_hash".to_vec()), VTerm::Binary(self.header.txs_hash.to_vec())),
-        ]);
+        let hmap = map
+            .get_by_key(b"header")
+            .ok_or(Error::BadFormat("entry.header"))?
+            .get_proplist_map()
+            .ok_or(Error::BadFormat("entry.header"))?;
+        let header = EntryHeader::from_vecpak_map(&hmap)?;
 
-        let header_packed = vecpak::encode(header_proplist);
+        let mask = map.get_binary::<Vec<u8>>(b"mask").map(bin_to_bitvec);
 
-        let txs_list = VTerm::List(self.txs.iter().map(|tx| VTerm::Binary(tx.clone())).collect());
+        let txs = map
+            .get_list(b"txs")
+            .map(|list| list.iter().filter_map(|t| t.get_binary().map(|b| b.to_vec())).collect())
+            .unwrap_or_default();
 
-        let mut entry_props = vec![
-            (VTerm::Binary(b"header".to_vec()), VTerm::Binary(header_packed)),
-            (VTerm::Binary(b"txs".to_vec()), txs_list),
-            (VTerm::Binary(b"hash".to_vec()), VTerm::Binary(self.hash.to_vec())),
-            (VTerm::Binary(b"signature".to_vec()), VTerm::Binary(self.signature.to_vec())),
+        Ok(Entry { hash, header, signature, mask, txs })
+    }
+
+    pub fn to_vecpak_term(&self) -> Term {
+        let txs_list = Term::List(self.txs.iter().map(|tx| Term::Binary(tx.clone())).collect());
+        let mut props = vec![
+            (Term::Binary(b"header".to_vec()), self.header.to_vecpak_term()),
+            (Term::Binary(b"txs".to_vec()), txs_list),
+            (Term::Binary(b"hash".to_vec()), Term::Binary(self.hash.to_vec())),
+            (Term::Binary(b"signature".to_vec()), Term::Binary(self.signature.to_vec())),
         ];
-
         if let Some(mask) = &self.mask {
-            entry_props.push((VTerm::Binary(b"mask".to_vec()), VTerm::Binary(bitvec_to_bin(mask))));
+            props.push((Term::Binary(b"mask".to_vec()), Term::Binary(bitvec_to_bin(mask))));
         }
-
-        let entry_map = VTerm::PropList(entry_props);
-        Ok(vecpak::encode(entry_map))
-    }
-
-    pub fn unpack_from_db(entry_packed: Option<Vec<u8>>) -> Option<Self> {
-        use amadeus_utils::vecpak;
-
-        let entry_packed = entry_packed?;
-
-        // try vecpak format first (new format)
-        match vecpak::decode_seemingly_etf_to_vecpak(&entry_packed) {
-            Ok(entry_term) => {
-                if let Some(entry) = Self::from_vecpak_term(entry_term) {
-                    return Some(entry);
-                }
-            }
-            Err(_) => {}
-        }
-
-        // fallback to ETF format (legacy format)
-        if let Ok(entry) = Self::from_etf_direct(&entry_packed) {
-            return Some(entry);
-        }
-
-        None
-    }
-
-    /// decode entry from ETF format (legacy database format)
-    fn from_etf_direct(bin: &[u8]) -> Result<Self, Error> {
-        let term = Term::decode(bin).map_err(Error::EtfDecode)?;
-        let map = term.get_term_map().ok_or(Error::BadEtf("entry"))?;
-
-        // decode header (binary encoded)
-        let header_bin: Vec<u8> = map.get_binary("header").ok_or(Error::BadEtf("header"))?;
-        let header = EntryHeader::from_etf_bin(&header_bin)?;
-
-        // decode txs (list of binaries)
-        let txs_list = map.get_list("txs").ok_or(Error::BadEtf("txs"))?;
-        let mut txs = Vec::new();
-        for tx_term in txs_list {
-            if let Some(bytes) = tx_term.get_binary() {
-                txs.push(bytes.to_vec());
-            }
-        }
-
-        // decode hash
-        let hash: [u8; 32] = map.get_binary("hash").ok_or(Error::BadEtf("hash"))?;
-
-        // decode signature
-        let signature: [u8; 96] = map.get_binary("signature").ok_or(Error::BadEtf("signature"))?;
-
-        // decode optional mask
-        let mask = map.get_binary::<Vec<u8>>("mask").map(bin_to_bitvec);
-
-        Ok(Self { header, txs, hash, signature, mask })
-    }
-
-    fn from_vecpak_term(term: amadeus_utils::vecpak::Term) -> Option<Self> {
-        use amadeus_utils::vecpak::{self, Term as VTerm};
-
-        if let VTerm::PropList(props) = term {
-            let mut hash = None;
-            let mut header_bin = None;
-            let mut signature = None;
-            let mut mask = None;
-            let mut txs = Vec::new();
-
-            for (k, v) in &props {
-                if let VTerm::Binary(key_bytes) = k {
-                    match key_bytes.as_slice() {
-                        b"hash" => {
-                            if let VTerm::Binary(h) = v {
-                                if h.len() == 32 {
-                                    let mut arr = [0u8; 32];
-                                    arr.copy_from_slice(h);
-                                    hash = Some(arr);
-                                }
-                            }
-                        }
-                        b"header" => match v {
-                            VTerm::Binary(h) => {
-                                header_bin = Some(h.clone());
-                            }
-                            VTerm::PropList(_) => {
-                                // header is inline PropList, encode it to binary for parsing
-                                header_bin = Some(vecpak::encode(v.clone()));
-                            }
-                            _ => {}
-                        },
-                        b"signature" => {
-                            if let VTerm::Binary(s) = v {
-                                if s.len() == 96 {
-                                    let mut arr = [0u8; 96];
-                                    arr.copy_from_slice(s);
-                                    signature = Some(arr);
-                                }
-                            }
-                        }
-                        b"mask" => {
-                            if let VTerm::Binary(m) = v {
-                                mask = Some(bin_to_bitvec(m.clone()));
-                            }
-                        }
-                        b"txs" => {
-                            if let VTerm::List(tx_list) = v {
-                                for tx_term in tx_list {
-                                    if let VTerm::Binary(tx_bin) = tx_term {
-                                        txs.push(tx_bin.clone());
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            if hash.is_none() || header_bin.is_none() || signature.is_none() {
-                return None;
-            }
-
-            let header = Self::parse_vecpak_header(header_bin?)?;
-
-            Some(Entry { hash: hash?, header, signature: signature?, mask, txs })
-        } else {
-            None
-        }
-    }
-
-    fn parse_vecpak_header(header_bin: Vec<u8>) -> Option<EntryHeader> {
-        use amadeus_utils::vecpak::{self, Term as VTerm};
-
-        let header_term = vecpak::decode_seemingly_etf_to_vecpak(&header_bin).ok()?;
-
-        if let VTerm::PropList(props) = header_term {
-            let mut height = 0u64;
-            let mut slot = 0u64;
-            let mut prev_slot = 0i64;
-            let mut prev_hash = [0u8; 32];
-            let mut dr = [0u8; 32];
-            let mut vr = [0u8; 96];
-            let mut signer = [0u8; 48];
-            let mut txs_hash = [0u8; 32];
-
-            for (k, v) in props {
-                if let VTerm::Binary(key_bytes) = k {
-                    match key_bytes.as_slice() {
-                        b"height" => {
-                            if let VTerm::VarInt(h) = v {
-                                if h >= 0 {
-                                    height = h as u64;
-                                }
-                            }
-                        }
-                        b"slot" => {
-                            if let VTerm::VarInt(s) = v {
-                                if s >= 0 {
-                                    slot = s as u64;
-                                }
-                            }
-                        }
-                        b"prev_slot" => {
-                            if let VTerm::VarInt(ps) = v {
-                                prev_slot = ps as i64;
-                            }
-                        }
-                        b"prev_hash" => {
-                            if let VTerm::Binary(ph) = v {
-                                if ph.len() == 32 {
-                                    prev_hash.copy_from_slice(&ph);
-                                }
-                            }
-                        }
-                        b"dr" => {
-                            if let VTerm::Binary(d) = v {
-                                if d.len() == 32 {
-                                    dr.copy_from_slice(&d);
-                                }
-                            }
-                        }
-                        b"vr" => {
-                            if let VTerm::Binary(v_bin) = v {
-                                if v_bin.len() == 96 {
-                                    vr.copy_from_slice(&v_bin);
-                                }
-                            }
-                        }
-                        b"signer" => {
-                            if let VTerm::Binary(s) = v {
-                                if s.len() == 48 {
-                                    signer.copy_from_slice(&s);
-                                }
-                            }
-                        }
-                        b"txs_hash" => {
-                            if let VTerm::Binary(th) = v {
-                                if th.len() == 32 {
-                                    txs_hash.copy_from_slice(&th);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            Some(EntryHeader { height, slot, prev_slot, prev_hash, dr, vr, signer, txs_hash })
-        } else {
-            None
-        }
-    }
-}
-
-impl TryFrom<&[u8]> for Entry {
-    type Error = Error;
-
-    fn try_from(bin: &[u8]) -> Result<Self, Self::Error> {
-        Self::unpack(bin)
-    }
-}
-
-impl TryInto<Vec<u8>> for Entry {
-    type Error = Error;
-
-    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
-        self.pack()
+        Term::PropList(props)
     }
 }
 
@@ -517,19 +241,13 @@ impl crate::utils::misc::Typename for Entry {
 #[async_trait::async_trait]
 impl Protocol for Entry {
     fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
-        let bin = map.get_binary(b"entry_packed").ok_or(Error::BadEtf("entry_packed"))?;
-        Entry::from_etf_bin_validated(bin, ENTRY_SIZE).map_err(Into::into)
+        let entry_map = map.get_proplist_map(b"entry_packed").ok_or(Error::BadFormat("entry_packed"))?;
+        Self::from_vecpak_map(&entry_map).map_err(Into::into)
     }
 
-    fn to_vecpak_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        use amadeus_utils::vecpak::encode;
-        let entry_bin: Vec<u8> = self.pack().map_err(|_| protocol::Error::Vecpak("entry pack failed".to_string()))?;
-
-        let pairs = vec![
-            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
-            (vecpak::Term::Binary(b"entry_packed".to_vec()), vecpak::Term::Binary(entry_bin)),
-        ];
-        Ok(encode(vecpak::Term::PropList(pairs)))
+    fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, protocol::Error> {
+        let term = self.to_vecpak_term();
+        Ok(encode(term))
     }
 
     async fn handle(&self, ctx: &Context, _src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
@@ -550,7 +268,7 @@ impl Protocol for Entry {
         if height >= rooted_height {
             let hash = self.hash;
             let slot = self.header.slot;
-            let bin = self.pack_for_db()?;
+            let bin = self.to_vecpak_bin();
 
             ctx.fabric.insert_entry(&hash, height, slot, &bin, get_unix_millis_now())?;
 
@@ -575,53 +293,6 @@ impl fmt::Debug for Entry {
 
 impl Entry {
     pub const TYPENAME: &'static str = "event_entry";
-
-    pub fn from_etf_bin_validated(bin: &[u8], entry_size_limit: usize) -> Result<Entry, Error> {
-        if bin.len() >= entry_size_limit {
-            return Err(Error::BadEtf("entry_bin_too_large"));
-        }
-
-        // Validate deterministic ETF encoding first
-        let parsed_entry = Entry::unpack(bin)?;
-        let repacked = parsed_entry.pack()?;
-        if bin != repacked {
-            return Err(Error::BadEtf("not_deterministicly_encoded"));
-        }
-
-        // Validate header deterministic encoding
-        let header_repacked = parsed_entry.header.to_etf_bin()?;
-        // Note: We need to extract original header binary from the entry to compare
-        let term = Term::decode(bin)?;
-        let map = term.get_term_map().ok_or(Error::BadEtf("entry"))?;
-        let original_header_bin = map.get_binary("header").ok_or(Error::BadEtf("header"))?;
-        if original_header_bin != header_repacked {
-            return Err(Error::BadEtf("not_deterministicly_encoded_header"));
-        }
-
-        let parsed = ParsedEntry { entry: parsed_entry, header_bin: original_header_bin };
-        parsed.validate_signature()?;
-        let is_special = parsed.entry.mask.is_some();
-        parsed.entry.validate_contents(is_special)?;
-
-        Ok(parsed.entry)
-    }
-
-    fn validate_contents(&self, is_special_meeting_block: bool) -> Result<(), Error> {
-        if self.txs.len() > MAX_TXS {
-            return Err(Error::BadEtf("txs_len_over_100"));
-        }
-
-        let txs_bin = self.txs.iter().flatten().cloned().collect::<Vec<u8>>();
-        if self.header.txs_hash.as_slice() != blake3::hash(&txs_bin).as_slice() {
-            return Err(Error::BadTxsHash);
-        }
-
-        for txp in &self.txs {
-            super::tx::validate(txp, is_special_meeting_block)?;
-        }
-
-        Ok(())
-    }
 
     /// Build next header skeleton similar to Entry.build_next/2.
     /// This requires chain state (pk/sk), so we only provide a helper to derive next header fields given inputs.
@@ -655,26 +326,6 @@ impl Entry {
                 false
             }
         })
-    }
-}
-
-#[derive(Debug, Clone)]
-struct ParsedEntry {
-    pub entry: Entry,
-    pub header_bin: Vec<u8>,
-}
-
-impl ParsedEntry {
-    fn validate_signature(&self) -> Result<(), Error> {
-        if let Some(_mask) = &self.entry.mask {
-            // Aggregate signature path requires trainers from chain state (DB); not available here.
-            return Err(Error::NoTrainers);
-        } else {
-            let h = blake3::hash(&self.header_bin);
-            bls12_381::verify(&self.entry.header.signer, &self.entry.signature, &h, DST_ENTRY)?;
-        }
-
-        Ok(())
     }
 }
 
@@ -771,88 +422,5 @@ mod tests {
                 // It's okay if it fails due to archiver not being initialized
             }
         }
-    }
-}
-
-pub mod db {
-    use super::Entry;
-    use amadeus_utils::database::pad_integer;
-    use amadeus_utils::rocksdb::RocksDb;
-
-    pub fn by_hash(hash: &[u8], db: &RocksDb) -> Option<Entry> {
-        let entry_packed = db.get("entry", hash).ok()??;
-        Entry::unpack_from_db(Some(entry_packed))
-    }
-
-    pub fn by_height(height: u64, db: &RocksDb) -> Vec<Entry> {
-        let prefix = format!("by_height:{}:", pad_integer(height));
-
-        db.iter_prefix("entry_meta", prefix.as_bytes())
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(_key, value)| by_hash(&value, db))
-            .collect()
-    }
-
-    pub fn by_height_return_hashes(height: u64, db: &RocksDb) -> Vec<Vec<u8>> {
-        let prefix = format!("by_height:{}:", pad_integer(height));
-
-        db.iter_prefix("entry_meta", prefix.as_bytes())
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(_key, value)| value)
-            .collect()
-    }
-
-    pub fn by_height_in_main_chain(height: u64, db: &RocksDb) -> Option<Vec<u8>> {
-        let key = format!("by_height_in_main_chain:{}", pad_integer(height));
-        db.get("entry_meta", key.as_bytes()).ok()?
-    }
-
-    pub fn seentime(hash: &[u8], db: &RocksDb) -> Option<i64> {
-        let key = format!("entry:{}:seentime", hex::encode(hash));
-        let bytes = db.get("entry_meta", key.as_bytes()).ok()??;
-        if bytes.len() == 8 {
-            Some(i64::from_le_bytes(bytes.try_into().unwrap()))
-        } else if bytes.len() == 16 {
-            Some(u128::from_le_bytes(bytes.try_into().unwrap()) as i64)
-        } else {
-            None
-        }
-    }
-
-    pub fn muts_hash(hash: &[u8], db: &RocksDb) -> Option<Vec<u8>> {
-        let key = format!("entry:{}:muts_hash", hex::encode(hash));
-        db.get("entry_meta", key.as_bytes()).ok()?
-    }
-
-    pub fn prev(hash: &[u8], db: &RocksDb) -> Option<Vec<u8>> {
-        let key = format!("entry:{}:prev", hex::encode(hash));
-        db.get("entry_meta", key.as_bytes()).ok()?
-    }
-
-    pub fn next(hash: &[u8], db: &RocksDb) -> Option<Vec<u8>> {
-        let key = format!("entry:{}:next", hex::encode(hash));
-        db.get("entry_meta", key.as_bytes()).ok()?
-    }
-
-    pub fn in_chain(hash: &[u8], db: &RocksDb) -> bool {
-        let key = format!("entry:{}:in_chain", hex::encode(hash));
-        db.get("entry_meta", key.as_bytes()).ok().flatten().is_some()
-    }
-
-    pub fn insert(entry: &Entry, db: &RocksDb) -> Result<(), Box<dyn std::error::Error>> {
-        let entry_packed = entry.pack_for_db()?;
-
-        db.put("entry", &entry.hash, &entry_packed)?;
-
-        let height_key = format!("by_height:{}:{}", pad_integer(entry.header.height), hex::encode(&entry.hash));
-        db.put("entry_meta", height_key.as_bytes(), &entry.hash)?;
-
-        let seentime_key = format!("entry:{}:seentime", hex::encode(&entry.hash));
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
-        db.put("entry_meta", seentime_key.as_bytes(), &now.to_le_bytes())?;
-
-        Ok(())
     }
 }

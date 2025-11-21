@@ -4,6 +4,7 @@ use crate::node::protocol::Protocol;
 use crate::utils::bls12_381 as bls;
 use crate::utils::bls12_381::Error as BlsError;
 use amadeus_utils::constants::DST_ATT;
+use amadeus_utils::vecpak::{Term, VecpakExt, decode, encode};
 use std::fmt::Debug;
 use std::net::Ipv4Addr;
 use tracing::{instrument, warn};
@@ -15,7 +16,7 @@ pub enum Error {
     #[error("missing field: {0}")]
     Missing(&'static str),
     #[error("attestation is not a binary")]
-    AttestationNotBinary,
+    AttestationNotVecpak,
     #[error("too large")]
     TooLarge,
     #[error("not deterministically encoded")]
@@ -59,42 +60,32 @@ impl crate::utils::misc::Typename for EventAttestation {
 impl Protocol for EventAttestation {
     #[instrument(skip(map), name = "EventAttestation::from_vecpak_map_validated")]
     fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
-        use amadeus_utils::vecpak::{Term as VTerm, VecpakExt};
+        use amadeus_utils::vecpak::{Term, VecpakExt};
 
         let attestations_list = map.get_list(b"attestations").ok_or(Error::Missing("attestations"))?;
 
         let mut attestations = Vec::new();
-
         for term in attestations_list.iter() {
             match term {
-                VTerm::PropList(_) => {
-                    // The attestations come as PropList from the Elixir node
-                    let att_map = term.get_proplist_map().ok_or(Error::AttestationNotBinary)?;
+                Term::PropList(_) => {
+                    let att_map = term.get_proplist_map().ok_or(Error::AttestationNotVecpak)?;
                     let attestation = Attestation::from_vecpak_map(&att_map)?;
                     attestations.push(attestation);
                 }
-                VTerm::Binary(bin) => {
-                    // Also support binary format (vecpak encoded)
-                    let attestation = Attestation::unpack_from_db(bin).ok_or(Error::AttestationNotBinary)?;
-                    attestations.push(attestation);
-                }
-                _ => return Err(Error::AttestationNotBinary.into()),
+                _ => return Err(Error::AttestationNotVecpak.into()),
             }
         }
 
         Ok(Self { attestations })
     }
 
-    fn to_vecpak_bin(&self) -> Result<Vec<u8>, protocol::Error> {
+    fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, protocol::Error> {
         use amadeus_utils::vecpak::{self, encode};
 
         let attestations_list: Vec<vecpak::Term> = self
             .attestations
             .iter()
-            .map(|attestation| {
-                let attestation_bin = attestation.pack().map_err(|e| protocol::Error::Att(e))?;
-                Ok(vecpak::Term::Binary(attestation_bin))
-            })
+            .map(|attestation| Ok(attestation.to_vecpak_term()))
             .collect::<Result<Vec<_>, protocol::Error>>()?;
 
         let pairs = vec![
@@ -130,11 +121,6 @@ impl Attestation {
             signer: signer_v.try_into().map_err(|_| Error::InvalidLength("signer"))?,
             signature: signature_v.try_into().map_err(|_| Error::InvalidLength("signature"))?,
         })
-    }
-
-    /// Encode to vecpak binary format
-    pub fn pack(&self) -> Result<Vec<u8>, Error> {
-        Ok(self.pack_for_db())
     }
 
     /// Validate sizes and signature with DST_ATT
@@ -177,112 +163,21 @@ impl Attestation {
         Ok(Self { entry_hash: *entry_hash, mutations_hash: *mutations_hash, signer, signature })
     }
 
-    pub fn pack_for_db(&self) -> Vec<u8> {
-        use amadeus_utils::vecpak::{self, Term as VTerm};
-
-        let proplist = VTerm::PropList(vec![
-            (VTerm::Binary(b"entry_hash".to_vec()), VTerm::Binary(self.entry_hash.to_vec())),
-            (VTerm::Binary(b"mutations_hash".to_vec()), VTerm::Binary(self.mutations_hash.to_vec())),
-            (VTerm::Binary(b"signer".to_vec()), VTerm::Binary(self.signer.to_vec())),
-            (VTerm::Binary(b"signature".to_vec()), VTerm::Binary(self.signature.to_vec())),
-        ]);
-
-        vecpak::encode(proplist)
+    pub fn to_vecpak_bin(&self) -> Vec<u8> {
+        encode(self.to_vecpak_term())
     }
 
-    pub fn unpack_from_db(data: &[u8]) -> Option<Self> {
-        use amadeus_utils::vecpak::{self, Term as VTerm};
-
-        // decode vecpak format
-        let term = vecpak::decode(data).ok()?;
-
-        if let VTerm::PropList(props) = term {
-            let mut entry_hash = None;
-            let mut mutations_hash = None;
-            let mut signer = None;
-            let mut signature = None;
-
-            for (k, v) in props {
-                if let VTerm::Binary(key_bytes) = k {
-                    match key_bytes.as_slice() {
-                        b"entry_hash" => {
-                            if let VTerm::Binary(h) = v {
-                                if h.len() == 32 {
-                                    let mut arr = [0u8; 32];
-                                    arr.copy_from_slice(&h);
-                                    entry_hash = Some(arr);
-                                }
-                            }
-                        }
-                        b"mutations_hash" => {
-                            if let VTerm::Binary(m) = v {
-                                if m.len() == 32 {
-                                    let mut arr = [0u8; 32];
-                                    arr.copy_from_slice(&m);
-                                    mutations_hash = Some(arr);
-                                }
-                            }
-                        }
-                        b"signer" => {
-                            if let VTerm::Binary(s) = v {
-                                if s.len() == 48 {
-                                    let mut arr = [0u8; 48];
-                                    arr.copy_from_slice(&s);
-                                    signer = Some(arr);
-                                }
-                            }
-                        }
-                        b"signature" => {
-                            if let VTerm::Binary(s) = v {
-                                if s.len() == 96 {
-                                    let mut arr = [0u8; 96];
-                                    arr.copy_from_slice(&s);
-                                    signature = Some(arr);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            Some(Self {
-                entry_hash: entry_hash?,
-                mutations_hash: mutations_hash?,
-                signer: signer?,
-                signature: signature?,
-            })
-        } else {
-            None
-        }
-    }
-}
-
-pub mod db {
-    use super::Attestation;
-    use amadeus_utils::database::pad_integer;
-    use amadeus_utils::rocksdb::RocksDb;
-
-    pub fn by_height(height: u64, db: &RocksDb) -> Vec<Attestation> {
-        let prefix = format!("attestation:{}:", pad_integer(height));
-
-        db.iter_prefix("attestation", prefix.as_bytes())
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(_key, value)| Attestation::unpack_from_db(&value))
-            .collect()
+    pub fn from_vecpak_bin(data: &[u8]) -> Option<Self> {
+        let term = decode(data).ok()?.get_proplist_map()?;
+        Self::from_vecpak_map(&term).ok()
     }
 
-    pub fn put(attestation: &Attestation, height: u64, db: &RocksDb) -> Result<(), amadeus_utils::rocksdb::Error> {
-        let key = format!(
-            "attestation:{}:{}:{}:{}",
-            pad_integer(height),
-            hex::encode(&attestation.entry_hash),
-            hex::encode(&attestation.signer),
-            hex::encode(&attestation.mutations_hash)
-        );
-        let value = attestation.pack_for_db();
-        db.put("attestation", key.as_bytes(), &value)?;
-        Ok(())
+    pub fn to_vecpak_term(&self) -> Term {
+        Term::PropList(vec![
+            (Term::Binary(b"entry_hash".to_vec()), Term::Binary(self.entry_hash.to_vec())),
+            (Term::Binary(b"mutations_hash".to_vec()), Term::Binary(self.mutations_hash.to_vec())),
+            (Term::Binary(b"signer".to_vec()), Term::Binary(self.signer.to_vec())),
+            (Term::Binary(b"signature".to_vec()), Term::Binary(self.signature.to_vec())),
+        ])
     }
 }

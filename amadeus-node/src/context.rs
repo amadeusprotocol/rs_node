@@ -599,7 +599,8 @@ impl Context {
         entries_raw
             .into_iter()
             .map(|raw| {
-                consensus::doms::entry::Entry::unpack(&raw).map_err(|e| Error::String(format!("entry decode: {e}")))
+                consensus::doms::entry::Entry::from_vecpak_bin(&raw)
+                    .map_err(|_| Error::String("entry not vecpak in fabric".into()))
             })
             .collect()
     }
@@ -769,24 +770,8 @@ impl Context {
                 // - Build submit_sol transaction
             }
 
-            Instruction::ReceivedEntry { entry } => {
-                let seen_time_ms = get_unix_millis_now();
-                match entry.pack() {
-                    Ok(entry_bin) => {
-                        if let Err(e) = self.fabric.insert_entry(
-                            &entry.hash,
-                            entry.header.height,
-                            entry.header.slot,
-                            &entry_bin,
-                            seen_time_ms,
-                        ) {
-                            warn!("Failed to insert entry at height {}: {}", entry.header.height, e);
-                        } else {
-                            debug!("Successfully inserted entry at height {}", entry.header.height);
-                        }
-                    }
-                    Err(e) => warn!("Failed to pack entry for insertion: {}", e),
-                }
+            Instruction::ReceivedEntry { entry: _ } => {
+                // nothing here
             }
 
             Instruction::ReceivedAttestation { attestation } => {

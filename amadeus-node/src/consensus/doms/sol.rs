@@ -55,7 +55,7 @@ pub struct SolV0 {
 impl Solution {
     pub const TYPENAME: &'static str = "sol";
 
-    pub fn from_etf_validated(bin: &[u8]) -> std::result::Result<Self, Error> {
+    pub fn from_bin(bin: &[u8]) -> std::result::Result<Self, Error> {
         if bin.len() >= SOL_SIZE {
             // V2 solution
             let sol = amadeus_runtime::consensus::bic::sol::unpack(bin[..SOL_SIZE].try_into().unwrap());
@@ -101,10 +101,10 @@ impl Typename for Solution {
 impl Protocol for Solution {
     fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
         let bin = map.get_binary(b"sol").ok_or(protocol::Error::Vecpak("sol not found".to_string()))?;
-        Solution::from_etf_validated(bin).map_err(|_| protocol::Error::Vecpak("sol parse failed".to_string()))
+        Solution::from_bin(bin).map_err(|_| protocol::Error::Vecpak("sol parse failed".to_string()))
     }
 
-    fn to_vecpak_bin(&self) -> Result<Vec<u8>, protocol::Error> {
+    fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, protocol::Error> {
         use amadeus_utils::vecpak::encode;
         let sol_bin = match self {
             Solution::V2(v2) => {

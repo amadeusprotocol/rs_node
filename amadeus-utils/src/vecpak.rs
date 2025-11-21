@@ -2,22 +2,8 @@
 
 pub use ::vecpak::{Term, decode, encode, encode_term};
 
-use crate::vecpak_compat;
 use std::collections::HashMap;
 use tracing::warn;
-
-/// Decode binary data as vecpak Term (auto-detects legacy ETF and converts to vecpak)
-/// Returns vecpak::Term - the primary format for all protocol messages
-pub fn decode_seemingly_etf_to_vecpak(bin: &[u8]) -> Result<Term, &'static str> {
-    if vecpak_compat::is_bin_vecpak(bin) {
-        // Already vecpak - decode directly
-        decode(bin).map_err(|_| "vecpak decode failed")
-    } else {
-        // Legacy ETF format - convert to vecpak
-        let etf_term = eetf::Term::decode(bin).map_err(|_| "etf decode failed")?;
-        Ok(vecpak_compat::from_etf_term(&etf_term))
-    }
-}
 
 pub trait VecpakExt {
     fn get_varint(&self) -> Option<i128>;
@@ -139,12 +125,4 @@ where
             term.get_binary().and_then(|bytes| parser(bytes).map_err(|e| warn!("parse failed: {}", e)).ok())
         })
         .collect()
-}
-
-pub fn serialize_list<T, E>(items: &[T], serializer: impl Fn(&T) -> Result<Vec<u8>, E>) -> Option<Term>
-where
-    E: std::fmt::Display,
-{
-    let terms: Result<Vec<_>, _> = items.iter().map(|item| serializer(item).map(Term::Binary)).collect();
-    terms.ok().map(Term::List)
 }
