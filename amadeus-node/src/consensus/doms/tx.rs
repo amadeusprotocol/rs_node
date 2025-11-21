@@ -333,7 +333,7 @@ pub fn validate(tx_packed: &[u8], is_special_meeting_block: bool) -> Result<TxU,
     validate_basic(tx_packed, is_special_meeting_block)
 }
 
-/// Pack a parsed TxU back into a binary (ETF). Uses VanillaSer-compatible encoder.
+/// Pack a TxU into a binary using VanillaSer
 pub fn pack(txu: &TxU) -> Vec<u8> {
     // Build action maps
     let actions_list = txu

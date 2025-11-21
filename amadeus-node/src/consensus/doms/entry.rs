@@ -5,8 +5,8 @@ use crate::consensus::fabric;
 use crate::node::protocol;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381;
-use crate::utils::misc::{TermExt, TermMap, bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
-use crate::utils::safe_etf::{encode_safe, encode_safe_deterministic, i64_to_term, u64_to_term};
+use crate::utils::misc::{TermExt, bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
+use crate::utils::safe_etf::{encode_safe_deterministic, i64_to_term, u64_to_term};
 use crate::utils::{archiver, blake3};
 /// Entry is a consensus block in Amadeus
 use amadeus_utils::constants::{DST_ENTRY, DST_VRF};
@@ -68,8 +68,6 @@ impl From<Entry> for EntrySummary {
 impl EntrySummary {
     /// Primary: Parse from vecpak PropListMap
     pub fn from_vecpak_map(map: &amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
-        use amadeus_utils::vecpak::VecpakExt;
-
         // allow empty map to represent "no tip" like the Elixir reference
         if map.0.is_empty() {
             return Ok(Self::empty());
@@ -100,51 +98,6 @@ impl EntrySummary {
         let signature = map.get_binary(b"signature").ok_or(Error::BadEtf("signature"))?;
         let mask = map.get_binary::<Vec<u8>>(b"mask").map(bin_to_bitvec);
         Ok(Self { header, signature, mask })
-    }
-
-    /// Legacy: Parse from ETF TermMap (for backwards compatibility)
-    pub fn from_etf_term(map: &TermMap) -> Result<Self, Error> {
-        // allow empty map to represent "no tip" like the Elixir reference
-        if map.0.is_empty() {
-            return Ok(Self::empty());
-        }
-
-        // Handle header field - it can be either:
-        // 1. A binary (encoded header) - original ETF format
-        // 2. A map (header fields) - vecpak format from Elixir
-        let header = if let Some(header_bin) = map.get_binary::<Vec<u8>>("header") {
-            // Case 1: header is already encoded as binary (original format)
-            EntryHeader::from_etf_bin(&header_bin).map_err(|_| Error::BadEtf("header"))?
-        } else if let Some(header_map) = map.get_term_map("header") {
-            // Case 2: header is a map with fields (vecpak format)
-            let height = header_map.get_integer("height").ok_or(Error::BadEtf("height"))?;
-            let slot = header_map.get_integer("slot").ok_or(Error::BadEtf("slot"))?;
-            let prev_slot = header_map.get_integer("prev_slot").ok_or(Error::BadEtf("prev_slot"))?;
-            let prev_hash = header_map.get_binary("prev_hash").ok_or(Error::BadEtf("prev_hash"))?;
-            let dr = header_map.get_binary("dr").ok_or(Error::BadEtf("dr"))?;
-            let vr = header_map.get_binary("vr").ok_or(Error::BadEtf("vr"))?;
-            let signer = header_map.get_binary("signer").ok_or(Error::BadEtf("signer"))?;
-            let txs_hash = header_map.get_binary("txs_hash").ok_or(Error::BadEtf("txs_hash"))?;
-
-            EntryHeader { height, slot, prev_slot, prev_hash, dr, vr, signer, txs_hash }
-        } else {
-            return Err(Error::BadEtf("header"));
-        };
-
-        let signature = map.get_binary("signature").ok_or(Error::BadEtf("signature"))?;
-        let mask = map.get_binary("mask").map(bin_to_bitvec);
-        Ok(Self { header, signature, mask })
-    }
-
-    /// Convert EntrySummary to ETF term for encoding
-    pub fn to_etf_term(&self) -> Result<Term, Error> {
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("header")), Term::from(Binary { bytes: self.header.to_etf_bin()? }));
-        m.insert(Term::Atom(Atom::from("signature")), Term::from(Binary { bytes: self.signature.to_vec() }));
-        if let Some(mask) = &self.mask {
-            m.insert(Term::Atom(Atom::from("mask")), Term::from(Binary { bytes: bitvec_to_bin(mask) }));
-        }
-        Ok(Term::from(Map { map: m }))
     }
 
     pub fn to_vecpak_term(&self) -> vecpak::Term {
@@ -567,16 +520,16 @@ impl Protocol for Entry {
         let bin = map.get_binary(b"entry_packed").ok_or(Error::BadEtf("entry_packed"))?;
         Entry::from_etf_bin_validated(bin, ENTRY_SIZE).map_err(Into::into)
     }
-    fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        let entry_bin: Vec<u8> = self.pack().map_err(|_| protocol::Error::BadEtf("entry"))?;
 
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
-        m.insert(Term::Atom(Atom::from("entry_packed")), Term::from(Binary { bytes: entry_bin }));
+    fn to_vecpak_bin(&self) -> Result<Vec<u8>, protocol::Error> {
+        use amadeus_utils::vecpak::encode;
+        let entry_bin: Vec<u8> = self.pack().map_err(|_| protocol::Error::Vecpak("entry pack failed".to_string()))?;
 
-        let term = Term::from(Map { map: m });
-        let out = encode_safe(&term);
-        Ok(out)
+        let pairs = vec![
+            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
+            (vecpak::Term::Binary(b"entry_packed".to_vec()), vecpak::Term::Binary(entry_bin)),
+        ];
+        Ok(encode(vecpak::Term::PropList(pairs)))
     }
 
     async fn handle(&self, ctx: &Context, _src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
@@ -622,18 +575,6 @@ impl fmt::Debug for Entry {
 
 impl Entry {
     pub const TYPENAME: &'static str = "event_entry";
-
-    pub fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        let entry_bin: Vec<u8> = self.pack().map_err(|_| protocol::Error::BadEtf("entry"))?;
-
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
-        m.insert(Term::Atom(Atom::from("entry_packed")), Term::from(Binary { bytes: entry_bin }));
-
-        let term = Term::from(Map { map: m });
-        let out = encode_safe(&term);
-        Ok(out)
-    }
 
     pub fn from_etf_bin_validated(bin: &[u8], entry_size_limit: usize) -> Result<Entry, Error> {
         if bin.len() >= entry_size_limit {
@@ -724,16 +665,6 @@ struct ParsedEntry {
 }
 
 impl ParsedEntry {
-    #[allow(dead_code)]
-    pub fn from_etf_bin(bin: &[u8]) -> Result<Self, Error> {
-        let entry = Entry::unpack(bin)?;
-        let term = Term::decode(bin)?;
-        let map = term.get_term_map().ok_or(Error::BadEtf("entry"))?;
-        let header_bin: Vec<u8> = map.get_binary("header").ok_or(Error::BadEtf("header"))?;
-
-        Ok(ParsedEntry { entry, header_bin })
-    }
-
     fn validate_signature(&self) -> Result<(), Error> {
         if let Some(_mask) = &self.entry.mask {
             // Aggregate signature path requires trainers from chain state (DB); not available here.

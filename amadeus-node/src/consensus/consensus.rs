@@ -138,19 +138,27 @@ impl Consensus {
         }
     }
 
-    /// Encode into an ETF map with deterministic field set (Elixir Map.take and term_to_binary)
-    pub fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("entry_hash")), Term::from(Binary { bytes: self.entry_hash.to_vec() }));
-        m.insert(Term::Atom(Atom::from("mutations_hash")), Term::from(Binary { bytes: self.mutations_hash.to_vec() }));
+    /// Encode into vecpak format
+    pub fn pack(&self) -> Result<Vec<u8>, Error> {
+        use amadeus_utils::vecpak::{self, Term as VTerm};
+
+        let mut pairs = vec![
+            (VTerm::Binary(b"entry_hash".to_vec()), VTerm::Binary(self.entry_hash.to_vec())),
+            (VTerm::Binary(b"mutations_hash".to_vec()), VTerm::Binary(self.mutations_hash.to_vec())),
+        ];
+
         if self.mask.count_ones() < self.mask.len() {
-            m.insert(Term::Atom(Atom::from("mask")), Term::from(Binary { bytes: bitvec_to_bin(&self.mask) }));
+            pairs.push((VTerm::Binary(b"mask".to_vec()), VTerm::Binary(bitvec_to_bin(&self.mask))));
         }
-        m.insert(Term::Atom(Atom::from("aggsig")), Term::from(Binary { bytes: self.agg_sig.to_vec() }));
-        let term = Term::from(eetf::Map { map: m });
-        let mut out = Vec::new();
-        term.encode(&mut out)?;
-        Ok(out)
+
+        pairs.push((VTerm::Binary(b"aggsig".to_vec()), VTerm::Binary(self.agg_sig.to_vec())));
+
+        Ok(vecpak::encode(VTerm::PropList(pairs)))
+    }
+
+    /// Legacy method - kept for backwards compatibility
+    pub fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
+        self.pack()
     }
 }
 
@@ -570,7 +578,7 @@ pub fn apply_entry(
     let pk = config.get_pk();
     let sk = config.get_sk();
     let attestation = Attestation::sign_with(&pk, &sk, &next_entry.hash, &mutations_hash)?;
-    let attestation_packed = attestation.to_etf_bin()?;
+    let attestation_packed = attestation.pack()?;
 
     // store my attestation
     fabric.put_attestation(&next_entry.hash, &attestation_packed)?;
@@ -1092,7 +1100,7 @@ pub async fn proc_entries(fabric: &Fabric, config: &crate::config::Config, ctx: 
 async fn broadcast_attestation(ctx: &crate::Context, attestation_packed: &[u8], entry_hash: &[u8; 32]) {
     use crate::consensus::doms::attestation::{Attestation, EventAttestation};
 
-    let Ok(attestation) = Attestation::from_etf_bin(attestation_packed) else {
+    let Some(attestation) = Attestation::unpack_from_db(attestation_packed) else {
         warn!("failed to decode attestation for broadcast");
         return;
     };

@@ -1,10 +1,8 @@
 use crate::Context;
 use crate::node::protocol::{self, Protocol};
 use crate::utils::misc::Typename;
-use crate::utils::safe_etf::encode_safe;
 use amadeus_runtime::consensus::bic::sol::SOL_SIZE;
-use eetf::{Atom, Binary, Map, Term};
-use std::collections::HashMap;
+use amadeus_utils::vecpak;
 use std::convert::TryInto;
 use std::net::Ipv4Addr;
 
@@ -102,11 +100,12 @@ impl Typename for Solution {
 #[async_trait::async_trait]
 impl Protocol for Solution {
     fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
-        let bin = map.get_binary(b"sol").ok_or(protocol::Error::BadEtf("sol"))?;
-        Solution::from_etf_validated(bin).map_err(|_| protocol::Error::BadEtf("sol"))
+        let bin = map.get_binary(b"sol").ok_or(protocol::Error::Vecpak("sol not found".to_string()))?;
+        Solution::from_etf_validated(bin).map_err(|_| protocol::Error::Vecpak("sol parse failed".to_string()))
     }
 
-    fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
+    fn to_vecpak_bin(&self) -> Result<Vec<u8>, protocol::Error> {
+        use amadeus_utils::vecpak::encode;
         let sol_bin = match self {
             Solution::V2(v2) => {
                 let mut buf = Vec::with_capacity(SOL_SIZE);
@@ -140,11 +139,11 @@ impl Protocol for Solution {
             }
         };
 
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Solution::TYPENAME)));
-        m.insert(Term::Atom(Atom::from("sol")), Term::from(Binary { bytes: sol_bin }));
-        let term = Term::from(Map { map: m });
-        Ok(encode_safe(&term))
+        let pairs = vec![
+            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Solution::TYPENAME.as_bytes().to_vec())),
+            (vecpak::Term::Binary(b"sol".to_vec()), vecpak::Term::Binary(sol_bin)),
+        ];
+        Ok(encode(vecpak::Term::PropList(pairs)))
     }
 
     async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {

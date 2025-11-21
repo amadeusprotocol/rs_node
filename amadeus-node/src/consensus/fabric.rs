@@ -6,9 +6,8 @@ use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
 use amadeus_utils::constants::{CF_ATTESTATION, CF_ENTRY, CF_ENTRY_META, CF_SYSCONF, CF_TX, CF_TX_ACCOUNT_NONCE};
 use amadeus_utils::misc::get_bits_percentage;
 use amadeus_utils::rocksdb::{Direction, IteratorMode, ReadOptions};
-use amadeus_utils::safe_etf::u32_to_term;
+use amadeus_utils::vecpak::{Term, decode};
 use bitvec::prelude::*;
-use eetf::{Atom, Binary, Term};
 use std::collections::HashMap;
 use tracing::Instrument;
 
@@ -81,12 +80,10 @@ impl Fabric {
         let db = &self.db;
 
         // read progress
-        let next_epoch = if let Ok(Some(bin)) = self.db.get(CF_SYSCONF, b"finality_clean_next_epoch") {
-            if let Ok(term) = Term::decode(bin.as_slice()) {
-                TermExt::get_integer(&term).unwrap_or(0) as u32
-            } else {
-                0u32
-            }
+        let next_epoch = if let Ok(Some(bin)) = self.db.get(CF_SYSCONF, b"finality_clean_next_epoch")
+            && let Ok(bytes) = bin.try_into()
+        {
+            u32::from_be_bytes(bytes)
         } else {
             0u32
         };
@@ -117,9 +114,9 @@ impl Fabric {
 
         let cf_sysconf = db.inner.cf_handle(CF_SYSCONF).unwrap();
 
-        let next_epoch_term = encode_safe_deterministic(&u32_to_term(next_epoch + 1));
+        let next_epoch_be = (next_epoch + 1).to_be_bytes();
         let txn = db.begin_transaction();
-        let _ = txn.put_cf(&cf_sysconf, b"finality_clean_next_epoch", &next_epoch_term);
+        let _ = txn.put_cf(&cf_sysconf, b"finality_clean_next_epoch", &next_epoch_be);
         let _ = txn.commit();
     }
 
@@ -198,13 +195,6 @@ impl Fabric {
             } else if bin.len() == 16 {
                 let bytes: [u8; 16] = bin.try_into().unwrap();
                 return Ok(Some(u128::from_le_bytes(bytes) as u64));
-            }
-            // fallback: try ETF for backward compatibility
-            if let Ok(term) = Term::decode(bin.as_slice()) {
-                if let Some(integer_val) = TermExt::get_integer(&term) {
-                    let seen_millis: u64 = integer_val.try_into().map_err(|_| Error::BadEtf("seen_time"))?;
-                    return Ok(Some(seen_millis));
-                }
             }
             return Err(Error::BadEtf("seen_time_format"));
         }
@@ -355,8 +345,6 @@ impl Fabric {
         trainers: &[[u8; 48]],
         entry_hash: &[u8],
     ) -> Result<(Option<[u8; 32]>, Option<f64>, Option<StoredConsensus>), Error> {
-        use amadeus_utils::vecpak;
-
         let prefix = format!("consensus:{}:", hex::encode(entry_hash));
         let items = self.db.iter_prefix(CF_ATTESTATION, prefix.as_bytes())?;
 
@@ -371,12 +359,10 @@ impl Fabric {
                 if parts.len() >= 3 {
                     if let Ok(mutations_hash) = hex::decode(parts[2]) {
                         if mutations_hash.len() == 32 {
-                            if let Ok(term) = vecpak::decode_seemingly_etf_to_vecpak(&value) {
-                                if let Some(stored) = parse_stored_consensus_from_vecpak(term) {
-                                    let mut hash_array = [0u8; 32];
-                                    hash_array.copy_from_slice(&mutations_hash);
-                                    consensuses.push((hash_array, stored));
-                                }
+                            if let Some(stored) = parse_stored_consensus(&value) {
+                                let mut hash_array = [0u8; 32];
+                                hash_array.copy_from_slice(&mutations_hash);
+                                consensuses.push((hash_array, stored));
                             }
                         }
                     }
@@ -438,7 +424,7 @@ impl Fabric {
                     return Ok(Some(u32::from_be_bytes(arr) as u64));
                 }
                 // Try ETF term (for Elixir compatibility)
-                if let Ok(term) = Term::decode(&mut std::io::Cursor::new(&hb)) {
+                if let Ok(term) = eetf::Term::decode(&mut std::io::Cursor::new(&hb)) {
                     if let Some(height) = TermExt::get_integer(&term) {
                         return Ok(Some(height as u64));
                     }
@@ -491,12 +477,6 @@ impl Fabric {
                     let arr: [u8; 4] = hb.try_into().map_err(|_| Error::KvCell("rooted_height"))?;
                     return Ok(Some(u32::from_be_bytes(arr) as u64));
                 }
-                // Try ETF term (for Elixir compatibility)
-                if let Ok(term) = Term::decode(&mut std::io::Cursor::new(&hb)) {
-                    if let Some(height) = TermExt::get_integer(&term) {
-                        return Ok(Some(height as u64));
-                    }
-                }
                 Err(Error::KvCell("rooted_height"))
             }
             None => Ok(None),
@@ -545,7 +525,7 @@ impl Fabric {
     }
 
     pub fn put_attestation(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
-        let attestation = Attestation::from_etf_bin(data)?;
+        let attestation = Attestation::unpack_from_db(data).ok_or(Error::BadEtf("attestation_unpack_failed"))?;
         let entry = self.get_entry_by_hash(hash).ok_or(Error::BadEtf("entry_not_found"))?;
 
         let key = format!(
@@ -978,51 +958,27 @@ pub struct StoredConsensus {
 
 #[allow(dead_code)]
 fn pack_consensus_map(map: &HashMap<[u8; 32], StoredConsensus>) -> Result<Vec<u8>, Error> {
-    // Encode as ETF map: key: mutations_hash (binary 32); val: map{mask: bitstring, aggsig: binary}
-    let mut outer = HashMap::<Term, Term>::new();
+    use amadeus_utils::vecpak::{self, Term as VTerm};
+
+    let mut entries = Vec::new();
     for (mut_hash, v) in map.iter() {
-        let key = Term::from(Binary { bytes: mut_hash.to_vec() });
-        // pack mask into bytes (bitstring, MSB first)
         let mask_bytes = bitvec_to_bin(&v.mask);
-        let mut inner = HashMap::new();
-        inner.insert(Term::Atom(Atom::from("mask")), Term::from(Binary { bytes: mask_bytes }));
-        inner.insert(Term::Atom(Atom::from("aggsig")), Term::from(Binary { bytes: v.agg_sig.to_vec() }));
-        outer.insert(key, Term::from(eetf::Map { map: inner }));
+        let consensus_data = VTerm::PropList(vec![
+            (VTerm::Binary(b"mask".to_vec()), VTerm::Binary(mask_bytes)),
+            (VTerm::Binary(b"agg_sig".to_vec()), VTerm::Binary(v.agg_sig.to_vec())),
+        ]);
+        entries.push((VTerm::Binary(mut_hash.to_vec()), consensus_data));
     }
-    let term = Term::from(eetf::Map { map: outer });
-    let out = encode_safe_deterministic(&term);
-    Ok(out)
+    let term = VTerm::PropList(entries);
+    Ok(vecpak::encode(term))
 }
 
-#[allow(dead_code)]
-fn unpack_consensus_map(bin: &[u8]) -> Result<HashMap<[u8; 32], StoredConsensus>, Error> {
-    let term = Term::decode(bin)?;
-    let Some(map) = TermExt::get_term_map(&term) else { return Ok(HashMap::new()) };
-
-    let mut out: HashMap<[u8; 32], StoredConsensus> = HashMap::new();
-    for (k, v) in map.0.into_iter() {
-        // key: mutations_hash (binary 32)
-        let mh_bytes = TermExt::get_binary(&k).ok_or(Error::BadEtf("mutations_hash"))?;
-        let mh: [u8; 32] = mh_bytes.try_into().map_err(|_| Error::KvCell("mutations_hash"))?;
-
-        // value: map with keys mask (bitstring), agg_sig (binary)
-        let inner = TermExt::get_term_map(&v).ok_or(Error::BadEtf("consensus_inner"))?;
-        let mask = inner.get_binary("mask").map(bin_to_bitvec).ok_or(Error::BadEtf("mask"))?;
-        let agg_sig = inner.get_binary("aggsig").ok_or(Error::BadEtf("aggsig"))?;
-
-        out.insert(mh, StoredConsensus { mask, agg_sig });
-    }
-    Ok(out)
-}
-
-fn extract_mask_from_consensus_term(term: &amadeus_utils::vecpak::Term) -> Option<BitVec<u8, Msb0>> {
-    use amadeus_utils::vecpak::Term as VTerm;
-
-    if let VTerm::PropList(props) = term {
+fn extract_mask_from_consensus_term(term: &Term) -> Option<BitVec<u8, Msb0>> {
+    if let Term::PropList(props) = term {
         for (k, v) in props {
-            if let VTerm::Binary(key_bytes) = k {
+            if let Term::Binary(key_bytes) = k {
                 if key_bytes == b"mask" {
-                    if let VTerm::Binary(mask_bytes) = v {
+                    if let Term::Binary(mask_bytes) = v {
                         return Some(bin_to_bitvec(mask_bytes.clone()));
                     }
                 }
@@ -1032,23 +988,21 @@ fn extract_mask_from_consensus_term(term: &amadeus_utils::vecpak::Term) -> Optio
     None
 }
 
-fn parse_stored_consensus_from_vecpak(term: amadeus_utils::vecpak::Term) -> Option<StoredConsensus> {
-    use amadeus_utils::vecpak::Term as VTerm;
-
-    if let VTerm::PropList(props) = term {
+fn parse_stored_consensus(bin: &[u8]) -> Option<StoredConsensus> {
+    if let Term::PropList(props) = decode(bin).ok()? {
         let mut mask = None;
         let mut agg_sig = None;
 
         for (k, v) in props {
-            if let VTerm::Binary(key_bytes) = k {
+            if let Term::Binary(key_bytes) = k {
                 match key_bytes.as_slice() {
                     b"mask" => {
-                        if let VTerm::Binary(m) = v {
+                        if let Term::Binary(m) = v {
                             mask = Some(bin_to_bitvec(m));
                         }
                     }
                     b"agg_sig" => {
-                        if let VTerm::Binary(s) = v {
+                        if let Term::Binary(s) = v {
                             if s.len() == 96 {
                                 let mut arr = [0u8; 96];
                                 arr.copy_from_slice(&s);
@@ -1142,29 +1096,6 @@ mod tests {
         assert!(fab.get_muts_rev(&h2).unwrap().is_none());
         assert!(fab.get_muts_rev(&h3).unwrap().is_none());
         assert!(fab.get_muts_rev(&h4).unwrap().is_some());
-    }
-
-    #[test]
-    fn test_pack_unpack_consensus_map() {
-        let mut map = HashMap::new();
-        map.insert([1; 32], StoredConsensus { mask: bitvec![u8, Msb0; 1, 0, 1, 1, 0, 1, 0, 0], agg_sig: [10; 96] });
-        map.insert(
-            [2; 32],
-            StoredConsensus {
-                mask: bitvec![u8, Msb0; 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0],
-                agg_sig: [20; 96],
-            },
-        );
-        map.insert([3; 32], StoredConsensus { mask: bitvec![u8, Msb0; 0, 0, 0, 0, 1, 1, 1, 1], agg_sig: [30; 96] });
-
-        let packed = pack_consensus_map(&map).unwrap();
-        let unpacked = unpack_consensus_map(&packed).unwrap();
-
-        assert_eq!(unpacked.len(), 3);
-        assert_eq!(unpacked[&[1; 32]].agg_sig, [10; 96]);
-        assert_eq!(unpacked[&[2; 32]].agg_sig, [20; 96]);
-        assert_eq!(unpacked[&[3; 32]].agg_sig, [30; 96]);
-        assert_eq!(map, unpacked);
     }
 
     #[test]
@@ -1278,7 +1209,7 @@ mod tests {
 
         // check what Consensus::from_etf_bin produces
         use crate::consensus::consensus::Consensus;
-        let consensus_via_lib = Consensus::from_etf_bin(&consensus_bin).unwrap();
+        let _consensus_via_lib = Consensus::from_etf_bin(&consensus_bin).unwrap();
 
         let term = Term::decode(&consensus_bin[..]).unwrap();
         let map = term.get_term_map().unwrap();

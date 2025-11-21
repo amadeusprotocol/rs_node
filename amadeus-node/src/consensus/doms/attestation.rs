@@ -3,13 +3,7 @@ use crate::node::protocol;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381 as bls;
 use crate::utils::bls12_381::Error as BlsError;
-use crate::utils::misc::TermExt;
-use crate::utils::safe_etf::encode_safe;
 use amadeus_utils::constants::DST_ATT;
-use eetf::DecodeError as EtfDecodeError;
-use eetf::EncodeError as EtfEncodeError;
-use eetf::{Atom, Binary, Term};
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::net::Ipv4Addr;
 use tracing::{instrument, warn};
@@ -28,10 +22,6 @@ pub enum Error {
     NotDeterministic,
     #[error("invalid length: {0}")]
     InvalidLength(&'static str),
-    #[error(transparent)]
-    EtfDecode(#[from] EtfDecodeError),
-    #[error(transparent)]
-    EtfEncode(#[from] EtfEncodeError),
     #[error(transparent)]
     Bls(#[from] BlsError),
 }
@@ -84,8 +74,8 @@ impl Protocol for EventAttestation {
                     attestations.push(attestation);
                 }
                 VTerm::Binary(bin) => {
-                    // Also support binary format for backwards compatibility
-                    let attestation = Attestation::from_etf_bin(bin)?;
+                    // Also support binary format (vecpak encoded)
+                    let attestation = Attestation::unpack_from_db(bin).ok_or(Error::AttestationNotBinary)?;
                     attestations.push(attestation);
                 }
                 _ => return Err(Error::AttestationNotBinary.into()),
@@ -95,19 +85,23 @@ impl Protocol for EventAttestation {
         Ok(Self { attestations })
     }
 
-    fn to_etf_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        let mut attestations_list = Vec::new();
-        for attestation in &self.attestations {
-            let attestation_bin = attestation.to_etf_bin()?;
-            attestations_list.push(Term::from(Binary { bytes: attestation_bin }));
-        }
+    fn to_vecpak_bin(&self) -> Result<Vec<u8>, protocol::Error> {
+        use amadeus_utils::vecpak::{self, encode};
 
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("op")), Term::Atom(Atom::from(Self::TYPENAME)));
-        m.insert(Term::Atom(Atom::from("attestations")), Term::List(eetf::List { elements: attestations_list }));
-        let term = Term::from(eetf::Map { map: m });
-        let etf_data = encode_safe(&term);
-        Ok(etf_data)
+        let attestations_list: Vec<vecpak::Term> = self
+            .attestations
+            .iter()
+            .map(|attestation| {
+                let attestation_bin = attestation.pack().map_err(|e| protocol::Error::Att(e))?;
+                Ok(vecpak::Term::Binary(attestation_bin))
+            })
+            .collect::<Result<Vec<_>, protocol::Error>>()?;
+
+        let pairs = vec![
+            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
+            (vecpak::Term::Binary(b"attestations".to_vec()), vecpak::Term::List(attestations_list)),
+        ];
+        Ok(encode(vecpak::Term::PropList(pairs)))
     }
 
     #[instrument(skip(self, _ctx), name = "EventAttestation::handle", err)]
@@ -122,22 +116,9 @@ impl EventAttestation {
 }
 
 impl Attestation {
-    #[instrument(skip(bin), name = "Attestation::from_etf_bin", err)]
-    pub fn from_etf_bin(bin: &[u8]) -> Result<Self, Error> {
-        let term = Term::decode(bin)?;
-
-        let map = match term {
-            Term::Map(m) => m,
-            _ => return Err(Error::WrongType("attestation map")),
-        };
-        Self::from_etf_map(&map)
-    }
-
     /// Parse from vecpak PropListMap (primary format)
     #[instrument(skip(map), name = "Attestation::from_vecpak_map", err)]
     pub fn from_vecpak_map(map: &amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
-        use amadeus_utils::vecpak::VecpakExt;
-
         let entry_hash_v = map.get_binary::<Vec<u8>>(b"entry_hash").ok_or(Error::Missing("entry_hash"))?;
         let mutations_hash_v = map.get_binary::<Vec<u8>>(b"mutations_hash").ok_or(Error::Missing("mutations_hash"))?;
         let signer_v = map.get_binary::<Vec<u8>>(b"signer").ok_or(Error::Missing("signer"))?;
@@ -151,55 +132,9 @@ impl Attestation {
         })
     }
 
-    /// Parse from legacy ETF map (for backwards compatibility)
-    #[instrument(skip(map), name = "Attestation::from_etf_map", err)]
-    pub fn from_etf_map(map: &eetf::Map) -> Result<Self, Error> {
-        let entry_hash_v = map
-            .map
-            .get(&Term::Atom(Atom::from("entry_hash")))
-            .and_then(|t| t.get_binary())
-            .map(|b| b.to_vec())
-            .ok_or_else(|| Error::Missing("entry_hash"))?;
-
-        let mutations_hash_v = map
-            .map
-            .get(&Term::Atom(Atom::from("mutations_hash")))
-            .and_then(|t| t.get_binary())
-            .map(|b| b.to_vec())
-            .ok_or_else(|| Error::Missing("mutations_hash"))?;
-
-        let signer_v = map
-            .map
-            .get(&Term::Atom(Atom::from("signer")))
-            .and_then(|t| t.get_binary())
-            .map(|b| b.to_vec())
-            .ok_or_else(|| Error::Missing("signer"))?;
-
-        let signature_v = map
-            .map
-            .get(&Term::Atom(Atom::from("signature")))
-            .and_then(|t| t.get_binary())
-            .map(|b| b.to_vec())
-            .ok_or_else(|| Error::Missing("signature"))?;
-
-        Ok(Attestation {
-            entry_hash: entry_hash_v.try_into().map_err(|_| Error::InvalidLength("entry_hash"))?,
-            mutations_hash: mutations_hash_v.try_into().map_err(|_| Error::InvalidLength("mutations_hash"))?,
-            signer: signer_v.try_into().map_err(|_| Error::InvalidLength("signer"))?,
-            signature: signature_v.try_into().map_err(|_| Error::InvalidLength("signature"))?,
-        })
-    }
-    /// Encode into an ETF map with deterministic field set
-    #[instrument(skip(self), name = "Attestation::to_etf_bin", err)]
-    pub fn to_etf_bin(&self) -> Result<Vec<u8>, Error> {
-        let mut m = HashMap::new();
-        m.insert(Term::Atom(Atom::from("entry_hash")), Term::from(Binary { bytes: self.entry_hash.to_vec() }));
-        m.insert(Term::Atom(Atom::from("mutations_hash")), Term::from(Binary { bytes: self.mutations_hash.to_vec() }));
-        m.insert(Term::Atom(Atom::from("signer")), Term::from(Binary { bytes: self.signer.to_vec() }));
-        m.insert(Term::Atom(Atom::from("signature")), Term::from(Binary { bytes: self.signature.to_vec() }));
-        let term = Term::from(eetf::Map { map: m });
-        let out = encode_safe(&term);
-        Ok(out)
+    /// Encode to vecpak binary format
+    pub fn pack(&self) -> Result<Vec<u8>, Error> {
+        Ok(self.pack_for_db())
     }
 
     /// Validate sizes and signature with DST_ATT
@@ -258,14 +193,8 @@ impl Attestation {
     pub fn unpack_from_db(data: &[u8]) -> Option<Self> {
         use amadeus_utils::vecpak::{self, Term as VTerm};
 
-        // try vecpak format first (new format)
-        let term = match vecpak::decode_seemingly_etf_to_vecpak(data) {
-            Ok(t) => t,
-            Err(_) => {
-                // fallback to ETF format (legacy format)
-                return Self::from_etf_bin(data).ok();
-            }
-        };
+        // decode vecpak format
+        let term = vecpak::decode(data).ok()?;
 
         if let VTerm::PropList(props) = term {
             let mut entry_hash = None;

@@ -1,6 +1,6 @@
 //! Vecpak term utilities similar to eetf TermExt
 
-pub use ::vecpak::{Term, decode_term, encode, encode_term};
+pub use ::vecpak::{Term, decode, encode, encode_term};
 
 use crate::vecpak_compat;
 use std::collections::HashMap;
@@ -11,8 +11,7 @@ use tracing::warn;
 pub fn decode_seemingly_etf_to_vecpak(bin: &[u8]) -> Result<Term, &'static str> {
     if vecpak_compat::is_bin_vecpak(bin) {
         // Already vecpak - decode directly
-        let mut offset = 0;
-        decode_term(bin, &mut offset).map_err(|_| "vecpak decode failed")
+        decode(bin).map_err(|_| "vecpak decode failed")
     } else {
         // Legacy ETF format - convert to vecpak
         let etf_term = eetf::Term::decode(bin).map_err(|_| "etf decode failed")?;
