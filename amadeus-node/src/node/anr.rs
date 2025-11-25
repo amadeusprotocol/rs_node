@@ -380,8 +380,8 @@ impl Anr {
     // pack anr for network transmission
     pub fn pack(&self) -> Anr {
         Anr {
-            ip4: self.ip4,
-            pk: self.pk.clone(),
+            ip4: self.ip4.clone(),
+            pk: self.pk,
             pop: self.pop.clone(),
             port: self.port,
             signature: self.signature.clone(),
@@ -426,7 +426,7 @@ impl NodeAnrs {
         // let hasChainPop = consensus::chain_pop(&anr.pk).is_some();
         anr.hasChainPop = false; // placeholder
 
-        let pk = anr.pk.clone();
+        let pk = anr.pk;
 
         // check if anr already exists and update accordingly
         let mut map = self.store.write().await;
@@ -498,12 +498,12 @@ impl NodeAnrs {
     /// Check if protocol message is within rate limit for this peer
     pub async fn is_within_proto_limit(&self, pk: &[u8], typename: &str) -> Option<bool> {
         let mut map = self.store.write().await;
-        if let Some(anr) = map.get_mut(pk) {
-            if let Some(limit) = PROTO_RATE_LIMITS.get(typename) {
-                let counter = anr.proto_reqs.entry(typename.to_string()).or_insert(0);
-                *counter += 1;
-                return Some(*counter < *limit);
-            }
+        if let Some(anr) = map.get_mut(pk)
+            && let Some(limit) = PROTO_RATE_LIMITS.get(typename)
+        {
+            let counter = anr.proto_reqs.entry(typename.to_string()).or_insert(0);
+            *counter += 1;
+            return Some(*counter < *limit);
         }
         None
     }
