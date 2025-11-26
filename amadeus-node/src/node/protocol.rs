@@ -135,8 +135,8 @@ pub fn parse_vecpak_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
     // `op` determines the variant (binary string key in vecpak)
     let op_name = map.get_string(b"op").ok_or(Error::ParseError("op"))?;
     let proto: Box<dyn Protocol> = match op_name.as_str() {
-        Ping::TYPENAME => Box::new(Ping::from_vecpak_map_validated(map)?),
-        PingReply::TYPENAME => Box::new(PingReply::from_vecpak_map_validated(map)?),
+        Ping::TYPENAME => Box::new(vecpak::from_slice::<Ping>(bin)?),
+        PingReply::TYPENAME => Box::new(vecpak::from_slice::<PingReply>(bin)?),
         Entry::TYPENAME => Box::new(Entry::from_vecpak_map_validated(map)?),
         EventTip::TYPENAME => Box::new(EventTip::from_vecpak_map_validated(map)?),
         EventAttestation::TYPENAME => Box::new(EventAttestation::from_vecpak_map_validated(map)?),
@@ -240,14 +240,17 @@ impl EventTip {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Ping {
+    pub op: String,
     pub ts_m: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct PingReply {
+    pub op: String,
     pub ts_m: u64,
+    #[serde(skip)]
     pub seen_time: u64,
 }
 
@@ -499,16 +502,12 @@ impl Typename for Ping {
 impl Protocol for Ping {
     fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
         let ts_m = map.get_integer(b"ts_m").ok_or(Error::ParseError("ts_m"))?;
-        Ok(Self { ts_m })
+        Ok(Self { op: Self::TYPENAME.to_string(), ts_m })
     }
 
     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, Error> {
-        use amadeus_utils::vecpak::encode;
-        let pairs = vec![
-            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
-            (vecpak::Term::Binary(b"ts_m".to_vec()), vecpak::Term::VarInt(self.ts_m as i128)),
-        ];
-        Ok(encode(vecpak::Term::PropList(pairs)))
+        let bin = vecpak::to_vec(&self)?;
+        Ok(bin)
     }
 
     #[instrument(skip(self, ctx), fields(src = %src), name = "Ping::handle")]
@@ -523,12 +522,12 @@ impl Ping {
 
     /// Create a new Ping with current timestamp (v1.1.7+ simplified format)
     pub fn new() -> Self {
-        Self { ts_m: get_unix_millis_now() }
+        Self { op: Self::TYPENAME.to_string(), ts_m: get_unix_millis_now() }
     }
 
     /// Create Ping with specific timestamp
     pub fn with_timestamp(ts_m: u64) -> Self {
-        Self { ts_m }
+        Self { op: Self::TYPENAME.to_string(), ts_m }
     }
 }
 
@@ -544,16 +543,12 @@ impl Protocol for PingReply {
         let ts_m = map.get_integer(b"ts_m").ok_or(Error::ParseError("ts_m"))?;
         let seen_time_ms = get_unix_millis_now();
         // check what else must be validated
-        Ok(Self { ts_m: ts_m, seen_time: seen_time_ms })
+        Ok(Self { op: Self::TYPENAME.to_string(), ts_m: ts_m, seen_time: seen_time_ms })
     }
 
     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, Error> {
-        use amadeus_utils::vecpak::encode;
-        let pairs = vec![
-            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
-            (vecpak::Term::Binary(b"ts_m".to_vec()), vecpak::Term::VarInt(self.ts_m as i128)),
-        ];
-        Ok(encode(vecpak::Term::PropList(pairs)))
+        let bin = vecpak::to_vec(&self)?;
+        Ok(bin)
     }
 
     #[instrument(skip(self, ctx), fields(src = %src), name = "PingReply::handle")]
@@ -565,6 +560,10 @@ impl Protocol for PingReply {
 
 impl PingReply {
     pub const TYPENAME: &'static str = "ping_reply";
+
+    pub fn new(ts_m: u64) -> Self {
+        Self { op: Self::TYPENAME.to_string(), ts_m, seen_time: get_unix_millis_now() }
+    }
 }
 
 #[derive(Debug)]
@@ -746,10 +745,8 @@ impl Protocol for NewPhoneWhoDis {
     }
 
     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, Error> {
-        use amadeus_utils::vecpak::encode;
-        let pairs =
-            vec![(vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec()))];
-        Ok(encode(vecpak::Term::PropList(pairs)))
+        let bin = vecpak::to_vec(&self)?;
+        Ok(bin)
     }
 
     #[instrument(skip_all)]
@@ -794,12 +791,8 @@ impl Protocol for NewPhoneWhoDisReply {
     }
 
     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, Error> {
-        use amadeus_utils::vecpak::encode;
-        let pairs = vec![
-            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
-            (vecpak::Term::Binary(b"anr".to_vec()), self.anr.to_vecpak_term()),
-        ];
-        Ok(encode(vecpak::Term::PropList(pairs)))
+        let bin = vecpak::to_vec(&self)?;
+        Ok(bin)
     }
 
     #[instrument(skip(self, ctx), fields(src = %src), name = "NewPhoneWhoDisReply::handle")]
@@ -933,7 +926,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pong_vecpak_roundtrip() {
-        let pong = PingReply { ts_m: 1234567890, seen_time: 9876543210 };
+        let pong = PingReply { op: PingReply::TYPENAME.to_string(), ts_m: 1234567890, seen_time: 9876543210 };
 
         let bin = pong.to_vecpak_packet_bin().expect("should serialize");
         let result = parse_vecpak_bin(&bin).expect("should deserialize");
@@ -1030,7 +1023,7 @@ mod tests {
         let result = parse_vecpak_bin(&valid_bin);
         assert!(result.is_ok(), "Valid ping should parse successfully");
 
-        let ping_reply = PingReply { ts_m: 1234567890, seen_time: 9876543210 };
+        let ping_reply = PingReply { op: PingReply::TYPENAME.to_string(), ts_m: 1234567890, seen_time: 9876543210 };
         let valid_bin = ping_reply.to_vecpak_packet_bin().expect("should serialize");
         let result = parse_vecpak_bin(&valid_bin);
         assert!(result.is_ok(), "Valid ping_reply should parse successfully");
@@ -1082,7 +1075,7 @@ mod tests {
         match Context::with_config_and_socket(config, dummy_socket).await {
             Ok(ctx) => {
                 // Create a Pong message to test with
-                let pong = PingReply { ts_m: 12345, seen_time: 67890 };
+                let pong = PingReply { op: PingReply::TYPENAME.to_string(), ts_m: 12345, seen_time: 67890 };
 
                 // Check metrics before sending
                 let metrics_json_before = ctx.metrics.get_json();
@@ -1228,7 +1221,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ping_reply_roundtrip_via_vecpak() {
-        let original = PingReply { ts_m: 1234567890123, seen_time: 0 };
+        let original = PingReply { op: PingReply::TYPENAME.to_string(), ts_m: 1234567890123, seen_time: 0 };
         let version = Ver::new(1, 2, 3);
         let payload = original.to_bin(version).expect("should encode");
 

@@ -5,7 +5,7 @@ use crate::node::protocol::{Catchup, CatchupHeight, Instruction, NewPhoneWhoDis,
 use crate::node::{anr, peers};
 use crate::socket::UdpSocketExt;
 use crate::utils::misc::Typename;
-use crate::utils::misc::{format_duration, get_unix_millis_now};
+use crate::utils::misc::format_duration;
 use crate::{SystemStats, Ver, config, consensus, get_system_stats, metrics, node, utils};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -747,8 +747,7 @@ impl Context {
             }
 
             Instruction::SendPingReply { ts_m, dst } => {
-                let seen_time_ms = get_unix_millis_now();
-                let pong = PingReply { ts_m: ts_m, seen_time: seen_time_ms };
+                let pong = PingReply::new(ts_m);
                 self.send_message_to(&pong, dst).await?;
             }
 
@@ -1132,7 +1131,8 @@ mod tests {
                 let mut buf = [0u8; 1024];
                 let target: Ipv4Addr = "127.0.0.1".parse().unwrap();
 
-                let pong = PingReply { ts_m: 1234567890, seen_time: 1234567890123 };
+                let pong =
+                    PingReply { op: PingReply::TYPENAME.to_string(), ts_m: 1234567890, seen_time: 1234567890123 };
                 // Test send_to convenience function - should return error with MockSocket but not panic
                 match context.send_message_to(&pong, target).await {
                     Ok(_) => {
