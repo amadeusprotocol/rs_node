@@ -74,12 +74,8 @@ impl<K: Eq + StdHash + Clone, V: Clone> ConcurrentMap<K, V> {
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
 pub enum Error {
-    #[error("ANR error: {0}")]
-    AnrError(#[from] anr::Error),
-    #[error("Consensus error: {0}")]
-    ConsensusError(String),
-    #[error("Storage error: {0}")]
-    StorageError(String),
+    #[error(transparent)]
+    Anr(#[from] anr::Error),
 }
 
 impl crate::utils::misc::Typename for Error {

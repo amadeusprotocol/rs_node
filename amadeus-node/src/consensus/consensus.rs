@@ -25,10 +25,6 @@ pub enum Error {
     WrongType(&'static str),
     #[error("missing: {0}")]
     Missing(&'static str),
-    #[error("invalid entry")]
-    InvalidEntry,
-    #[error("too far in future")]
-    TooFarInFuture,
     #[error("invalid signature")]
     InvalidSignature,
     #[error("not implemented: {0}")]

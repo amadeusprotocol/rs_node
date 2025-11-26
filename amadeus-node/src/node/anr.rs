@@ -45,10 +45,6 @@ pub static PROTO_RATE_LIMITS: Lazy<HashMap<&'static str, u64>> = Lazy::new(|| {
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
 pub enum Error {
-    #[error("Failed to sign ANR: {0}")]
-    SigningError(String),
-    #[error("Failed to serialize ANR: {0}")]
-    SerializationError(String),
     #[error("Invalid timestamp: ANR is from the future")]
     InvalidTimestamp,
     #[error("ANR too large: {0} bytes (max 390)")]
@@ -57,11 +53,9 @@ pub enum Error {
     InvalidSignature,
     #[error("Invalid port: {0} (expected 36969)")]
     InvalidPort(u16),
-    #[error("Storage error: {0}")]
-    StorageError(String),
-    #[error("BLS error: {0}")]
-    BlsError(#[from] crate::utils::bls12_381::Error),
-    #[error("Parse error: {0}")]
+    #[error(transparent)]
+    Bls(#[from] crate::utils::bls12_381::Error),
+    #[error("parse error: {0}")]
     ParseError(&'static str),
 }
 

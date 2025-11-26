@@ -11,16 +11,14 @@ use tokio::sync::RwLock;
 pub enum Error {
     #[error("AES encryption error")]
     AesError,
-    #[error("BLS error: {0}")]
-    BlsError(#[from] bls12_381::Error),
-    #[error("Reed-Solomon error: {0}")]
-    ReedSolomonError(#[from] crate::utils::reed_solomon::Error),
-    #[error("Compression error: {0}")]
-    CompressionError(#[from] std::io::Error),
+    #[error(transparent)]
+    Bls(#[from] bls12_381::Error),
+    #[error(transparent)]
+    ReedSolomon(#[from] crate::utils::reed_solomon::Error),
+    #[error(transparent)]
+    Compression(#[from] std::io::Error),
     #[error("Invalid message format")]
     InvalidFormat,
-    #[error("Invalid nonce length, expected 12 bytes, got {0}")]
-    InvalidNonceLength(usize),
     #[error("Payload too small for nonce")]
     PayloadTooSmall,
 }
@@ -84,7 +82,7 @@ impl Message {
 
         // Compress first - use zstd for v1.2.3+, zlib for older versions
         let compressed = if version >= Ver::new(1, 2, 3) {
-            zstd::encode_all(plaintext, 3).map_err(|e| Error::CompressionError(e.into()))?
+            zstd::encode_all(plaintext, 3).map_err(|e| Error::Compression(e.into()))?
         } else {
             crate::utils::compression::compress_with_zlib(plaintext)?
         };
@@ -147,7 +145,7 @@ impl Message {
         // Decompress based on sender version
         // v1.2.3+ uses zstd, older uses deflate
         let plaintext = if self.version >= Ver::new(1, 2, 3) {
-            zstd::decode_all(compressed.as_slice()).map_err(|e| Error::CompressionError(e.into()))?
+            zstd::decode_all(compressed.as_slice()).map_err(|e| Error::Compression(e.into()))?
         } else {
             crate::utils::compression::decompress_with_zlib(&compressed)?
         };
@@ -367,7 +365,7 @@ impl ReedSolomonReassembler {
             let decrypted_compressed = encrypted_msg.decrypt_raw(shared_secret.as_ref())?;
             // Decompress based on sender version - must match what Message::encrypt uses
             let payload = if key.version >= Ver::new(1, 2, 3) {
-                zstd::decode_all(decrypted_compressed.as_slice()).map_err(|e| Error::CompressionError(e.into()))?
+                zstd::decode_all(decrypted_compressed.as_slice()).map_err(|e| Error::Compression(e.into()))?
             } else {
                 crate::utils::compression::decompress_with_zlib(&decrypted_compressed)?
             };
@@ -432,7 +430,7 @@ impl ReedSolomonReassembler {
             let decrypted_compressed = temp_msg.decrypt_raw(shared_secret.as_ref())?;
             // Decompress based on sender version - must match what Message::encrypt uses
             let payload = if key.version >= Ver::new(1, 2, 3) {
-                zstd::decode_all(decrypted_compressed.as_slice()).map_err(|e| Error::CompressionError(e.into()))?
+                zstd::decode_all(decrypted_compressed.as_slice()).map_err(|e| Error::Compression(e.into()))?
             } else {
                 crate::utils::compression::decompress_with_zlib(&decrypted_compressed)?
             };

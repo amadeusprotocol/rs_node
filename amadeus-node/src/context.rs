@@ -43,8 +43,8 @@ pub enum Error {
     Anr(#[from] anr::Error),
     #[error(transparent)]
     Peers(#[from] peers::Error),
-    #[error("{0}")]
-    String(String),
+    #[error("other error: {0}")]
+    Other(String),
 }
 
 impl Typename for Error {
@@ -601,7 +601,7 @@ impl Context {
             .into_iter()
             .map(|raw| {
                 consensus::doms::entry::Entry::from_vecpak_bin(&raw)
-                    .map_err(|_| Error::String("entry not vecpak in fabric".into()))
+                    .map_err(|_| Error::Other("entry not vecpak in fabric".into()))
             })
             .collect()
     }
@@ -665,12 +665,12 @@ impl Context {
 
     /// Get value from database column family
     pub fn db_get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-        self.fabric.db().get(cf, key).map_err(|e| Error::String(e.to_string()))
+        self.fabric.db().get(cf, key).map_err(|e| Error::Other(e.to_string()))
     }
 
     /// Iterate over keys with prefix in database column family
     pub fn db_iter_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
-        self.fabric.db().iter_prefix(cf, prefix).map_err(|e| Error::String(e.to_string()))
+        self.fabric.db().iter_prefix(cf, prefix).map_err(|e| Error::Other(e.to_string()))
     }
 
     /// Reads UDP datagram and silently does parsing, validation and reassembly
@@ -694,7 +694,7 @@ impl Context {
 
                         if !has_handshake {
                             self.node_anrs.unset_handshaked(pk.as_ref()).await;
-                            self.metrics.add_error(&Error::String(format!("handshake needed {src}")));
+                            self.metrics.add_error(&Error::Other(format!("handshake needed {src}")));
                             return None; // neither handshake message nor handshaked peer
                         }
 
@@ -709,7 +709,7 @@ impl Context {
                 }
             }
             Ok(None) => {} // waiting for more shards, not an error
-            Err(e) => self.metrics.add_error(&Error::String(format!("bad udp frame from {src} - {e}"))),
+            Err(e) => self.metrics.add_error(&Error::Other(format!("bad udp frame from {src} - {e}"))),
         }
 
         None

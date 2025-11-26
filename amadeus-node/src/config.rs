@@ -85,12 +85,8 @@ pub enum Error {
     Bls(#[from] bls12_381::Error),
     #[error("invalid sk length: {0}, expected 64")]
     InvalidSkLength(usize),
-    #[error("root directory is not set")]
-    RootNotSet,
-    #[error("time not synced")]
-    TimeNotSynced,
     #[error(transparent)]
-    AnrError(#[from] crate::node::anr::Error),
+    Anr(#[from] crate::node::anr::Error),
 }
 
 #[derive(Clone)]

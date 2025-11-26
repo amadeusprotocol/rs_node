@@ -9,8 +9,6 @@ use crate::consensus::doms::entry::{Entry, EntryHeader};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("missing environment var: {0}")]
-    MissingEnv(&'static str),
     #[error("unimplemented: {0}")]
     Unimplemented(&'static str),
     #[error(transparent)]

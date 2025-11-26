@@ -16,12 +16,8 @@ pub enum Error {
     WrongType(&'static str),
     #[error("missing field: {0}")]
     Missing(&'static str),
-    #[error("attestation is not a binary")]
+    #[error("attestation is not vecpak")]
     AttestationNotVecpak,
-    #[error("too large")]
-    TooLarge,
-    #[error("not deterministically encoded")]
-    NotDeterministic,
     #[error("invalid length: {0}")]
     InvalidLength(&'static str),
     #[error(transparent)]

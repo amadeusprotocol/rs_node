@@ -9,12 +9,8 @@ use std::net::Ipv4Addr;
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum Error {
-    #[error("invalid sol seed size")]
-    InvalidSolSeedSize,
     #[error("invalid sol format: too short")]
     TooShort,
-    #[error("missing field: {0}")]
-    Missing(&'static str),
 }
 
 /// Enum wrapper for versioned solutions

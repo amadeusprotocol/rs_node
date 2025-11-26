@@ -27,14 +27,8 @@ pub enum Error {
     BinDecode(#[from] bincode::error::DecodeError),
     #[error(transparent)]
     BinEncode(#[from] bincode::error::EncodeError),
-    #[error("invalid erlang etf: {0}")]
+    #[error("bad format: {0}")]
     BadFormat(&'static str),
-    #[error("invalid signature")]
-    BadAggSignature,
-    #[error("wrong epoch or unsupported aggregate signature path")]
-    NoTrainers,
-    #[error("txs_hash invalid")]
-    BadTxsHash,
     #[error(transparent)]
     Tx(#[from] super::tx::Error),
     #[error(transparent)]
