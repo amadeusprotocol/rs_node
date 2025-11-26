@@ -83,8 +83,10 @@ pub enum Error {
     ParseError(&'static str),
     #[error("No ANR found for destination IP: {0}")]
     NoAnrForDestination(Ipv4Addr),
-    #[error("vecpak decode error: {0}")]
-    Vecpak(String),
+    #[error(transparent)]
+    Vecpak(#[from] vecpak::Error),
+    #[error("other error: {0}")]
+    Other(String),
 }
 
 impl Typename for Error {
@@ -125,7 +127,7 @@ pub fn parse_vecpak_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
     use amadeus_utils::vecpak::{VecpakExt, decode};
 
     // decode as vecpak (auto-detects and converts legacy ETF if needed)
-    let term = decode(bin).map_err(|e| Error::Vecpak(e.to_string()))?;
+    let term = decode(bin).map_err(|e| Error::Other(e.to_string()))?;
 
     // get PropListMap from the term
     let map = term.get_proplist_map().ok_or(Error::ParseError("map"))?;
@@ -142,8 +144,8 @@ pub fn parse_vecpak_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
         EventTx::TYPENAME => Box::new(EventTx::from_vecpak_map_validated(map)?),
         GetPeerAnrs::TYPENAME => Box::new(GetPeerAnrs::from_vecpak_map_validated(map)?),
         GetPeerAnrsReply::TYPENAME => Box::new(GetPeerAnrsReply::from_vecpak_map_validated(map)?),
-        NewPhoneWhoDis::TYPENAME => Box::new(NewPhoneWhoDis::from_vecpak_map_validated(map)?),
-        NewPhoneWhoDisReply::TYPENAME => Box::new(NewPhoneWhoDisReply::from_vecpak_map_validated(map)?),
+        NewPhoneWhoDis::TYPENAME => Box::new(vecpak::from_slice::<NewPhoneWhoDis>(bin)?),
+        NewPhoneWhoDisReply::TYPENAME => Box::new(vecpak::from_slice::<NewPhoneWhoDisReply>(bin)?),
         SpecialBusiness::TYPENAME => Box::new(SpecialBusiness::from_vecpak_map_validated(map)?),
         SpecialBusinessReply::TYPENAME => Box::new(SpecialBusinessReply::from_vecpak_map_validated(map)?),
         Catchup::TYPENAME => Box::new(Catchup::from_vecpak_map_validated(map)?),
@@ -725,8 +727,10 @@ impl GetPeerAnrsReply {
     pub const TYPENAME: &'static str = "get_peer_anrs_reply";
 }
 
-#[derive(Debug)]
-pub struct NewPhoneWhoDis {}
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct NewPhoneWhoDis {
+    pub op: String,
+}
 
 impl Typename for NewPhoneWhoDis {
     fn typename(&self) -> &'static str {
@@ -738,7 +742,7 @@ impl Typename for NewPhoneWhoDis {
 impl Protocol for NewPhoneWhoDis {
     fn from_vecpak_map_validated(_map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
         // v1.1.7+ simplified - no fields to parse
-        Ok(Self {})
+        Ok(Self { op: Self::TYPENAME.to_string() })
     }
 
     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, Error> {
@@ -760,12 +764,13 @@ impl NewPhoneWhoDis {
 
     /// Create new NewPhoneWhoDis message (v1.1.7+ simplified)
     pub fn new() -> Self {
-        Self {}
+        Self { op: Self::TYPENAME.to_string() }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct NewPhoneWhoDisReply {
+    pub op: String,
     pub anr: Anr,
 }
 
@@ -785,7 +790,7 @@ impl Protocol for NewPhoneWhoDisReply {
             return Err(Error::ParseError("anr_signature_invalid"));
         }
 
-        Ok(Self { anr })
+        Ok(Self { op: Self::TYPENAME.to_string(), anr })
     }
 
     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, Error> {
@@ -822,7 +827,7 @@ impl NewPhoneWhoDisReply {
     pub const TYPENAME: &'static str = "new_phone_who_dis_reply";
 
     pub fn new(anr: Anr) -> Self {
-        Self { anr }
+        Self { op: Self::TYPENAME.to_string(), anr }
     }
 }
 

@@ -3,3 +3,6 @@ node = ["run", "-p", "client", "--bin", "node", "--release"]
 cli = ["run", "-p", "client", "--bin", "cli"]
 test-all = ["test", "--workspace", "--all-targets", "--no-fail-fast", "--exclude", "client"]
 lint = ["clippy", "--workspace", "--all-targets", "--", "-Dwarnings"]
+
+[net]
+git-fetch-with-cli=true

@@ -5,8 +5,6 @@ use crate::utils::misc::get_unix_secs_now;
 use crate::utils::version::Ver;
 use amadeus_utils::vecpak;
 use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -71,12 +69,10 @@ impl crate::utils::misc::Typename for Error {
     }
 }
 
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone, PartialEq, bincode::Encode, bincode::Decode)]
 #[allow(non_snake_case)]
 pub struct Anr {
     pub ip4: Ipv4Addr,
-    #[serde_as(as = "[_; 48]")]
     pub pk: [u8; 48],
     pub pop: Vec<u8>,
     pub port: u16,
@@ -86,26 +82,136 @@ pub struct Anr {
     pub anr_name: Option<String>,
     pub anr_desc: Option<String>,
     // runtime fields
-    #[serde(skip)]
     pub handshaked: bool,
-    #[serde(skip)]
     #[allow(non_snake_case)]
     pub hasChainPop: bool,
-    #[serde(skip)]
     pub error: Option<String>,
-    #[serde(skip)]
     pub error_tries: u32,
-    #[serde(skip)]
     pub next_check: u32,
     // Blake3 indexing fields (added in v1.1.8)
-    #[serde(skip)]
     pub pk_b3: [u8; 32],
-    #[serde(skip)]
     pub pk_b3_f4: [u8; 4],
-    #[serde(skip)]
     pub proto_reqs: HashMap<String, u64>,
-    #[serde(skip)]
     pub udp_packets: u64,
+}
+
+impl serde::Serialize for Anr {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("pk", &serde_bytes::Bytes::new(&self.pk))?;
+        map.serialize_entry("ts", &self.ts)?;
+        map.serialize_entry("ip4", &self.ip4.to_string())?;
+        map.serialize_entry("pop", &serde_bytes::Bytes::new(&self.pop))?;
+        map.serialize_entry("port", &self.port)?;
+        map.serialize_entry("version", &self.version.to_string())?;
+        map.serialize_entry("signature", &serde_bytes::Bytes::new(&self.signature))?;
+        if let Some(ref name) = self.anr_name {
+            map.serialize_entry("anr_name", name)?;
+        }
+        if let Some(ref desc) = self.anr_desc {
+            map.serialize_entry("anr_desc", desc)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Anr {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{MapAccess, Visitor};
+        use std::fmt;
+
+        struct AnrVisitor;
+
+        impl<'de> Visitor<'de> for AnrVisitor {
+            type Value = Anr;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("struct Anr")
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<Anr, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                let mut pk: Option<Vec<u8>> = None;
+                let mut ts = None;
+                let mut ip4_str: Option<String> = None;
+                let mut pop = None;
+                let mut port = None;
+                let mut version_str: Option<String> = None;
+                let mut signature = None;
+                let mut anr_name = None;
+                let mut anr_desc = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "pk" => {
+                            pk = Some(map.next_value::<serde_bytes::ByteBuf>()?.into_vec());
+                        }
+                        "ts" => ts = Some(map.next_value()?),
+                        "ip4" => ip4_str = Some(map.next_value()?),
+                        "pop" => pop = Some(map.next_value::<serde_bytes::ByteBuf>()?.into_vec()),
+                        "port" => port = Some(map.next_value()?),
+                        "version" => version_str = Some(map.next_value()?),
+                        "signature" => signature = Some(map.next_value::<serde_bytes::ByteBuf>()?.into_vec()),
+                        "anr_name" => anr_name = Some(map.next_value()?),
+                        "anr_desc" => anr_desc = Some(map.next_value()?),
+                        _ => {
+                            let _ = map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+
+                let pk_vec = pk.ok_or_else(|| serde::de::Error::missing_field("pk"))?;
+                let pk_array: [u8; 48] =
+                    pk_vec.try_into().map_err(|_| serde::de::Error::custom("pk must be 48 bytes"))?;
+                let ts = ts.ok_or_else(|| serde::de::Error::missing_field("ts"))?;
+                let ip4_str = ip4_str.ok_or_else(|| serde::de::Error::missing_field("ip4"))?;
+                let ip4: Ipv4Addr = ip4_str.parse().map_err(|_| serde::de::Error::custom("invalid IPv4 address"))?;
+                let pop = pop.ok_or_else(|| serde::de::Error::missing_field("pop"))?;
+                let port = port.ok_or_else(|| serde::de::Error::missing_field("port"))?;
+                let version_str = version_str.ok_or_else(|| serde::de::Error::missing_field("version"))?;
+                let version =
+                    Ver::try_from(version_str.as_str()).map_err(|_| serde::de::Error::custom("invalid version"))?;
+                let signature = signature.ok_or_else(|| serde::de::Error::missing_field("signature"))?;
+
+                let pk_b3 = blake3::hash(&pk_array);
+                let pk_b3_array: [u8; 32] = pk_b3.into();
+                let mut pk_b3_f4 = [0u8; 4];
+                pk_b3_f4.copy_from_slice(&pk_b3_array[0..4]);
+
+                Ok(Anr {
+                    ip4,
+                    pk: pk_array,
+                    pop,
+                    port,
+                    signature,
+                    ts,
+                    version,
+                    anr_name,
+                    anr_desc,
+                    handshaked: false,
+                    hasChainPop: false,
+                    error: None,
+                    error_tries: 0,
+                    next_check: 0,
+                    pk_b3: pk_b3_array,
+                    pk_b3_f4,
+                    proto_reqs: HashMap::new(),
+                    udp_packets: 0,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(AnrVisitor)
+    }
 }
 
 impl From<SeedANR> for Anr {
@@ -686,6 +792,7 @@ impl NodeAnrs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node::protocol::{NewPhoneWhoDis, NewPhoneWhoDisReply};
     use amadeus_utils::bls12_381;
 
     impl NodeAnrs {
@@ -1026,5 +1133,20 @@ mod tests {
             }
             _ => panic!("Expected PropList for ANR"),
         }
+    }
+
+    #[test]
+    fn handshake_compatibility() {
+        let p_hex = "0701010501026f700501116e65775f70686f6e655f77686f5f646973";
+        let p_bytes = hex::decode(p_hex).expect("valid hex");
+        let npwd: NewPhoneWhoDis = amadeus_utils::vecpak::from_slice(&p_bytes).unwrap();
+        let rt_bytes = amadeus_utils::vecpak::to_vec(&npwd).unwrap();
+        assert_eq!(rt_bytes, p_bytes);
+
+        let p_hex = "0701020501026f700501176e65775f70686f6e655f77686f5f6469735f7265706c79050103616e72070107050102706b050130a9e81ed8c8eaaebd8dd53a889d8c5a8612ab7330275a5d39043e95200e7c1b66f0dc00c5307e867a55a9ad9e7ae4b9f005010274730304692634f205010369703405010c37322e392e3134342e313130050103706f70050160b62a96d62af0d2d7006ab560c64bde562df13ae642380a31d935276412c59f9944dceaa4060903e4ead197e97ad1654910be87ac556a5063e1d68df542aab1a3f75df3eab891a7cab572ba7170716c5487183ef28ef89f7c7555be2bb1d41218050104706f72740302906905010776657273696f6e050105312e332e300501097369676e6174757265050160b62d43994fa7614138d205ecefeb1677d4998574aac1db8fdd5673de4e1d2ae8391c4cf703007ce37778e20624650143068c59596b5838536ecfd05a0d0805b0baa04dcae97caf9f199232fbfff462ebb35bfc653576af43007ba9666a2952a7";
+        let p_bytes = hex::decode(p_hex).expect("valid hex");
+        let npwdr: NewPhoneWhoDisReply = amadeus_utils::vecpak::from_slice(&p_bytes).unwrap();
+        let rt_bytes = amadeus_utils::vecpak::to_vec(&npwdr).unwrap();
+        assert_eq!(rt_bytes, p_bytes);
     }
 }

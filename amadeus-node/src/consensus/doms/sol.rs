@@ -100,8 +100,8 @@ impl Typename for Solution {
 #[async_trait::async_trait]
 impl Protocol for Solution {
     fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
-        let bin = map.get_binary(b"sol").ok_or(protocol::Error::Vecpak("sol not found".to_string()))?;
-        Solution::from_bin(bin).map_err(|_| protocol::Error::Vecpak("sol parse failed".to_string()))
+        let bin = map.get_binary(b"sol").ok_or(protocol::Error::Other("sol not found".to_string()))?;
+        Solution::from_bin(bin).map_err(|_| protocol::Error::Other("sol parse failed".to_string()))
     }
 
     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, protocol::Error> {
