@@ -12,6 +12,7 @@ use amadeus_utils::constants::DST_VRF;
 use amadeus_utils::vecpak::{Term, VecpakExt, decode, encode};
 use bitvec::prelude::*;
 //use eetf::{Atom, Binary, Map, Term};
+use amadeus_utils::vecpak;
 use std::fmt;
 use std::net::Ipv4Addr;
 
@@ -108,7 +109,7 @@ impl EntrySummary {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct EntryHeader {
     pub height: u64,
     pub slot: u64,
@@ -168,13 +169,42 @@ impl EntryHeader {
     }
 }
 
-#[derive(Clone)]
+mod txs_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    pub fn serialize<S: Serializer>(txs: &[Vec<u8>], ser: S) -> Result<S::Ok, S::Error> {
+        let v: Vec<serde_bytes::ByteBuf> = txs.iter().map(|t| serde_bytes::ByteBuf::from(t.clone())).collect();
+        v.serialize(ser)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Vec<Vec<u8>>, D::Error> {
+        let v: Vec<serde_bytes::ByteBuf> = Deserialize::deserialize(de)?;
+        Ok(v.into_iter().map(|b| b.into_vec()).collect())
+    }
+}
+
+mod mask_serde {
+    use super::{BitVec, Msb0, bin_to_bitvec, bitvec_to_bin};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    pub fn serialize<S: Serializer>(mask: &Option<BitVec<u8, Msb0>>, ser: S) -> Result<S::Ok, S::Error> {
+        match mask {
+            Some(m) => serde_bytes::Bytes::new(&bitvec_to_bin(m)).serialize(ser),
+            None => ser.serialize_none(),
+        }
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Option<BitVec<u8, Msb0>>, D::Error> {
+        let v: Option<serde_bytes::ByteBuf> = Deserialize::deserialize(de)?;
+        Ok(v.map(|b| bin_to_bitvec(b.into_vec())))
+    }
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
-    pub hash: Hash,
     pub header: EntryHeader,
+    #[serde(with = "txs_serde")]
+    pub txs: Vec<Vec<u8>>,
+    pub hash: Hash,
     pub signature: Signature,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "mask_serde")]
     pub mask: Option<BitVec<u8, Msb0>>,
-    pub txs: Vec<Vec<u8>>, // list of tx binaries that can be empty
 }
 
 impl Entry {
@@ -241,8 +271,8 @@ impl Protocol for Entry {
     }
 
     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        let term = self.to_vecpak_term();
-        Ok(encode(term))
+        let bin = vecpak::to_vec(&self)?;
+        Ok(bin)
     }
 
     async fn handle(&self, ctx: &Context, _src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
@@ -417,5 +447,73 @@ mod tests {
                 // It's okay if it fails due to archiver not being initialized
             }
         }
+    }
+
+    #[test]
+    fn test_entry_serde_vecpak_roundtrip() {
+        use amadeus_utils::vecpak;
+
+        let header = EntryHeader {
+            height: 12345,
+            slot: 67890,
+            prev_slot: 67889,
+            prev_hash: Hash::from([1u8; 32]),
+            dr: Hash::from([2u8; 32]),
+            vr: Signature::from([3u8; 96]),
+            signer: PublicKey::from([4u8; 48]),
+            txs_hash: Hash::from([5u8; 32]),
+        };
+        let entry = Entry {
+            hash: Hash::from([6u8; 32]),
+            header,
+            signature: Signature::from([7u8; 96]),
+            mask: Some(bin_to_bitvec(vec![0xFF, 0x00, 0xAB])),
+            txs: vec![vec![1, 2, 3], vec![4, 5, 6]],
+        };
+
+        // to_vecpak_bin -> from_slice
+        let vecpak_bin = entry.to_vecpak_bin();
+        let decoded: Entry = vecpak::from_slice(&vecpak_bin).expect("from_slice");
+        assert_eq!(decoded.hash, entry.hash);
+        assert_eq!(decoded.header.height, entry.header.height);
+        assert_eq!(decoded.header.slot, entry.header.slot);
+        assert_eq!(decoded.txs, entry.txs);
+        assert_eq!(decoded.mask, entry.mask);
+
+        // to_vec -> from_vecpak_bin
+        let serde_bin = vecpak::to_vec(&entry).expect("to_vec");
+        let decoded2 = Entry::from_vecpak_bin(&serde_bin).expect("from_vecpak_bin");
+        assert_eq!(decoded2.hash, entry.hash);
+        assert_eq!(decoded2.header.height, entry.header.height);
+        assert_eq!(decoded2.header.slot, entry.header.slot);
+        assert_eq!(decoded2.txs, entry.txs);
+        assert_eq!(decoded2.mask, entry.mask);
+
+        // verify byte-for-byte compatibility
+        assert_eq!(vecpak_bin, serde_bin);
+
+        // test without mask
+        let entry_no_mask = Entry {
+            hash: Hash::from([8u8; 32]),
+            header: EntryHeader {
+                height: 1,
+                slot: 2,
+                prev_slot: -1,
+                prev_hash: Hash::from([9u8; 32]),
+                dr: Hash::from([10u8; 32]),
+                vr: Signature::from([11u8; 96]),
+                signer: PublicKey::from([12u8; 48]),
+                txs_hash: Hash::from([13u8; 32]),
+            },
+            signature: Signature::from([14u8; 96]),
+            mask: None,
+            txs: vec![],
+        };
+        let vecpak_bin2 = entry_no_mask.to_vecpak_bin();
+        let serde_bin2 = vecpak::to_vec(&entry_no_mask).expect("to_vec");
+        assert_eq!(vecpak_bin2, serde_bin2);
+        let decoded3: Entry = vecpak::from_slice(&vecpak_bin2).expect("from_slice");
+        assert_eq!(decoded3.mask, None);
+        assert_eq!(decoded3.header.prev_slot, -1);
     }
 }

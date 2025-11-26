@@ -139,7 +139,7 @@ pub fn parse_vecpak_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
     let proto: Box<dyn Protocol> = match op_name.as_str() {
         Ping::TYPENAME => Box::new(vecpak::from_slice::<Ping>(bin)?),
         PingReply::TYPENAME => Box::new(vecpak::from_slice::<PingReply>(bin)?),
-        Entry::TYPENAME => Box::new(Entry::from_vecpak_map_validated(map)?),
+        Entry::TYPENAME => Box::new(vecpak::from_slice::<Entry>(bin)?),
         EventTip::TYPENAME => Box::new(EventTip::from_vecpak_map_validated(map)?),
         EventAttestation::TYPENAME => Box::new(EventAttestation::from_vecpak_map_validated(map)?),
         Solution::TYPENAME => Box::new(Solution::from_vecpak_map_validated(map)?),
