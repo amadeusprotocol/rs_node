@@ -5,8 +5,8 @@ use crate::utils::bls12_381;
 pub use crate::utils::bls12_381::generate_sk as gen_sk;
 use crate::utils::ip_resolver::resolve_public_ipv4;
 use crate::utils::version::Ver;
+use crate::utils::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use std::net::Ipv4Addr;
 use std::path::Path;
 use tokio::fs;
@@ -62,18 +62,15 @@ const fn parse_version() -> Ver {
 pub const SEED_NODES: &[&str] = &["72.9.144.110", "167.235.169.185", "37.27.238.30"];
 
 // seed anr from elixir config/config.exs
-#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SeedANR {
     pub ip4: String,
     pub port: u16,
     pub version: Ver,
     pub signature: Vec<u8>,
-    #[serde_as(as = "[_; 96]")]
-    pub pop: [u8; 96],
+    pub pop: Signature,
     pub ts: u32,
-    #[serde_as(as = "[_; 48]")]
-    pub pk: [u8; 48],
+    pub pk: PublicKey,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -121,7 +118,7 @@ pub struct Config {
 
     // trainer keys
     pub trainer_sk: [u8; 64],
-    pub trainer_pk: [u8; 48],
+    pub trainer_pk: PublicKey,
     pub trainer_pk_b58: String,
     pub trainer_pop: Vec<u8>,
 
@@ -145,7 +142,7 @@ pub enum ComputorType {
 
 impl Config {
     /// Generates pk from self.sk
-    pub fn get_pk(&self) -> [u8; 48] {
+    pub fn get_pk(&self) -> PublicKey {
         self.trainer_pk
     }
 
@@ -240,7 +237,7 @@ impl Config {
         };
 
         // generate proof of possession
-        let trainer_pop = bls12_381::sign(&trainer_sk, &trainer_pk, crate::consensus::DST_POP)
+        let trainer_pop = bls12_381::sign(&trainer_sk, trainer_pk.as_ref(), crate::consensus::DST_POP)
             .map(|sig| sig.to_vec())
             .unwrap_or_else(|_| vec![0u8; 96]);
 
@@ -293,19 +290,19 @@ impl Config {
                     226, 218, 207, 108, 242, 168, 189, 252, 146, 129, 113, 239, 53, 211, 69, 92, 115, 218, 40, 15, 104,
                     220, 235, 59, 235, 8, 177, 105, 120, 225, 12, 87,
                 ],
-                pop: [
+                pop: Signature::from([
                     182, 42, 150, 214, 42, 240, 210, 215, 0, 106, 181, 96, 198, 75, 222, 86, 45, 241, 58, 230, 66, 56,
                     10, 49, 217, 53, 39, 100, 18, 197, 159, 153, 68, 220, 234, 164, 6, 9, 3, 228, 234, 209, 151, 233,
                     122, 209, 101, 73, 16, 190, 135, 172, 85, 106, 80, 99, 225, 214, 141, 245, 66, 170, 177, 163, 247,
                     93, 243, 234, 184, 145, 167, 202, 181, 114, 186, 113, 112, 113, 108, 84, 135, 24, 62, 242, 142,
                     248, 159, 124, 117, 85, 190, 43, 177, 212, 18, 24,
-                ],
+                ]),
                 ts: 1763051924,
-                pk: [
+                pk: PublicKey::from([
                     169, 232, 30, 216, 200, 234, 174, 189, 141, 213, 58, 136, 157, 140, 90, 134, 18, 171, 115, 48, 39,
                     90, 93, 57, 4, 62, 149, 32, 14, 124, 27, 102, 240, 220, 0, 197, 48, 126, 134, 122, 85, 169, 173,
                     158, 122, 228, 185, 240,
-                ],
+                ]),
             },
             SeedANR {
                 ip4: "167.235.169.185".into(),
@@ -318,19 +315,19 @@ impl Config {
                     202, 58, 218, 181, 30, 213, 227, 46, 175, 227, 45, 174, 162, 33, 160, 113, 165, 114, 115, 232, 207,
                     65, 111, 11, 213, 110, 195, 70, 197, 199, 176, 241,
                 ],
-                pop: [
+                pop: Signature::from([
                     164, 246, 242, 104, 121, 244, 113, 37, 125, 250, 253, 128, 164, 91, 172, 179, 127, 196, 28, 189,
                     170, 239, 154, 195, 216, 36, 42, 27, 69, 132, 140, 126, 88, 213, 175, 124, 0, 109, 83, 10, 90, 12,
                     56, 188, 226, 219, 163, 219, 6, 28, 138, 155, 129, 47, 145, 171, 20, 95, 100, 57, 188, 175, 139,
                     53, 129, 60, 97, 54, 239, 1, 154, 113, 121, 134, 234, 154, 63, 48, 187, 88, 153, 84, 159, 97, 129,
                     241, 120, 192, 107, 55, 45, 250, 208, 196, 44, 141,
-                ],
+                ]),
                 ts: 1763065634,
-                pk: [
+                pk: PublicKey::from([
                     176, 120, 75, 148, 69, 45, 127, 232, 195, 254, 164, 173, 136, 138, 157, 97, 246, 81, 114, 66, 48,
                     199, 162, 230, 152, 219, 207, 224, 18, 246, 194, 150, 228, 105, 126, 41, 68, 36, 246, 51, 135, 216,
                     105, 117, 245, 98, 93, 140,
-                ],
+                ]),
             },
             SeedANR {
                 ip4: "37.27.238.30".into(),
@@ -343,19 +340,19 @@ impl Config {
                     5, 83, 154, 38, 183, 44, 1, 66, 112, 7, 53, 155, 129, 58, 239, 68, 155, 115, 239, 241, 255, 65, 56,
                     0, 110, 110, 137, 27,
                 ],
-                pop: [
+                pop: Signature::from([
                     181, 170, 103, 46, 138, 14, 103, 212, 122, 113, 28, 78, 228, 170, 19, 202, 108, 149, 207, 132, 49,
                     208, 221, 32, 121, 229, 5, 95, 72, 120, 73, 47, 230, 70, 155, 89, 98, 194, 196, 206, 230, 63, 49,
                     205, 160, 135, 90, 246, 7, 93, 79, 237, 127, 111, 189, 136, 122, 225, 135, 54, 45, 95, 36, 186,
                     211, 155, 67, 24, 86, 151, 91, 190, 20, 72, 145, 77, 138, 55, 22, 15, 100, 61, 140, 137, 93, 55,
                     19, 5, 226, 106, 30, 134, 74, 55, 193, 163,
-                ],
+                ]),
                 ts: 1763066818,
-                pk: [
+                pk: PublicKey::from([
                     149, 216, 55, 255, 29, 8, 239, 251, 139, 112, 30, 29, 199, 57, 90, 67, 198, 220, 101, 18, 228, 100,
                     100, 241, 43, 213, 221, 230, 253, 58, 231, 1, 102, 166, 54, 66, 245, 148, 140, 44, 78, 56, 84, 12,
                     222, 205, 57, 210,
-                ],
+                ]),
             },
         ];
 
@@ -397,7 +394,7 @@ impl Config {
     pub fn new_daemonless(sk: [u8; 64]) -> Self {
         let pk = get_pk(&sk);
         let pk_b58 = bs58::encode(pk).into_string();
-        let pop = bls12_381::sign(&sk, &pk, crate::consensus::DST_POP)
+        let pop = bls12_381::sign(&sk, pk.as_ref(), crate::consensus::DST_POP)
             .map(|sig| sig.to_vec())
             .unwrap_or_else(|_| vec![0u8; 96]);
         let seed_ips = SEED_NODES.iter().map(|s| s.parse()).collect::<Result<Vec<Ipv4Addr>, _>>().unwrap_or_default();
@@ -431,7 +428,7 @@ impl Config {
     }
 }
 
-pub fn get_pk(sk: &[u8; 64]) -> [u8; 48] {
+pub fn get_pk(sk: &[u8; 64]) -> PublicKey {
     bls12_381::get_public_key(sk).expect("key generation should not fail with proper key material")
 }
 

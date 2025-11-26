@@ -1,5 +1,4 @@
 pub mod archiver;
-pub mod b3f4;
 pub mod blake3;
 pub mod bls12_381;
 pub mod compression;
@@ -12,11 +11,12 @@ pub mod reed_solomon;
 pub mod rocksdb;
 pub mod safe_etf;
 pub mod system_metrics;
+pub mod types;
 pub mod vanilla_ser;
 pub mod vecpak;
 pub mod version;
 
-pub use b3f4::B3f4;
 pub use constants::*;
 pub use database::{Database, DatabaseError};
 pub use misc::bcat;
+pub use types::{B3f4, Hash, PublicKey, Signature};

@@ -1,6 +1,4 @@
 use crate::Context;
-#[cfg(test)]
-use crate::Ver;
 use crate::consensus::consensus::{self, Consensus};
 use crate::consensus::doms::attestation::EventAttestation;
 use crate::consensus::doms::entry::Entry;
@@ -10,8 +8,11 @@ use crate::consensus::fabric::Fabric;
 use crate::node::anr::Anr;
 use crate::node::peers::HandshakeStatus;
 use crate::node::{anr, peers};
+use crate::utils::Hash;
 use crate::utils::bls12_381;
 use crate::utils::misc::{Typename, get_unix_millis_now};
+#[cfg(test)]
+use crate::utils::{PublicKey, Signature};
 use amadeus_utils::B3f4;
 use amadeus_utils::vecpak::{self as vecpak, PropListMap, VecpakExt};
 use std::fmt::Debug;
@@ -223,17 +224,17 @@ impl EventTip {
     /// Build EventTip from the current temporal/rooted tips in Fabric using the provided Fabric handle
     pub fn from_current_tips_db(fab: &Fabric) -> Result<Self, Error> {
         // Helper to load EntrySummary by tip hash, or return empty summary if missing
-        fn entry_summary_by_hash(fab: &Fabric, hash: &[u8; 32]) -> EntrySummary {
+        fn entry_summary_by_hash(fab: &Fabric, hash: &Hash) -> EntrySummary {
             if let Some(entry) = fab.get_entry_by_hash(hash) { entry.into() } else { EntrySummary::empty() }
         }
 
         let temporal_summary = match fab.get_temporal_hash()? {
-            Some(h) => entry_summary_by_hash(fab, &h),
+            Some(h) => entry_summary_by_hash(fab, &Hash::from(h)),
             None => EntrySummary::empty(),
         };
 
         let rooted_summary = match fab.get_rooted_hash()? {
-            Some(h) => entry_summary_by_hash(fab, &h),
+            Some(h) => entry_summary_by_hash(fab, &Hash::from(h)),
             None => EntrySummary::empty(),
         };
 
@@ -810,7 +811,7 @@ impl Protocol for NewPhoneWhoDisReply {
         }
 
         ctx.node_anrs.insert(self.anr.clone()).await;
-        ctx.node_anrs.set_handshaked(&self.anr.pk).await;
+        ctx.node_anrs.set_handshaked(self.anr.pk.as_ref()).await;
         ctx.update_peer_from_anr(src, &self.anr.pk, &self.anr.version, Some(HandshakeStatus::Completed)).await;
 
         Ok(vec![Instruction::Noop { why: "handshake completed".to_string() }])
@@ -906,6 +907,7 @@ mod tests {
     use crate::config::Config;
     use crate::consensus::doms::entry::{EntryHeader, EntrySummary};
     use crate::utils::bls12_381::sign as bls_sign;
+    use amadeus_utils::version::Ver;
     use bitvec::prelude::{Msb0, bitvec};
 
     #[tokio::test]
@@ -965,9 +967,9 @@ mod tests {
         // build a valid ANR for 127.0.0.1
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls_sign(&sk, &pk, crate::consensus::DST_POP).expect("pop");
+        let pop = bls_sign(&sk, &pk.0, crate::consensus::DST_POP).expect("pop");
         let ip = Ipv4Addr::new(127, 0, 0, 1);
-        let _my_anr = anr::Anr::build(&sk, &pk, &pop, ip, Ver::new(1, 0, 0)).expect("anr");
+        let _my_anr = anr::Anr::build(&sk, &pk, &pop.0, ip, Ver::new(1, 0, 0)).expect("anr");
 
         let _challenge_s = get_unix_secs_now();
         let msg = NewPhoneWhoDis::new();
@@ -990,9 +992,9 @@ mod tests {
 
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls_sign(&sk, &pk, crate::consensus::DST_POP).expect("pop");
+        let pop = bls_sign(&sk, &pk.0, crate::consensus::DST_POP).expect("pop");
         let ip = Ipv4Addr::new(127, 0, 0, 1);
-        let _my_anr = anr::Anr::build(&sk, &pk, &pop, ip, Ver::new(1, 0, 0)).expect("anr");
+        let _my_anr = anr::Anr::build(&sk, &pk, &pop.0, ip, Ver::new(1, 0, 0)).expect("anr");
         let _challenge_s = get_unix_secs_now();
         let _msg = NewPhoneWhoDis::new();
 
@@ -1007,14 +1009,14 @@ mod tests {
             height: 1,
             slot: 1,
             prev_slot: 0,
-            prev_hash: [0u8; 32],
-            dr: [1u8; 32],
-            vr: [2u8; 96],
-            signer: [3u8; 48],
-            txs_hash: [4u8; 32],
+            prev_hash: Hash([0u8; 32]),
+            dr: Hash([1u8; 32]),
+            vr: Signature([2u8; 96]),
+            signer: PublicKey([3u8; 48]),
+            txs_hash: Hash([4u8; 32]),
         };
 
-        EntrySummary { header, signature: [5u8; 96], mask: None }
+        EntrySummary { header, signature: Signature([5u8; 96]), mask: None }
     }
 
     #[tokio::test]
@@ -1041,7 +1043,7 @@ mod tests {
 
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls_sign(&sk, &pk, crate::consensus::DST_POP).expect("pop");
+        let pop = bls_sign(&sk, &pk.0, crate::consensus::DST_POP).expect("pop");
 
         let config = Config {
             work_folder: "/tmp/test_protocol_send_to".to_string(),
@@ -1138,30 +1140,34 @@ mod tests {
 
         // Test CatchupReply with actual structs
         let entry1 = Entry {
-            hash: [1; 32],
+            hash: Hash([1; 32]),
             header: EntryHeader {
                 height: 100,
                 slot: 1,
                 prev_slot: 0,
-                prev_hash: [0; 32],
-                dr: [2; 32],
-                vr: [0; 96],
-                signer: [3; 48],
-                txs_hash: [4; 32],
+                prev_hash: Hash([0; 32]),
+                dr: Hash([2; 32]),
+                vr: Signature([0; 96]),
+                signer: PublicKey([3; 48]),
+                txs_hash: Hash([4; 32]),
             },
-            signature: [5; 96],
+            signature: Signature([5; 96]),
             mask: None,
             txs: vec![vec![1, 2, 3, 4]],
         };
 
-        let attestation1 =
-            Attestation { entry_hash: [6; 32], mutations_hash: [7; 32], signer: [8; 48], signature: [9; 96] };
+        let attestation1 = Attestation {
+            entry_hash: Hash([6; 32]),
+            mutations_hash: Hash([7; 32]),
+            signer: PublicKey([8; 48]),
+            signature: Signature([9; 96]),
+        };
 
         let consensus1 = Consensus {
-            entry_hash: [10; 32],
-            mutations_hash: [11; 32],
+            entry_hash: Hash([10; 32]),
+            mutations_hash: Hash([11; 32]),
             mask: bitvec![u8, Msb0; 1, 0, 1],
-            agg_sig: [12; 96],
+            agg_sig: Signature([12; 96]),
         };
 
         let trie1 = CatchupHeightReply {
@@ -1242,9 +1248,9 @@ mod tests {
         // create a test ANR
         let sk = bls12_381::generate_sk();
         let pk = bls12_381::get_public_key(&sk).expect("pk");
-        let pop = bls12_381::sign(&sk, &pk, crate::consensus::DST_POP).expect("pop");
+        let pop = bls12_381::sign(&sk, &pk.0, crate::consensus::DST_POP).expect("pop");
 
-        let anr = Anr::build(&sk, &pk, &pop, Ipv4Addr::new(192, 168, 1, 1), Ver::new(1, 2, 5)).expect("anr");
+        let anr = Anr::build(&sk, &pk, &pop.0, Ipv4Addr::new(192, 168, 1, 1), Ver::new(1, 2, 5)).expect("anr");
 
         let original = NewPhoneWhoDisReply::new(anr);
         let version = Ver::new(1, 2, 3);

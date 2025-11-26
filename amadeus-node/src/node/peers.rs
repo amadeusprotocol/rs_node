@@ -3,11 +3,11 @@ use crate::consensus::doms::EntrySummary;
 use crate::node::anr;
 use crate::node::protocol::{EventTip, PingReply};
 use crate::utils::misc::{Typename, get_unix_millis_now};
+use crate::utils::{Hash, PublicKey};
 use crate::{Context, Ver};
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use std::collections::{BTreeMap, HashMap};
-use std::hash::Hash;
+use std::hash::Hash as StdHash;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -31,7 +31,7 @@ struct ConcurrentMap<K, V> {
     inner: RwLock<HashMap<K, V>>,
 }
 
-impl<K: Eq + Hash + Clone, V: Clone> ConcurrentMap<K, V> {
+impl<K: Eq + StdHash + Clone, V: Clone> ConcurrentMap<K, V> {
     fn new() -> Self {
         Self { inner: RwLock::new(HashMap::new()) }
     }
@@ -88,12 +88,10 @@ impl crate::utils::misc::Typename for Error {
     }
 }
 
-#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Peer {
     pub ip: Ipv4Addr,
-    #[serde_as(as = "Option<[_; 48]>")]
-    pub pk: Option<[u8; 48]>,
+    pub pk: Option<PublicKey>,
     pub version: Option<Ver>,
     pub latency: Option<u64>,
     pub last_msg: u64,
@@ -124,7 +122,7 @@ impl Peer {
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct TipInfo {
     pub height: u64,
-    pub prev_hash: [u8; 32],
+    pub prev_hash: Hash,
 }
 
 impl From<EntrySummary> for TipInfo {
@@ -136,7 +134,7 @@ impl From<EntrySummary> for TipInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeaderInfo {
     pub height: u64,
-    pub prev_hash: [u8; 32],
+    pub prev_hash: Hash,
 }
 
 /// NodePeers structure managing the peer database
@@ -176,7 +174,7 @@ impl NodePeers {
         let validators_vec: Vec<Vec<u8>> = validators.iter().map(|pk| pk.to_vec()).collect();
 
         let validator_anr_ips = node_registry.by_pks_ip(&validators_vec).await;
-        let validators_map: std::collections::HashSet<&[u8; 48]> = validators.iter().collect();
+        let validators_map: std::collections::HashSet<&PublicKey> = validators.iter().collect();
 
         let handshaked_ips = node_registry.get_all_handshaked_ip4().await;
 
@@ -410,7 +408,7 @@ impl NodePeers {
         self.peers
             .scan(|_, peer| {
                 if let Some(ref peer_pk) = peer.pk {
-                    // Compare peer_pk (which is [u8; 48]) with pks (which are Vec<u8>)
+                    // Compare peer_pk (which is PublicKey) with pks (which are Vec<u8>)
                     if pks.iter().any(|pk| pk.as_slice() == peer_pk.as_slice()) {
                         peers.push(peer.clone());
                     }
@@ -424,7 +422,7 @@ impl NodePeers {
     /// Get peers for a specific height (trainers)
     pub async fn for_height(&self, fabric: &crate::consensus::fabric::Fabric, height: u64) -> Result<Vec<Peer>, Error> {
         let trainers = fabric.trainers_for_height(height).unwrap_or_default();
-        let trainers_set: std::collections::HashSet<&[u8; 48]> = trainers.iter().collect();
+        let trainers_set: std::collections::HashSet<&PublicKey> = trainers.iter().collect();
         let mut peers = Vec::new();
 
         self.peers
@@ -665,7 +663,7 @@ impl NodePeers {
     pub async fn update_peer_from_anr(
         &self,
         ip: Ipv4Addr,
-        pk: &[u8; 48],
+        pk: &PublicKey,
         version: &Ver,
         status: Option<HandshakeStatus>,
     ) {
@@ -706,7 +704,7 @@ impl NodePeers {
     }
 
     /// Returns temporal, rooted and bft heights across peers
-    pub async fn get_heights(&self, trainer_pks: &[[u8; 48]]) -> Result<(u64, u64, u64), Error> {
+    pub async fn get_heights(&self, trainer_pks: &[PublicKey]) -> Result<(u64, u64, u64), Error> {
         let mut online_trainers = Vec::new();
         let mut online_nontrainers = Vec::new();
 
@@ -777,7 +775,7 @@ impl NodePeers {
     pub async fn get_trainer_ips_above_rooted(
         &self,
         height: u64,
-        trainer_pks: &[[u8; 48]],
+        trainer_pks: &[PublicKey],
     ) -> Result<Vec<Ipv4Addr>, Error> {
         let online_trainers_above_temporal: Vec<Ipv4Addr> = self
             .get_online_trainers(trainer_pks)
@@ -794,7 +792,7 @@ impl NodePeers {
     pub async fn get_trainer_ips_above_temporal(
         &self,
         height: u64,
-        trainer_pks: &[[u8; 48]],
+        trainer_pks: &[PublicKey],
     ) -> Result<Vec<Ipv4Addr>, Error> {
         let online_trainers_above_temporal: Vec<Ipv4Addr> = self
             .get_online_trainers(trainer_pks)
@@ -808,7 +806,7 @@ impl NodePeers {
         Ok(online_trainers_above_temporal)
     }
 
-    pub async fn get_online_trainers(&self, trainer_pks: &[[u8; 48]]) -> Result<Vec<Peer>, Error> {
+    pub async fn get_online_trainers(&self, trainer_pks: &[PublicKey]) -> Result<Vec<Peer>, Error> {
         let online_trainers: Vec<Peer> = self
             .get_online()
             .await?
@@ -819,7 +817,7 @@ impl NodePeers {
     }
 
     /// Get peers summary with counts
-    pub async fn get_peers_summary(&self, my_ip: Ipv4Addr, trainer_pks: &[[u8; 48]]) -> Result<PeersSummary, Error> {
+    pub async fn get_peers_summary(&self, my_ip: Ipv4Addr, trainer_pks: &[PublicKey]) -> Result<PeersSummary, Error> {
         let all_peers = self.get_all().await?;
         let mut online = 0;
         let mut connecting = 0;
@@ -915,7 +913,7 @@ mod tests {
 
         let peer = Peer {
             ip,
-            pk: Some(test_pk),
+            pk: Some(PublicKey(test_pk)),
             version: Some(Ver::new(1, 0, 0)),
             latency: Some(100),
             last_msg: ts_m,

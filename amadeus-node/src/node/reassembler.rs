@@ -1,9 +1,10 @@
+use crate::utils::PublicKey;
 use crate::utils::{bls12_381, misc::get_unix_millis_now, misc::get_unix_nanos_now};
 use crate::{Config, Ver};
 use aes_gcm::aead::{Aead, AeadCore, OsRng};
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::hash::{Hash as StdHash, Hasher};
 use tokio::sync::RwLock;
 
 #[derive(Debug, thiserror::Error, strum_macros::IntoStaticStr)]
@@ -35,7 +36,7 @@ impl crate::utils::misc::Typename for Error {
 #[derive(Debug, Clone)]
 pub struct Message {
     pub version: Ver,
-    pub pk: [u8; 48],       // Sender's public key
+    pub pk: PublicKey,      // Sender's public key
     pub shard_index: u16,   // Current shard index
     pub shard_total: u16,   // Total number of shards
     pub ts_nano: u64,       // Timestamp in nanoseconds
@@ -74,7 +75,7 @@ impl Message {
     /// Encrypt a message and optionally shard it using Reed-Solomon
     /// Returns a vector of Message instances (one per shard)
     pub fn encrypt(
-        sender_pk: &[u8; 48],
+        sender_pk: &PublicKey,
         shared_secret: &[u8],
         plaintext: &[u8],
         version: Ver,
@@ -205,7 +206,7 @@ impl Message {
         out.push(0);
 
         // pk (48 bytes)
-        out.extend_from_slice(&self.pk);
+        out.extend_from_slice(self.pk.as_ref());
 
         // shard_index::16, shard_total::16 (big-endian)
         out.extend_from_slice(&self.shard_index.to_be_bytes());
@@ -261,16 +262,16 @@ impl TryFrom<&[u8]> for Message {
 /// Reassembler for encrypted message shards with Reed-Solomon error correction
 pub struct ReedSolomonReassembler {
     reorg: RwLock<HashMap<ReassemblyKey, TimedEntryState>>,
-    cache: RwLock<HashMap<[u8; 48], TimedSharedSecret>>,
+    cache: RwLock<HashMap<PublicKey, TimedSharedSecret>>,
 }
 
 struct TimedSharedSecret {
-    shared_secret: [u8; 48],
+    shared_secret: PublicKey,
     ts_m: u64,
 }
 
 impl TimedSharedSecret {
-    fn new(shared_secret: [u8; 48]) -> Self {
+    fn new(shared_secret: PublicKey) -> Self {
         let ts_m = get_unix_millis_now();
         Self { shared_secret, ts_m }
     }
@@ -278,7 +279,7 @@ impl TimedSharedSecret {
 
 #[derive(Clone, Debug, Eq)]
 struct ReassemblyKey {
-    pk: [u8; 48],
+    pk: PublicKey,
     ts_nano: u64,
     shard_total: u16,
     original_size: u32,
@@ -303,7 +304,7 @@ impl PartialEq for ReassemblyKey {
     }
 }
 
-impl Hash for ReassemblyKey {
+impl StdHash for ReassemblyKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.pk.hash(state);
         self.ts_nano.hash(state);
@@ -355,7 +356,7 @@ impl ReedSolomonReassembler {
 
     /// Add a shard to the reassembly, return complete message if ready
     /// Takes binary data and parses it as Message
-    pub async fn add_shard(&self, bin: &[u8], config_sk: &[u8]) -> Result<Option<(Vec<u8>, [u8; 48])>, Error> {
+    pub async fn add_shard(&self, bin: &[u8], config_sk: &[u8]) -> Result<Option<(Vec<u8>, PublicKey)>, Error> {
         let encrypted_msg = Message::try_from(bin)?;
         let key = ReassemblyKey::from(&encrypted_msg);
 
@@ -363,7 +364,7 @@ impl ReedSolomonReassembler {
         if key.shard_total == 1 {
             let shared_secret = bls12_381::get_shared_secret(&key.pk, config_sk)?;
             // Decrypt and then decompress (reverse of build_shards process)
-            let decrypted_compressed = encrypted_msg.decrypt_raw(&shared_secret)?;
+            let decrypted_compressed = encrypted_msg.decrypt_raw(shared_secret.as_ref())?;
             // Decompress based on sender version - must match what Message::encrypt uses
             let payload = if key.version >= Ver::new(1, 2, 3) {
                 zstd::decode_all(decrypted_compressed.as_slice()).map_err(|e| Error::CompressionError(e.into()))?
@@ -428,7 +429,7 @@ impl ReedSolomonReassembler {
             };
 
             // Decrypt and then decompress (reverse of build_shards process)
-            let decrypted_compressed = temp_msg.decrypt_raw(&shared_secret)?;
+            let decrypted_compressed = temp_msg.decrypt_raw(shared_secret.as_ref())?;
             // Decompress based on sender version - must match what Message::encrypt uses
             let payload = if key.version >= Ver::new(1, 2, 3) {
                 zstd::decode_all(decrypted_compressed.as_slice()).map_err(|e| Error::CompressionError(e.into()))?
@@ -447,12 +448,12 @@ impl ReedSolomonReassembler {
         &self,
         config: &Config,
         payload: &[u8],
-        target_pk: &[u8; 48],
+        target_pk: &PublicKey,
     ) -> Result<Vec<Vec<u8>>, Error> {
         let version = config.get_ver();
         let sender_pk = config.get_pk();
         let shared_secret = self.get_shared_secret(config, target_pk).await?;
-        let encrypted_messages = Message::encrypt(&sender_pk, &shared_secret, payload, version)?;
+        let encrypted_messages = Message::encrypt(&sender_pk, shared_secret.as_ref(), payload, version)?;
 
         let mut shards = Vec::new();
         for encrypted_msg in encrypted_messages {
@@ -462,7 +463,7 @@ impl ReedSolomonReassembler {
         Ok(shards)
     }
 
-    async fn get_shared_secret(&self, config: &Config, pk: &[u8; 48]) -> Result<[u8; 48], Error> {
+    async fn get_shared_secret(&self, config: &Config, pk: &PublicKey) -> Result<PublicKey, Error> {
         use std::collections::hash_map::Entry;
 
         let mut map = self.cache.write().await;
@@ -502,7 +503,7 @@ mod tests {
         let version = Ver::new(1, 1, 8);
 
         // Alice encrypts a message to Bob
-        let encrypted_messages = Message::encrypt(&pk_alice, &shared_secret_alice, test_message, version)
+        let encrypted_messages = Message::encrypt(&pk_alice, &shared_secret_alice.0, test_message, version)
             .expect("encryption should succeed");
 
         assert_eq!(encrypted_messages.len(), 1, "Should create single message for small payload");
@@ -510,14 +511,14 @@ mod tests {
 
         // Verify message structure
         assert_eq!(encrypted_msg.version, version);
-        assert_eq!(encrypted_msg.pk, pk_alice);
+        assert_eq!(encrypted_msg.pk.0, pk_alice.0);
         assert_eq!(encrypted_msg.shard_index, 0);
         assert_eq!(encrypted_msg.shard_total, 1);
         // original_size is the encrypted payload size (nonce + tag + ciphertext), not plaintext size
         assert_eq!(encrypted_msg.original_size, encrypted_msg.payload.len() as u32);
 
         // Bob decrypts the message
-        let decrypted = encrypted_msg.decrypt(&shared_secret_bob).expect("decryption should succeed");
+        let decrypted = encrypted_msg.decrypt(&shared_secret_bob.0).expect("decryption should succeed");
 
         assert_eq!(decrypted, test_message, "Decrypted message should match original");
 
@@ -535,7 +536,7 @@ mod tests {
 
         // Bob can still decrypt the deserialized message
         let decrypted2 =
-            deserialized.decrypt(&shared_secret_bob).expect("decryption of deserialized message should succeed");
+            deserialized.decrypt(&shared_secret_bob.0).expect("decryption of deserialized message should succeed");
         assert_eq!(decrypted2, test_message, "Decrypted deserialized message should match original");
     }
 
@@ -556,11 +557,11 @@ mod tests {
         let test_message = b"64-byte key compatibility test message";
         let version = Ver::new(1, 1, 7);
 
-        let encrypted_messages = Message::encrypt(&pk_alice, &shared_secret_alice, test_message, version)
+        let encrypted_messages = Message::encrypt(&pk_alice, &shared_secret_alice.0, test_message, version)
             .expect("64-byte key encryption should succeed");
 
         let decrypted =
-            encrypted_messages[0].decrypt(&shared_secret_bob).expect("64-byte key decryption should succeed");
+            encrypted_messages[0].decrypt(&shared_secret_bob.0).expect("64-byte key decryption should succeed");
 
         assert_eq!(decrypted, test_message, "64-byte key messages should round-trip correctly");
     }
@@ -578,7 +579,7 @@ mod tests {
         let version = Ver::new(1, 1, 8);
 
         let encrypted_messages =
-            Message::encrypt(&pk_alice, &shared_secret, test_message, version).expect("encryption should succeed");
+            Message::encrypt(&pk_alice, &shared_secret.0, test_message, version).expect("encryption should succeed");
 
         let reassembler = ReedSolomonReassembler::new();
 
@@ -687,7 +688,7 @@ mod tests {
         let computed_shared_secret =
             bls12_381::get_shared_secret(&dst_pk, &src_sk).expect("Should compute shared secret from src to dst");
         assert_eq!(
-            computed_shared_secret, expected_shared_secret,
+            computed_shared_secret.0, expected_shared_secret,
             "Computed shared secret should match expected value"
         );
 
@@ -695,7 +696,7 @@ mod tests {
         let symmetric_shared_secret =
             bls12_381::get_shared_secret(&src_pk, &dst_sk).expect("Should compute shared secret from dst to src");
         assert_eq!(
-            symmetric_shared_secret, expected_shared_secret,
+            symmetric_shared_secret.0, expected_shared_secret,
             "Symmetric shared secret should match expected value"
         );
 
@@ -705,13 +706,13 @@ mod tests {
 
         // Verify message structure matches expected format
         assert_eq!(encrypted_msg.version, Ver::new(1, 1, 8), "Version should be 1.1.8");
-        assert_eq!(encrypted_msg.pk, src_pk, "Sender public key should match src_pk");
+        assert_eq!(encrypted_msg.pk.0, src_pk, "Sender public key should match src_pk");
         assert_eq!(encrypted_msg.shard_index, 0, "Should be single shard (index 0)");
         assert_eq!(encrypted_msg.shard_total, 1, "Should be single shard (total 1)");
         assert_eq!(encrypted_msg.original_size, 29, "Original plaintext size should be 37");
 
         // Test 4: Decrypt the message using dst's secret key
-        let decrypted = encrypted_msg.decrypt(&computed_shared_secret).expect("Should decrypt message successfully");
+        let decrypted = encrypted_msg.decrypt(&computed_shared_secret.0).expect("Should decrypt message successfully");
 
         // Verify decrypted content
         assert_eq!(decrypted.len(), 29, "Decrypted length should match original_size");

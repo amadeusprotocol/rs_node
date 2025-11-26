@@ -3,6 +3,7 @@ use crate::consensus::DST_TX;
 use crate::utils::blake3;
 use crate::utils::bls12_381;
 use crate::utils::vanilla_ser::{self, Value};
+use crate::utils::{Hash, PublicKey, Signature};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
@@ -17,7 +18,7 @@ pub struct TxAction {
 
 #[derive(Debug, Clone)]
 pub struct Tx {
-    pub signer: [u8; 48],
+    pub signer: PublicKey,
     pub nonce: i128,
     pub actions: Vec<TxAction>,
 }
@@ -25,8 +26,8 @@ pub struct Tx {
 #[derive(Debug, Clone)]
 pub struct TxU {
     pub tx_encoded: Vec<u8>,
-    pub hash: [u8; 32],
-    pub signature: [u8; 96],
+    pub hash: Hash,
+    pub signature: Signature,
     pub tx: Tx,
 }
 
@@ -186,8 +187,8 @@ fn is_ascii_eq(bytes: &[u8], s: &str) -> bool {
 pub fn valid_pk(pk: &[u8]) -> bool {
     // accept burn address or any valid BLS public key
     if pk.len() == 48
-        && let Ok(arr) = <&[u8; 48]>::try_from(pk)
-        && arr == &amadeus_runtime::consensus::bic::coin::burn_address()
+        && let Ok(arr) = <PublicKey>::try_from(pk)
+        && &arr == &amadeus_runtime::consensus::bic::coin::burn_address()
     {
         return true;
     }
@@ -430,15 +431,15 @@ pub fn chain_valid_txu(fabric: &crate::consensus::fabric::Fabric, txu: &TxU) -> 
     // elixir logic:
     // chainNonce = Consensus.chain_nonce(txu.tx.signer)
     // nonceValid = !chainNonce or txu.tx.nonce > chainNonce
-    let chain_nonce = fabric.chain_nonce(&txu.tx.signer);
+    let chain_nonce = fabric.chain_nonce(txu.tx.signer.as_ref());
     let nonce_valid = match chain_nonce {
         None => true,
         Some(n) => txu.tx.nonce > n as i128,
     };
 
     // hasBalance = BIC.Base.exec_cost(txu) <= Consensus.chain_balance(txu.tx.signer)
-    let has_balance =
-        txu.exec_cost(crate::consensus::chain_epoch(fabric.db())) as i128 <= fabric.chain_balance(&txu.tx.signer);
+    let has_balance = txu.exec_cost(crate::consensus::chain_epoch(fabric.db())) as i128
+        <= fabric.chain_balance(txu.tx.signer.as_ref());
 
     // hasSol / epochSolValid
     let mut epoch_sol_valid = true;

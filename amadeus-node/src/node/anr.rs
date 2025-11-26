@@ -3,6 +3,7 @@ use crate::utils::blake3;
 use crate::utils::bls12_381::{sign, verify};
 use crate::utils::misc::get_unix_secs_now;
 use crate::utils::version::Ver;
+use crate::utils::{Hash, PublicKey};
 use amadeus_utils::B3f4;
 use amadeus_utils::vecpak;
 use once_cell::sync::Lazy;
@@ -74,7 +75,7 @@ impl crate::utils::misc::Typename for Error {
 #[allow(non_snake_case)]
 pub struct Anr {
     pub ip4: Ipv4Addr,
-    pub pk: [u8; 48],
+    pub pk: PublicKey,
     pub pop: Vec<u8>,
     pub port: u16,
     pub signature: Vec<u8>,
@@ -90,7 +91,7 @@ pub struct Anr {
     pub error_tries: u32,
     pub next_check: u32,
     // Blake3 indexing fields (added in v1.1.8)
-    pub pk_b3: [u8; 32],
+    pub pk_b3: Hash,
     pub pk_b3_f4: B3f4,
     pub proto_reqs: HashMap<String, u64>,
     pub udp_packets: u64,
@@ -103,13 +104,13 @@ impl serde::Serialize for Anr {
     {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("pk", &serde_bytes::Bytes::new(&self.pk))?;
+        map.serialize_entry("pk", &serde_bytes::Bytes::new(self.pk.as_ref()))?;
         map.serialize_entry("ts", &self.ts)?;
         map.serialize_entry("ip4", &self.ip4.to_string())?;
-        map.serialize_entry("pop", &serde_bytes::Bytes::new(&self.pop))?;
+        map.serialize_entry("pop", &serde_bytes::Bytes::new(self.pop.as_ref()))?;
         map.serialize_entry("port", &self.port)?;
         map.serialize_entry("version", &self.version.to_string())?;
-        map.serialize_entry("signature", &serde_bytes::Bytes::new(&self.signature))?;
+        map.serialize_entry("signature", &serde_bytes::Bytes::new(self.signature.as_ref()))?;
         if let Some(ref name) = self.anr_name {
             map.serialize_entry("anr_name", name)?;
         }
@@ -171,7 +172,7 @@ impl<'de> serde::Deserialize<'de> for Anr {
                 }
 
                 let pk_vec = pk.ok_or_else(|| serde::de::Error::missing_field("pk"))?;
-                let pk_array: [u8; 48] =
+                let pk_array: PublicKey =
                     pk_vec.try_into().map_err(|_| serde::de::Error::custom("pk must be 48 bytes"))?;
                 let ts = ts.ok_or_else(|| serde::de::Error::missing_field("ts"))?;
                 let ip4_str = ip4_str.ok_or_else(|| serde::de::Error::missing_field("ip4"))?;
@@ -183,8 +184,8 @@ impl<'de> serde::Deserialize<'de> for Anr {
                     Ver::try_from(version_str.as_str()).map_err(|_| serde::de::Error::custom("invalid version"))?;
                 let signature = signature.ok_or_else(|| serde::de::Error::missing_field("signature"))?;
 
-                let pk_b3 = blake3::hash(&pk_array);
-                let pk_b3_f4 = B3f4::new(&pk_b3);
+                let pk_b3 = Hash::from(blake3::hash(pk_array.as_ref()));
+                let pk_b3_f4 = B3f4::new(pk_b3.as_ref());
 
                 Ok(Anr {
                     ip4,
@@ -216,8 +217,8 @@ impl<'de> serde::Deserialize<'de> for Anr {
 impl From<SeedANR> for Anr {
     fn from(seed: SeedANR) -> Self {
         // Compute Blake3 hash fields for indexing
-        let pk_b3 = blake3::hash(&seed.pk);
-        let pk_b3_f4 = B3f4::new(&pk_b3);
+        let pk_b3 = Hash::from(blake3::hash(seed.pk.as_ref()));
+        let pk_b3_f4 = B3f4::new(pk_b3.as_ref());
 
         Anr {
             ip4: seed.ip4.parse().unwrap_or(Ipv4Addr::new(0, 0, 0, 0)),
@@ -256,13 +257,13 @@ impl Anr {
         )
     }
 
-    pub fn build(sk: &[u8], pk: &[u8; 48], pop: &[u8], ip4: Ipv4Addr, version: Ver) -> Result<Self, Error> {
+    pub fn build(sk: &[u8], pk: &PublicKey, pop: &[u8], ip4: Ipv4Addr, version: Ver) -> Result<Self, Error> {
         Self::build_with_name_desc(sk, pk, pop, ip4, version, None, None)
     }
 
     pub fn build_with_name_desc(
         sk: &[u8],
-        pk: &[u8; 48],
+        pk: &PublicKey,
         pop: &[u8],
         ip4: Ipv4Addr,
         version: Ver,
@@ -271,8 +272,8 @@ impl Anr {
     ) -> Result<Self, Error> {
         let ts_s = get_unix_secs_now();
 
-        let pk_b3 = blake3::hash(pk);
-        let pk_b3_f4 = B3f4::new(&pk_b3);
+        let pk_b3 = Hash::from(blake3::hash(pk.as_ref()));
+        let pk_b3_f4 = B3f4::new(pk_b3.as_ref());
 
         let mut anr = Anr {
             ip4,
@@ -310,7 +311,7 @@ impl Anr {
         let ip4_str = map.get_string(b"ip4").ok_or(Error::ParseError("ip4"))?;
         let ip4 = ip4_str.parse::<Ipv4Addr>().map_err(|_| Error::ParseError("ip4_parse"))?;
 
-        let pk = map.get_binary::<[u8; 48]>(b"pk").ok_or(Error::ParseError("pk"))?;
+        let pk = map.get_binary::<PublicKey>(b"pk").ok_or(Error::ParseError("pk"))?;
         let pop = map.get_binary::<Vec<u8>>(b"pop").ok_or(Error::ParseError("pop"))?;
         let port = map.get_integer::<u16>(b"port").ok_or(Error::ParseError("port"))?;
         let signature = map.get_binary::<Vec<u8>>(b"signature").ok_or(Error::ParseError("signature"))?;
@@ -337,8 +338,8 @@ impl Anr {
             .filter(|s| !s.is_empty());
 
         // Compute Blake3 hash fields for indexing (v1.1.8 compatibility)
-        let pk_b3 = blake3::hash(&pk);
-        let pk_b3_f4 = B3f4::new(&pk_b3);
+        let pk_b3 = Hash::from(blake3::hash(pk.as_ref()));
+        let pk_b3_f4 = B3f4::new(pk_b3.as_ref());
 
         Ok(Self {
             ip4,
@@ -366,13 +367,13 @@ impl Anr {
     pub fn verify_signature(&self) -> bool {
         // verify proof of possession (pop is signature of pk with pk as key)
         // this proves the sender owns the private key for pk
-        if verify(&self.pk, &self.pop, &self.pk, crate::consensus::DST_POP).is_err() {
+        if verify(&self.pk.0, &self.pop, &self.pk.0, crate::consensus::DST_POP).is_err() {
             return false;
         }
 
         // verify main signature using vecpak encoding (matching Elixir's RDB.vecpak_encode)
         let to_sign = self.to_vecpak_for_signing();
-        if verify(&self.pk, &self.signature, &to_sign, crate::consensus::DST_ANR).is_err() {
+        if verify(&self.pk.0, &self.signature, &to_sign, crate::consensus::DST_ANR).is_err() {
             return false;
         }
 
@@ -450,8 +451,8 @@ impl Anr {
     pub fn unpack(anr: Anr) -> Result<Anr, Error> {
         if anr.port == 36969 {
             // Compute Blake3 hash fields for compatibility
-            let pk_b3 = blake3::hash(&anr.pk);
-            let pk_b3_f4 = B3f4::new(&pk_b3);
+            let pk_b3 = Hash::from(blake3::hash(anr.pk.as_ref()));
+            let pk_b3_f4 = B3f4::new(pk_b3.as_ref());
 
             Ok(Anr {
                 ip4: anr.ip4,
@@ -507,7 +508,7 @@ impl Anr {
 /// Tracks ANR (Amadeus Network Record) entries with cryptographic signatures
 #[derive(Debug, Clone)]
 pub struct NodeAnrs {
-    store: Arc<RwLock<HashMap<[u8; 48], Anr>>>,
+    store: Arc<RwLock<HashMap<PublicKey, Anr>>>,
 }
 
 impl NodeAnrs {
@@ -640,7 +641,7 @@ impl NodeAnrs {
     }
 
     /// Get all handshaked node public keys
-    pub async fn handshaked(&self) -> Vec<[u8; 48]> {
+    pub async fn handshaked(&self) -> Vec<PublicKey> {
         let map = self.store.read().await;
         let mut pks = Vec::new();
         for (k, v) in map.iter() {
@@ -746,14 +747,14 @@ impl NodeAnrs {
     /// Get ip addresses for given public keys
     pub async fn by_pks_ip<T: AsRef<[u8]>>(&self, pks: &[T]) -> Vec<Ipv4Addr> {
         // build a set of owned pk bytes for efficient lookup
-        let pk_set: std::collections::HashSet<[u8; 48]> = pks
+        let pk_set: std::collections::HashSet<PublicKey> = pks
             .iter()
             .filter_map(|p| {
                 let bytes = p.as_ref();
                 if bytes.len() == 48 {
                     let mut array = [0u8; 48];
                     array.copy_from_slice(bytes);
-                    Some(array)
+                    Some(PublicKey::from(array))
                 } else {
                     None
                 }
@@ -779,7 +780,7 @@ impl NodeAnrs {
 
         if let Ok(my_anr) = Anr::from_config(config) {
             self.insert(my_anr).await;
-            self.set_handshaked(&config.get_pk()).await;
+            self.set_handshaked(config.get_pk().as_ref()).await;
         }
     }
 }
@@ -820,9 +821,10 @@ mod tests {
         let pk_b3 = blake3::hash(&pk);
         let pk_b3_f4 = B3f4::new(&pk_b3);
 
+        let pk_wrapped = PublicKey(pk);
         let anr = Anr {
             ip4,
-            pk,
+            pk: pk_wrapped,
             pop,
             port: 36969,
             signature: vec![0; 96],
@@ -835,7 +837,7 @@ mod tests {
             error: None,
             error_tries: 0,
             next_check: 1234567893,
-            pk_b3,
+            pk_b3: Hash(pk_b3.into()),
             pk_b3_f4,
             proto_reqs: HashMap::new(),
             udp_packets: 0,
@@ -845,26 +847,26 @@ mod tests {
         registry.insert(anr.clone()).await;
 
         // test get
-        let retrieved = registry.get(&pk).await.unwrap();
-        assert_eq!(retrieved.pk, pk);
+        let retrieved = registry.get(&pk_wrapped.0).await.unwrap();
+        assert_eq!(retrieved.pk.0, pk);
         assert!(!retrieved.handshaked, "Expected handshaked to be false after insert, got true");
 
         // test set_handshaked
-        registry.set_handshaked(&pk).await;
-        let retrieved = registry.get(&pk).await.unwrap();
+        registry.set_handshaked(&pk_wrapped.0).await;
+        let retrieved = registry.get(&pk_wrapped.0).await.unwrap();
         assert!(retrieved.handshaked, "Expected handshaked to be true after set_handshaked");
 
         // test handshaked query
         let handshaked_pks = registry.handshaked().await;
-        assert!(handshaked_pks.iter().any(|p| *p == pk), "pk should be in handshaked list");
+        assert!(handshaked_pks.iter().any(|p| p.0 == pk), "pk should be in handshaked list");
 
         // test is_handshaked
-        assert!(registry.is_handshaked(&pk).await, "is_handshaked should return true");
+        assert!(registry.is_handshaked(&pk_wrapped.0).await, "is_handshaked should return true");
 
         // test get_all
         let all = registry.get_all().await;
         assert!(!all.is_empty());
-        assert!(all.iter().any(|a| a.pk == pk));
+        assert!(all.iter().any(|a| a.pk.0 == pk));
 
         // test count functions
         let total_count = registry.count().await;
@@ -874,7 +876,7 @@ mod tests {
         registry.clear_all().await;
 
         // verify our pk was removed
-        assert!(registry.get(&pk).await.is_none(), "Our pk should be removed");
+        assert!(registry.get(&pk_wrapped.0).await.is_none(), "Our pk should be removed");
     }
 
     #[tokio::test]
@@ -895,10 +897,11 @@ mod tests {
         let pk_b3 = blake3::hash(&pk);
         let pk_b3_f4 = B3f4::new(&pk_b3);
 
+        let pk_wrapped = PublicKey(pk);
         // insert initial anr
         let anr1 = Anr {
             ip4,
-            pk,
+            pk: pk_wrapped,
             pop: pop.clone(),
             port: 36969,
             signature: vec![0; 96],
@@ -911,18 +914,18 @@ mod tests {
             error: None,
             error_tries: 0,
             next_check: 1003,
-            pk_b3,
+            pk_b3: Hash(pk_b3.into()),
             pk_b3_f4,
             proto_reqs: HashMap::new(),
             udp_packets: 0,
         };
         registry.insert(anr1).await;
-        registry.set_handshaked(&pk).await;
+        registry.set_handshaked(&pk_wrapped.0).await;
 
         // try to insert older anr (should not update)
         let anr2 = Anr {
             ip4: Ipv4Addr::new(10, 0, 0, 1),
-            pk,
+            pk: pk_wrapped,
             pop: pop.clone(),
             port: 36969,
             signature: vec![0; 96],
@@ -935,7 +938,7 @@ mod tests {
             error: None,
             error_tries: 0,
             next_check: 1002,
-            pk_b3,
+            pk_b3: Hash(pk_b3.into()),
             pk_b3_f4,
             proto_reqs: HashMap::new(),
             udp_packets: 0,
@@ -943,7 +946,7 @@ mod tests {
         registry.insert(anr2).await;
 
         // verify old anr was not updated
-        let retrieved = registry.get(&pk).await.unwrap();
+        let retrieved = registry.get(&pk_wrapped.0).await.unwrap();
         assert_eq!(retrieved.ip4, Ipv4Addr::new(192, 168, 1, 1));
         assert_eq!(retrieved.ts, 1000);
         assert!(retrieved.handshaked);
@@ -951,7 +954,7 @@ mod tests {
         // insert newer anr with same ip (should preserve handshake)
         let anr3 = Anr {
             ip4,
-            pk,
+            pk: pk_wrapped,
             pop: pop.clone(),
             port: 36969,
             signature: vec![0; 96],
@@ -964,14 +967,14 @@ mod tests {
             error: None,
             error_tries: 0,
             next_check: 2003,
-            pk_b3,
+            pk_b3: Hash(pk_b3.into()),
             pk_b3_f4,
             proto_reqs: HashMap::new(),
             udp_packets: 0,
         };
         registry.insert(anr3).await;
 
-        let retrieved = registry.get(&pk).await.unwrap();
+        let retrieved = registry.get(&pk_wrapped.0).await.unwrap();
         assert_eq!(retrieved.ts, 2000);
         assert_eq!(retrieved.version, Ver::new(2, 0, 0));
         assert!(retrieved.handshaked); // should be preserved
@@ -979,7 +982,7 @@ mod tests {
         // insert newer anr with different ip (should reset handshake)
         let anr4 = Anr {
             ip4: Ipv4Addr::new(10, 0, 0, 1),
-            pk,
+            pk: pk_wrapped,
             pop,
             port: 36969,
             signature: vec![0; 96],
@@ -992,14 +995,14 @@ mod tests {
             error: Some("old error".to_string()),
             error_tries: 5,
             next_check: 3003,
-            pk_b3,
+            pk_b3: Hash(pk_b3.into()),
             pk_b3_f4,
             proto_reqs: HashMap::new(),
             udp_packets: 0,
         };
         registry.insert(anr4).await;
 
-        let retrieved = registry.get(&pk).await.unwrap();
+        let retrieved = registry.get(&pk_wrapped.0).await.unwrap();
         assert_eq!(retrieved.ts, 3000);
         assert_eq!(retrieved.ip4, Ipv4Addr::new(10, 0, 0, 1));
         assert!(!retrieved.handshaked); // should be reset
@@ -1026,7 +1029,7 @@ mod tests {
 
             let anr = Anr {
                 ip4: Ipv4Addr::new(192, 168, 1, i), // different IPs
-                pk,
+                pk: PublicKey(pk),
                 pop: vec![i as u8; 96],
                 port: 36969,
                 signature: vec![i as u8; 96],
@@ -1039,7 +1042,7 @@ mod tests {
                 error: None,
                 error_tries: 0,
                 next_check: 2000,
-                pk_b3,
+                pk_b3: Hash(pk_b3.into()),
                 pk_b3_f4,
                 proto_reqs: HashMap::new(),
                 udp_packets: 0,
@@ -1075,10 +1078,10 @@ mod tests {
         // Generate test keys
         let sk = bls12_381::generate_sk();
         let pk = bls12_381::get_public_key(&sk).expect("get pk");
-        let pop = bls12_381::sign(&sk, &pk, crate::consensus::DST_POP).expect("sign pop");
+        let pop = bls12_381::sign(&sk, &pk.0, crate::consensus::DST_POP).expect("sign pop");
 
         // Build ANR with vecpak signature
-        let anr = Anr::build(&sk, &pk, &pop, Ipv4Addr::new(127, 0, 0, 1), Ver::new(1, 2, 5)).expect("build anr");
+        let anr = Anr::build(&sk, &pk, &pop.0, Ipv4Addr::new(127, 0, 0, 1), Ver::new(1, 2, 5)).expect("build anr");
 
         // Verify the signature works
         assert!(anr.verify_signature(), "ANR signature should verify");
@@ -1100,9 +1103,9 @@ mod tests {
 
         let sk = bls12_381::generate_sk();
         let pk = bls12_381::get_public_key(&sk).expect("get pk");
-        let pop = bls12_381::sign(&sk, &pk, crate::consensus::DST_POP).expect("sign pop");
+        let pop = bls12_381::sign(&sk, &pk.0, crate::consensus::DST_POP).expect("sign pop");
 
-        let anr = Anr::build(&sk, &pk, &pop, Ipv4Addr::new(192, 168, 1, 1), Ver::new(1, 2, 3)).expect("build anr");
+        let anr = Anr::build(&sk, &pk, &pop.0, Ipv4Addr::new(192, 168, 1, 1), Ver::new(1, 2, 3)).expect("build anr");
 
         // Get the data we're signing
         let to_sign = anr.to_vecpak_for_signing();

@@ -5,6 +5,8 @@ use group::Curve;
 use blst::BLST_ERROR;
 use blst::min_pk::{PublicKey as BlsPublicKey, SecretKey as BlsSecretKey, Signature as BlsSignature};
 
+use crate::types::{PublicKey, Signature};
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("invalid secret key")]
@@ -91,14 +93,14 @@ fn sign_from_secret_key(sk: BlsSecretKey, msg: &[u8], dst: &[u8]) -> Result<BlsS
 // public API
 
 /// Uses Scalar::from_bytes_wide for 64-byte keys to match Elixir exactly
-pub fn get_public_key(sk_bytes: &[u8]) -> Result<[u8; 48], Error> {
+pub fn get_public_key(sk_bytes: &[u8]) -> Result<PublicKey, Error> {
     // For 64-byte keys: use bls12_381 directly for full Elixir compatibility
     let bytes_64: [u8; 64] = sk_bytes.try_into().map_err(|_| Error::InvalidSecretKey)?;
     let sk_scalar = Scalar::from_bytes_wide(&bytes_64);
 
     // Compute public key: G1 generator * scalar (exactly like Elixir)
     let pk_g1 = G1Projective::generator() * sk_scalar;
-    Ok(pk_g1.to_affine().to_compressed())
+    Ok(PublicKey::from(pk_g1.to_affine().to_compressed()))
 }
 
 pub fn generate_sk() -> [u8; 64] {
@@ -121,18 +123,18 @@ pub fn generate_sk() -> [u8; 64] {
 
 /// Sign a message with secret key, returns signature bytes (96 bytes in min_pk)
 /// For 64-byte keys, uses the same scalar derivation as public key generation
-pub fn sign(sk_bytes: &[u8], message: &[u8], dst: &[u8]) -> Result<[u8; 96], Error> {
+pub fn sign(sk_bytes: &[u8], message: &[u8], dst: &[u8]) -> Result<Signature, Error> {
     // Use exactly the same approach as parse_secret_key to ensure consistency
     let sk = parse_secret_key(sk_bytes)?;
     let signature = sign_from_secret_key(sk, message, dst)?;
-    Ok(signature.to_bytes())
+    Ok(Signature::from(signature.to_bytes()))
 }
 
 /// Verify a signature using a compressed G1 public key (48 bytes) and signature (96 bytes)
 /// Errors out if the signature is invalid
-pub fn verify(pk_bytes: &[u8], sig_bytes: &[u8], msg: &[u8], dst: &[u8]) -> Result<(), Error> {
-    let pk = BlsPublicKey::deserialize(pk_bytes).map_err(|_| Error::InvalidPoint)?;
-    let sig = BlsSignature::deserialize(sig_bytes).map_err(|_| Error::InvalidSignature)?;
+pub fn verify(pk_bytes: impl AsRef<[u8]>, sig_bytes: impl AsRef<[u8]>, msg: &[u8], dst: &[u8]) -> Result<(), Error> {
+    let pk = BlsPublicKey::deserialize(pk_bytes.as_ref()).map_err(|_| Error::InvalidPoint)?;
+    let sig = BlsSignature::deserialize(sig_bytes.as_ref()).map_err(|_| Error::InvalidSignature)?;
 
     let err = sig.verify(
         true, // hash_to_curve
@@ -147,7 +149,7 @@ pub fn verify(pk_bytes: &[u8], sig_bytes: &[u8], msg: &[u8], dst: &[u8]) -> Resu
 }
 
 /// Aggregate multiple compressed G1 public keys into one compressed G1 public key (48 bytes)
-pub fn aggregate_public_keys<T>(public_keys: T) -> Result<[u8; 48], Error>
+pub fn aggregate_public_keys<T>(public_keys: T) -> Result<PublicKey, Error>
 where
     T: IntoIterator,
     T::Item: AsRef<[u8]>,
@@ -162,11 +164,11 @@ where
         let p = parse_public_key(pk.as_ref())?;
         acc += p;
     }
-    Ok(acc.to_affine().to_compressed())
+    Ok(PublicKey::from(acc.to_affine().to_compressed()))
 }
 
 /// Aggregate multiple signatures (compressed G2, 96 bytes) into one compressed G2 (96 bytes)
-pub fn aggregate_signatures<T>(signatures: T) -> Result<[u8; 96], Error>
+pub fn aggregate_signatures<T>(signatures: T) -> Result<Signature, Error>
 where
     T: IntoIterator,
     T::Item: AsRef<[u8]>,
@@ -181,13 +183,13 @@ where
         let p = parse_signature(s.as_ref())?;
         acc += p;
     }
-    Ok(acc.to_affine().to_compressed())
+    Ok(Signature::from(acc.to_affine().to_compressed()))
 }
 
 /// Compute Diffie-Hellman shared secret: pk_g1 * sk -> compressed G1 (48 bytes).
 /// Uses the same approach as public key generation for consistency
-pub fn get_shared_secret(public_key: &[u8], sk_bytes: &[u8]) -> Result<[u8; 48], Error> {
-    let pk_g1 = parse_public_key(public_key)?;
+pub fn get_shared_secret(public_key: impl AsRef<[u8]>, sk_bytes: &[u8]) -> Result<PublicKey, Error> {
+    let pk_g1 = parse_public_key(public_key.as_ref())?;
 
     // Use exactly the same scalar derivation as get_public_key() for consistency
     let sk_scalar = if sk_bytes.len() == 64 {
@@ -199,12 +201,12 @@ pub fn get_shared_secret(public_key: &[u8], sk_bytes: &[u8]) -> Result<[u8; 48],
     };
 
     // Compute shared secret: pk_g1 * sk_scalar
-    Ok((pk_g1 * sk_scalar).to_affine().to_compressed())
+    Ok(PublicKey::from((pk_g1 * sk_scalar).to_affine().to_compressed()))
 }
 
 /// Validate a compressed G1 public key.
-pub fn validate_public_key(public_key: &[u8]) -> Result<(), Error> {
-    parse_public_key(public_key).map(|_| ())
+pub fn validate_public_key(public_key: impl AsRef<[u8]>) -> Result<(), Error> {
+    parse_public_key(public_key.as_ref()).map(|_| ())
 }
 
 #[cfg(test)]

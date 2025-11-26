@@ -1,6 +1,7 @@
 use crate::Context;
 use crate::node::protocol::{self, Protocol};
 use crate::utils::misc::Typename;
+use crate::utils::{Hash, PublicKey, Signature};
 use amadeus_runtime::consensus::bic::sol::SOL_SIZE;
 use amadeus_utils::vecpak;
 use std::convert::TryInto;
@@ -27,10 +28,10 @@ pub enum Solution {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SolV2 {
     pub epoch: u64,
-    pub segment_vr_hash: [u8; 32],
-    pub pk: [u8; 48],
-    pub pop: [u8; 96],
-    pub computor: [u8; 48],
+    pub segment_vr_hash: Hash,
+    pub pk: PublicKey,
+    pub pop: Signature,
+    pub computor: PublicKey,
     pub nonce: [u8; 12],
     pub tensor_c: [u8; 1024],
 }
@@ -38,18 +39,18 @@ pub struct SolV2 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SolV1 {
     pub epoch: u64,
-    pub pk: [u8; 48],
-    pub pop: [u8; 96],
-    pub computor: [u8; 48],
-    pub segment_vr: [u8; 32],
+    pub pk: PublicKey,
+    pub pop: Signature,
+    pub computor: PublicKey,
+    pub segment_vr: Hash,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SolV0 {
     pub epoch: u64,
-    pub pk: [u8; 48],
-    pub pop: [u8; 96],
-    pub computor: [u8; 48],
+    pub pk: PublicKey,
+    pub pop: Signature,
+    pub computor: PublicKey,
 }
 
 impl Solution {
@@ -110,10 +111,10 @@ impl Protocol for Solution {
             Solution::V2(v2) => {
                 let mut buf = Vec::with_capacity(SOL_SIZE);
                 buf.extend_from_slice(&v2.epoch.to_le_bytes());
-                buf.extend_from_slice(&v2.segment_vr_hash);
-                buf.extend_from_slice(&v2.pk);
-                buf.extend_from_slice(&v2.pop);
-                buf.extend_from_slice(&v2.computor);
+                buf.extend_from_slice(v2.segment_vr_hash.as_ref());
+                buf.extend_from_slice(v2.pk.as_ref());
+                buf.extend_from_slice(v2.pop.as_ref());
+                buf.extend_from_slice(v2.computor.as_ref());
                 buf.extend_from_slice(&v2.nonce);
                 buf.extend_from_slice(&v2.tensor_c);
                 buf
@@ -121,19 +122,19 @@ impl Protocol for Solution {
             Solution::V1(v1) => {
                 let mut buf = Vec::with_capacity(320);
                 buf.extend_from_slice(&v1.epoch.to_le_bytes());
-                buf.extend_from_slice(&v1.pk);
-                buf.extend_from_slice(&v1.pop);
-                buf.extend_from_slice(&v1.computor);
-                buf.extend_from_slice(&v1.segment_vr);
+                buf.extend_from_slice(v1.pk.as_ref());
+                buf.extend_from_slice(v1.pop.as_ref());
+                buf.extend_from_slice(v1.computor.as_ref());
+                buf.extend_from_slice(v1.segment_vr.as_ref());
                 buf.resize(320, 0);
                 buf
             }
             Solution::V0(v0) => {
                 let mut buf = Vec::with_capacity(256);
                 buf.extend_from_slice(&v0.epoch.to_le_bytes());
-                buf.extend_from_slice(&v0.pk);
-                buf.extend_from_slice(&v0.pop);
-                buf.extend_from_slice(&v0.computor);
+                buf.extend_from_slice(v0.pk.as_ref());
+                buf.extend_from_slice(v0.pop.as_ref());
+                buf.extend_from_slice(v0.computor.as_ref());
                 buf.resize(256, 0);
                 buf
             }

@@ -1,5 +1,6 @@
 use crate::Result;
 use amadeus_utils::blake3;
+use amadeus_utils::{Hash, PublicKey, Signature};
 use std::convert::TryInto;
 
 pub const PREAMBLE_SIZE: usize = 240;
@@ -9,20 +10,20 @@ pub const SOL_SIZE: usize = PREAMBLE_SIZE + MATRIX_SIZE; // 1264
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sol {
     pub epoch: u64,
-    pub segment_vr_hash: [u8; 32],
-    pub pk: [u8; 48],
-    pub pop: [u8; 96],
-    pub computor: [u8; 48],
+    pub segment_vr_hash: Hash,
+    pub pk: PublicKey,
+    pub pop: Signature,
+    pub computor: PublicKey,
     pub nonce: [u8; 12],
     pub tensor_c: [u8; 1024],
 }
 
 pub fn unpack(sol: &[u8; SOL_SIZE]) -> Sol {
     let epoch = u32::from_le_bytes(sol[0..4].try_into().unwrap()) as u64;
-    let segment_vr_hash: [u8; 32] = sol[4..36].try_into().unwrap();
-    let pk: [u8; 48] = sol[36..84].try_into().unwrap();
-    let pop: [u8; 96] = sol[84..180].try_into().unwrap();
-    let computor: [u8; 48] = sol[180..228].try_into().unwrap();
+    let segment_vr_hash = Hash(sol[4..36].try_into().unwrap());
+    let pk = PublicKey(sol[36..84].try_into().unwrap());
+    let pop = Signature(sol[84..180].try_into().unwrap());
+    let computor = PublicKey(sol[180..228].try_into().unwrap());
     let nonce: [u8; 12] = sol[228..240].try_into().unwrap();
     let tensor_c: [u8; 1024] = sol[240..(240 + 1024)].try_into().unwrap();
     Sol { epoch, segment_vr_hash, pk, pop, computor, nonce, tensor_c }
@@ -44,7 +45,7 @@ pub fn verify(
     diff_bits: u64,
 ) -> Result<bool> {
     let usol = unpack(sol);
-    if segment_vr_hash != &usol.segment_vr_hash {
+    if segment_vr_hash != &*usol.segment_vr_hash {
         return Err("segment_vr_hash");
     }
     if sol.len() != SOL_SIZE {

@@ -1,5 +1,6 @@
 use crate::consensus::chain_epoch;
 use crate::consensus::doms::tx::{TxU, pack, validate};
+use crate::utils::Hash;
 use crate::utils::rocksdb::RocksDb;
 use amadeus_runtime::consensus::bic::{coin, sol};
 use std::collections::HashMap;
@@ -9,7 +10,7 @@ use tokio::sync::RwLock;
 #[derive(Debug, Clone)]
 pub struct ValidateTxArgs {
     pub epoch: u32,
-    pub segment_vr_hash: [u8; 32],
+    pub segment_vr_hash: Hash,
     pub diff_bits: u32,
     pub batch_state: BatchState,
 }
@@ -22,9 +23,9 @@ pub struct BatchState {
 
 #[derive(Debug)]
 pub enum TxPoolError {
-    InvalidNonce { nonce: i128, hash: [u8; 32] },
-    InsufficientBalance { nonce: i128, hash: [u8; 32] },
-    InvalidSol { nonce: i128, hash: [u8; 32] },
+    InvalidNonce { nonce: i128, hash: Hash },
+    InsufficientBalance { nonce: i128, hash: Hash },
+    InvalidSol { nonce: i128, hash: Hash },
     ValidationError(String),
 }
 
@@ -72,7 +73,8 @@ impl TxPool {
         // Check nonce validity
         let signer_vec = txu.tx.signer.to_vec();
         let chain_nonce = args.batch_state.chain_nonces.get(&signer_vec).cloned().unwrap_or_else(|| {
-            crate::consensus::fabric::chain_queries::chain_nonce(self.db.as_ref(), &txu.tx.signer).unwrap_or(0) as i128
+            crate::consensus::fabric::chain_queries::chain_nonce(self.db.as_ref(), txu.tx.signer.as_ref()).unwrap_or(0)
+                as i128
         });
 
         if chain_nonce != 0 && txu.tx.nonce <= chain_nonce {
@@ -82,7 +84,7 @@ impl TxPool {
 
         // Check balance
         let balance = args.batch_state.balances.get(&signer_vec).cloned().unwrap_or_else(|| {
-            crate::consensus::fabric::chain_queries::chain_balance(self.db.as_ref(), &txu.tx.signer)
+            crate::consensus::fabric::chain_queries::chain_balance(self.db.as_ref(), txu.tx.signer.as_ref())
         });
 
         let exec_cost = txu.exec_cost(args.epoch) as i128;
@@ -124,7 +126,7 @@ impl TxPool {
 
         let mut args = ValidateTxArgs {
             epoch: chain_epoch,
-            segment_vr_hash,
+            segment_vr_hash: Hash::from(segment_vr_hash),
             diff_bits: diff_bits as u32,
             batch_state: BatchState::default(),
         };
@@ -153,7 +155,7 @@ impl TxPool {
 
         let mut args = ValidateTxArgs {
             epoch: chain_epoch,
-            segment_vr_hash,
+            segment_vr_hash: Hash::from(segment_vr_hash),
             diff_bits: diff_bits as u32,
             batch_state: BatchState::default(),
         };

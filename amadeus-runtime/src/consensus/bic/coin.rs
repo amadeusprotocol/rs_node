@@ -1,9 +1,10 @@
 use crate::consensus::consensus_apply::ApplyEnv;
 use crate::consensus::consensus_kv::{kv_get, kv_increment, kv_put};
 use crate::{Result, bcat, consensus};
+use amadeus_utils::{Hash, PublicKey, Signature};
 
 pub const DECIMALS: u32 = 9;
-pub const BURN_ADDRESS: [u8; 48] = [0u8; 48];
+pub const BURN_ADDRESS: PublicKey = PublicKey([0u8; 48]);
 
 pub fn to_flat(coins: i128) -> i128 {
     coins.saturating_mul(1_000_000_000)
@@ -22,7 +23,7 @@ pub fn from_flat(coins: i128) -> f64 {
 }
 
 pub fn balance_burnt(env: &ApplyEnv, symbol: &[u8]) -> Result<i128> {
-    balance(env, &BURN_ADDRESS, symbol)
+    balance(env, BURN_ADDRESS.as_ref(), symbol)
 }
 
 pub fn balance(env: &ApplyEnv, address: &[u8], symbol: &[u8]) -> Result<i128> {
@@ -104,7 +105,9 @@ pub fn call_transfer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()> {
     if receiver.len() != 48 {
         return Err("invalid_receiver_pk");
     }
-    if !(amadeus_utils::bls12_381::validate_public_key(receiver).is_ok() || receiver == &BURN_ADDRESS) {
+    if !(amadeus_utils::bls12_381::validate_public_key(receiver).is_ok()
+        || receiver == AsRef::<[u8]>::as_ref(&BURN_ADDRESS))
+    {
         return Err("invalid_receiver_pk");
     }
     if amount <= 0 {
@@ -228,7 +231,7 @@ pub fn call_pause(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()> {
 }
 
 // Compatibility wrappers for amadeus-node
-pub fn burn_address() -> [u8; 48] {
+pub fn burn_address() -> PublicKey {
     BURN_ADDRESS
 }
 

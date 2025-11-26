@@ -8,6 +8,7 @@ use crate::utils::bls12_381 as bls;
 use crate::utils::misc::{bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
 use crate::utils::rocksdb::RocksDb;
 use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
+use crate::utils::{Hash, PublicKey, Signature};
 use amadeus_runtime::consensus::consensus_apply::ApplyEnv;
 use amadeus_runtime::consensus::consensus_kv;
 use amadeus_runtime::consensus::consensus_muts::Mutation;
@@ -56,10 +57,10 @@ pub enum Error {
 /// mutations_hash. Mask denotes which trainers signed the aggregate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Consensus {
-    pub entry_hash: [u8; 32],
-    pub mutations_hash: [u8; 32],
+    pub entry_hash: Hash,
+    pub mutations_hash: Hash,
     pub mask: BitVec<u8, Msb0>,
-    pub agg_sig: [u8; 96],
+    pub agg_sig: Signature,
 }
 
 impl Consensus {
@@ -74,10 +75,10 @@ impl Consensus {
 
     /// Parse Consensus from vecpak term
     pub fn from_vecpak_map(map: &amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
-        let entry_hash: [u8; 32] = map.get_binary(b"entry_hash").ok_or(Error::BadFormat("consensus.entry_hash"))?;
-        let mutations_hash: [u8; 32] =
+        let entry_hash: Hash = map.get_binary(b"entry_hash").ok_or(Error::BadFormat("consensus.entry_hash"))?;
+        let mutations_hash: Hash =
             map.get_binary(b"mutations_hash").ok_or(Error::BadFormat("consensus.mutations_hash"))?;
-        let agg_sig: [u8; 96] = map.get_binary(b"aggsig").ok_or(Error::BadFormat("consensus.aggsig"))?;
+        let agg_sig: Signature = map.get_binary(b"aggsig").ok_or(Error::BadFormat("consensus.aggsig"))?;
         let mask = map.get_binary::<Vec<u8>>(b"mask").map(bin_to_bitvec).unwrap_or_else(BitVec::new);
 
         Ok(Self { entry_hash, mutations_hash, mask, agg_sig })
@@ -96,12 +97,12 @@ impl Consensus {
     }
 }
 
-pub fn chain_muts_rev(fabric: &Fabric, hash: &[u8; 32]) -> Option<Vec<Mutation>> {
+pub fn chain_muts_rev(fabric: &Fabric, hash: &Hash) -> Option<Vec<Mutation>> {
     let bin = fabric.get_muts_rev(hash).ok()??;
     mutations_from_etf(&bin).ok()
 }
 
-pub fn chain_muts(fabric: &Fabric, hash: &[u8; 32]) -> Option<Vec<Mutation>> {
+pub fn chain_muts(fabric: &Fabric, hash: &Hash) -> Option<Vec<Mutation>> {
     let bin = fabric.get_muts(hash).ok()??;
     mutations_from_etf(&bin).ok()
 }
@@ -245,15 +246,16 @@ fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) -> Result<
 
     let epoch = next_entry.header.height / 100_000;
 
-    let entry_signer_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &next_entry.header.signer, b":AMA"]);
+    let entry_signer_key =
+        crate::utils::misc::bcat(&[b"bic:coin:balance:", next_entry.header.signer.as_ref(), b":AMA"]);
     let burn_address_key = crate::utils::misc::bcat(&[
         b"bic:coin:balance:",
-        &amadeus_runtime::consensus::bic::coin::BURN_ADDRESS,
+        amadeus_runtime::consensus::bic::coin::BURN_ADDRESS.as_ref(),
         b":AMA",
     ]);
 
     for txu in txus {
-        let nonce_key = crate::utils::misc::bcat(&[b"bic:base:nonce:", &txu.tx.signer]);
+        let nonce_key = crate::utils::misc::bcat(&[b"bic:base:nonce:", txu.tx.signer.as_ref()]);
         let nonce_i64 = i64::try_from(txu.tx.nonce).unwrap_or(i64::MAX);
         consensus_kv::kv_put(env, &nonce_key, &nonce_i64.to_string().into_bytes())?;
 
@@ -264,7 +266,7 @@ fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) -> Result<
             amadeus_runtime::consensus::bic::coin::to_cents((3 + bytes / 256 * 3) as i128)
         };
 
-        let signer_balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", &txu.tx.signer, b":AMA"]);
+        let signer_balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", txu.tx.signer.as_ref(), b":AMA"]);
         consensus_kv::kv_increment(env, &signer_balance_key, -exec_cost)?;
 
         consensus_kv::kv_increment(env, &entry_signer_key, exec_cost / 2)?;
@@ -411,7 +413,11 @@ fn call_exit(env: &mut ApplyEnv, next_entry: &Entry) -> Result<(), &'static str>
 
     // Update segment VR hash every 1000 blocks
     if next_entry.header.height % 1000 == 0 {
-        consensus_kv::kv_put(env, b"bic:epoch:segment_vr_hash", &crate::utils::blake3::hash(&next_entry.header.vr))?;
+        consensus_kv::kv_put(
+            env,
+            b"bic:epoch:segment_vr_hash",
+            crate::utils::blake3::hash(next_entry.header.vr.as_ref()).as_ref(),
+        )?;
     }
 
     // Epoch transition every 100k blocks
@@ -419,7 +425,7 @@ fn call_exit(env: &mut ApplyEnv, next_entry: &Entry) -> Result<(), &'static str>
         // Update caller_env for epoch transition (readonly mode)
         env.caller_env.readonly = true;
         env.caller_env.tx_hash = vec![];
-        env.caller_env.tx_signer = [0u8; 48];
+        env.caller_env.tx_signer = PublicKey::from([0u8; 48]);
         env.caller_env.account_caller = vec![];
         env.caller_env.call_exec_points = 0;
         env.caller_env.call_exec_points_remaining = 0;
@@ -453,7 +459,7 @@ pub fn apply_entry(
     }
 
     // Create transaction and ApplyEnv
-    let entry_vr_b3 = crate::utils::blake3::hash(&next_entry.header.vr);
+    let entry_vr_b3 = crate::utils::blake3::hash(next_entry.header.vr.as_ref());
     let mut env = amadeus_runtime::consensus::consensus_apply::make_apply_env(
         fabric.db(),
         "contractstate",
@@ -464,7 +470,7 @@ pub fn apply_entry(
         next_entry.header.height,
         next_entry.header.height / 100_000,
         &next_entry.header.vr,
-        &entry_vr_b3,
+        &Hash::from(entry_vr_b3),
         &next_entry.header.dr,
     );
 
@@ -514,7 +520,7 @@ pub fn apply_entry(
     // sign attestation
     let pk = config.get_pk();
     let sk = config.get_sk();
-    let attestation = Attestation::sign_with(&pk, &sk, &next_entry.hash, &mutations_hash)?;
+    let attestation = Attestation::sign_with(pk.as_ref(), &sk, &next_entry.hash, &Hash::from(mutations_hash))?;
     let attestation_packed = attestation.to_vecpak_bin();
 
     // store my attestation
@@ -569,7 +575,7 @@ pub fn apply_entry(
 
                 let term = eetf::Term::Map(eetf::Map { map: tx_meta });
                 let tx_meta_bin = encode_safe_deterministic(&term);
-                fabric.put_tx_metadata(&txu.hash, &tx_meta_bin)?;
+                fabric.put_tx_metadata(txu.hash.as_ref(), &tx_meta_bin)?;
             }
         }
     }
@@ -594,16 +600,16 @@ pub fn produce_entry(fabric: &Fabric, config: &crate::config::Config, slot: u64)
 
     // create entry with updated txs_hash
     let mut header = next_header;
-    header.txs_hash = txs_hash;
+    header.txs_hash = Hash::from(txs_hash);
 
     // sign the header
     let header_bin = header.to_vecpak_bin();
     let header_hash = crate::utils::blake3::hash(&header_bin);
-    let signature = bls::sign(&sk, &header_hash, DST_ENTRY)?;
+    let signature = bls::sign(&sk, header_hash.as_ref(), DST_ENTRY)?;
 
     // compute entry hash
     let entry = Entry {
-        hash: [0u8; 32], // will be computed below
+        hash: Hash::from([0u8; 32]), // will be computed below
         header,
         signature,
         mask: None,
@@ -614,10 +620,16 @@ pub fn produce_entry(fabric: &Fabric, config: &crate::config::Config, slot: u64)
     let entry_bin = entry.to_vecpak_bin();
     let hash = crate::utils::blake3::hash(&entry_bin);
 
-    Ok(Entry { hash, header: entry.header, signature: entry.signature, mask: entry.mask, txs: entry.txs })
+    Ok(Entry {
+        hash: Hash::from(hash),
+        header: entry.header,
+        signature: entry.signature,
+        mask: entry.mask,
+        txs: entry.txs,
+    })
 }
 
-pub fn chain_rewind(fabric: &Fabric, target_hash: &[u8; 32]) -> Result<bool, Error> {
+pub fn chain_rewind(fabric: &Fabric, target_hash: &Hash) -> Result<bool, Error> {
     if !fabric.is_in_chain(target_hash) {
         return Ok(false);
     }
@@ -628,7 +640,7 @@ pub fn chain_rewind(fabric: &Fabric, target_hash: &[u8; 32]) -> Result<bool, Err
     fabric.set_temporal_hash_height(&entry)?;
 
     let rooted_hash = fabric.get_rooted_hash()?.ok_or(Error::Missing("rooted_tip"))?;
-    if fabric.get_entry_raw(&rooted_hash)?.is_none() {
+    if fabric.get_entry_raw(&Hash::from(rooted_hash))?.is_none() {
         let rooted_height = fabric.get_rooted_height()?.ok_or(Error::Missing("rooted_height"))?;
         warn!("Rewind rolled back rooted entries from {rooted_height} until {}", entry.header.height);
         fabric.set_rooted_hash_height(&entry)?;
@@ -637,7 +649,7 @@ pub fn chain_rewind(fabric: &Fabric, target_hash: &[u8; 32]) -> Result<bool, Err
     Ok(true)
 }
 
-fn chain_rewind_internal(fabric: &Fabric, current_entry: &Entry, target_hash: &[u8; 32]) -> Result<Entry, Error> {
+fn chain_rewind_internal(fabric: &Fabric, current_entry: &Entry, target_hash: &Hash) -> Result<Entry, Error> {
     let mut current = current_entry.clone();
 
     loop {
@@ -656,12 +668,12 @@ fn chain_rewind_internal(fabric: &Fabric, current_entry: &Entry, target_hash: &[
 
         let mut height_key = current.header.height.to_string().into_bytes();
         height_key.push(b':');
-        height_key.extend_from_slice(&current.hash);
+        height_key.extend_from_slice(current.hash.as_ref());
         fabric.delete_entry_by_height(&height_key)?;
 
         let mut slot_key = current.header.slot.to_string().into_bytes();
         slot_key.push(b':');
-        slot_key.extend_from_slice(&current.hash);
+        slot_key.extend_from_slice(current.hash.as_ref());
         fabric.delete_entry_by_slot(&slot_key)?;
 
         fabric.delete_consensus(&current.hash)?;
@@ -688,7 +700,7 @@ fn chain_rewind_internal(fabric: &Fabric, current_entry: &Entry, target_hash: &[
 }
 
 pub fn best_by_weight(
-    trainers: &[[u8; 48]],
+    trainers: &[PublicKey],
     consensuses: &HashMap<[u8; 32], Consensus>,
 ) -> (Option<[u8; 32]>, Option<f64>, Option<Consensus>) {
     let max_score = trainers.len() as f64;
@@ -743,7 +755,7 @@ pub fn best_entry_for_height(fabric: &Fabric, height: u64) -> Result<Vec<ScoredE
         let trainers = fabric.trainers_for_height(entry.header.height).ok_or(Error::Missing("trainers_for_height"))?;
 
         // get best consensus for this entry
-        let (mutations_hash, score, _consensus) = fabric.best_consensus_by_entryhash(&trainers, &entry.hash)?;
+        let (mutations_hash, score, _consensus) = fabric.best_consensus_by_entryhash(&trainers, entry.hash.as_ref())?;
 
         if mutations_hash.is_some() {
             entries.push(ScoredEntry { entry, mutations_hash, score });
@@ -829,7 +841,7 @@ pub fn proc_consensus(fabric: &Fabric) -> Result<(), Error> {
         let mutations_hash = best_entry_info.mutations_hash.unwrap();
 
         // get our local attestation for this entry to verify we applied it with same mutations
-        let my_attestation = fabric.my_attestation_by_entryhash(&best_entry.hash).ok().flatten();
+        let my_attestation = fabric.my_attestation_by_entryhash(best_entry.hash.as_ref()).ok().flatten();
 
         match my_attestation {
             None => {
@@ -842,7 +854,7 @@ pub fn proc_consensus(fabric: &Fabric) -> Result<(), Error> {
                 // get best entry for previous height to rewind to
                 let rewind_hash = match best_entry_for_height(fabric, next_height - 1)?.first() {
                     Some(prev_best) => prev_best.entry.hash,
-                    None => fabric.get_temporal_hash()?.unwrap_or([0u8; 32]),
+                    None => Hash::from(fabric.get_temporal_hash()?.unwrap_or([0u8; 32])),
                 };
                 chain_rewind(fabric, &rewind_hash)?;
                 continue; // retry proc_consensus
@@ -909,13 +921,13 @@ pub fn validate_next_entry(current_entry: &Entry, next_entry: &Entry) -> Result<
     }
 
     // validate dr (deterministic random)
-    let expected_dr = crate::utils::blake3::hash(&ceh.dr);
+    let expected_dr = crate::utils::blake3::hash(ceh.dr.as_ref());
     if expected_dr != neh.dr {
         return Err(Error::WrongType("invalid_dr"));
     }
 
     // validate vr (verifiable random)
-    if bls::verify(&neh.signer, &neh.vr, &ceh.vr, DST_VRF).is_err() {
+    if bls::verify(&neh.signer, &neh.vr, &ceh.vr.0, DST_VRF).is_err() {
         return Err(Error::InvalidSignature);
     }
 
@@ -949,8 +961,8 @@ pub fn delete_transactions_from_pool(_txs: &[Vec<u8>]) {
 
 #[derive(Debug, Clone)]
 pub struct SoftforkSettings {
-    pub softfork_hash: Vec<[u8; 32]>,
-    pub softfork_deny_hash: Vec<[u8; 32]>,
+    pub softfork_hash: Vec<Hash>,
+    pub softfork_deny_hash: Vec<Hash>,
 }
 
 pub fn get_softfork_settings() -> SoftforkSettings {
@@ -1022,7 +1034,7 @@ pub async fn proc_entries(fabric: &Fabric, config: &crate::config::Config, ctx: 
 }
 
 /// Helper to broadcast attestation to peers and seed nodes
-async fn broadcast_attestation(ctx: &crate::Context, attestation_packed: &[u8], entry_hash: &[u8; 32]) {
+async fn broadcast_attestation(ctx: &crate::Context, attestation_packed: &[u8], entry_hash: &Hash) {
     use crate::consensus::doms::attestation::{Attestation, EventAttestation};
 
     let Some(attestation) = Attestation::from_vecpak_bin(attestation_packed) else {

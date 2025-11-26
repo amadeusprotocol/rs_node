@@ -6,6 +6,7 @@ use crate::node::{anr, peers};
 use crate::socket::UdpSocketExt;
 use crate::utils::misc::Typename;
 use crate::utils::misc::format_duration;
+use crate::utils::{Hash, PublicKey};
 use crate::{SystemStats, Ver, config, consensus, get_system_stats, metrics, node, utils};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -448,7 +449,7 @@ impl Context {
     pub async fn is_peer_handshaked(&self, ip: Ipv4Addr) -> bool {
         if let Some(peer) = self.node_peers.by_ip(ip).await {
             if let Some(ref pk) = peer.pk {
-                if self.node_anrs.is_handshaked(pk).await {
+                if self.node_anrs.is_handshaked(pk.as_ref()).await {
                     return true;
                 }
             }
@@ -557,7 +558,7 @@ impl Context {
     pub async fn update_peer_from_anr(
         &self,
         ip: Ipv4Addr,
-        pk: &[u8; 48],
+        pk: &PublicKey,
         version: &Ver,
         status: Option<HandshakeStatus>,
     ) {
@@ -572,19 +573,19 @@ impl Context {
     /// Get ANR by public key (Base58 encoded)
     pub async fn get_anr_by_pk_b58(&self, pk_b58: &str) -> Option<anr::Anr> {
         if let Ok(pk_bytes) = bs58::decode(pk_b58).into_vec() {
-            if pk_bytes.len() == 48 {
-                let mut pk_array = [0u8; 48];
-                pk_array.copy_from_slice(&pk_bytes);
-                return self.get_anr_by_pk(&pk_array).await;
+            let pk_array: Result<[u8; 48], _> = pk_bytes.try_into();
+            if let Ok(pk_array) = pk_array {
+                let pk = PublicKey::from(pk_array);
+                return self.get_anr_by_pk(&pk).await;
             }
         }
         None
     }
 
     /// Get ANR by public key bytes
-    pub async fn get_anr_by_pk(&self, pk: &[u8; 48]) -> Option<anr::Anr> {
+    pub async fn get_anr_by_pk(&self, pk: &PublicKey) -> Option<anr::Anr> {
         let all_anrs = self.node_anrs.get_all().await;
-        all_anrs.into_iter().find(|anr| anr.pk == *pk)
+        all_anrs.into_iter().find(|anr| &anr.pk == pk)
     }
 
     /// Get all handshaked ANRs (validators)
@@ -611,19 +612,19 @@ impl Context {
     }
 
     /// Get trainers for height
-    pub fn get_trainers_for_height(&self, height: u64) -> Option<Vec<[u8; 48]>> {
+    pub fn get_trainers_for_height(&self, height: u64) -> Option<Vec<PublicKey>> {
         self.fabric.trainers_for_height(height)
     }
 
     /// Get wallet balance - wrapper around fabric.chain_balance_symbol
-    pub fn get_wallet_balance(&self, public_key: &[u8; 48], symbol: &[u8]) -> i128 {
-        self.fabric.chain_balance_symbol(public_key, symbol)
+    pub fn get_wallet_balance(&self, public_key: &PublicKey, symbol: &[u8]) -> i128 {
+        self.fabric.chain_balance_symbol(public_key.as_ref(), symbol)
     }
 
     /// Get contract state from CF_CONTRACTSTATE
-    pub fn get_contract_state(&self, contract: &[u8; 48], key: &[u8]) -> Option<Vec<u8>> {
+    pub fn get_contract_state(&self, contract: &PublicKey, key: &[u8]) -> Option<Vec<u8>> {
         use amadeus_utils::constants::CF_CONTRACTSTATE;
-        let full_key = [b"bic:contract:", contract.as_slice(), b":", key].concat();
+        let full_key = [b"bic:contract:" as &[u8], contract.as_ref(), b":" as &[u8], key].concat();
         self.fabric.db().get(CF_CONTRACTSTATE, &full_key).ok().flatten()
     }
 
@@ -638,9 +639,9 @@ impl Context {
     }
 
     /// Get all balances for a wallet using prefix scan
-    pub fn get_all_wallet_balances(&self, public_key: &[u8; 48]) -> Vec<(Vec<u8>, i128)> {
+    pub fn get_all_wallet_balances(&self, public_key: &PublicKey) -> Vec<(Vec<u8>, i128)> {
         use amadeus_utils::constants::CF_CONTRACTSTATE;
-        let prefix = [b"bic:coin:balance:", public_key.as_slice(), b":"].concat();
+        let prefix = [b"bic:coin:balance:" as &[u8], public_key.as_ref() as &[u8], b":" as &[u8]].concat();
         self.fabric
             .db()
             .iter_prefix(CF_CONTRACTSTATE, &prefix)
@@ -658,7 +659,7 @@ impl Context {
     }
 
     /// Get entry by hash
-    pub fn get_entry_by_hash(&self, hash: &[u8; 32]) -> Option<consensus::doms::entry::Entry> {
+    pub fn get_entry_by_hash(&self, hash: &Hash) -> Option<consensus::doms::entry::Entry> {
         self.fabric.get_entry_by_hash(hash)
     }
 
@@ -689,15 +690,15 @@ impl Context {
                         self.node_peers.update_peer_from_proto(src, proto.typename()).await;
                         let has_handshake =
                             matches!(proto.typename(), NewPhoneWhoDis::TYPENAME | NewPhoneWhoDisReply::TYPENAME)
-                                || self.node_anrs.handshaked_and_valid_ip4(&pk, &src).await;
+                                || self.node_anrs.handshaked_and_valid_ip4(pk.as_ref(), &src).await;
 
                         if !has_handshake {
-                            self.node_anrs.unset_handshaked(&pk).await;
+                            self.node_anrs.unset_handshaked(pk.as_ref()).await;
                             self.metrics.add_error(&Error::String(format!("handshake needed {src}")));
                             return None; // neither handshake message nor handshaked peer
                         }
 
-                        if !self.node_anrs.is_within_proto_limit(&pk, proto.typename()).await? {
+                        if !self.node_anrs.is_within_proto_limit(pk.as_ref(), proto.typename()).await? {
                             return None; // node sends too many proto requests
                         }
 
@@ -867,7 +868,7 @@ mod tests {
         // create test config
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls::sign(&sk, &pk, consensus::DST_POP).expect("pop");
+        let pop = bls::sign(&sk, &pk.0, consensus::DST_POP).expect("pop");
 
         let config = config::Config {
             work_folder: "/tmp/test".to_string(),
@@ -924,7 +925,7 @@ mod tests {
         // create test config with minimal requirements
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls::sign(&sk, &pk, consensus::DST_POP).expect("pop");
+        let pop = bls::sign(&sk, &pk.0, consensus::DST_POP).expect("pop");
 
         // Use unique work folder to avoid OnceCell conflicts with other tests
         let unique_id = format!("{}_{}", std::process::id(), utils::misc::get_unix_nanos_now());
@@ -978,7 +979,7 @@ mod tests {
         // create test config
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls::sign(&sk, &pk, consensus::DST_POP).expect("pop");
+        let pop = bls::sign(&sk, &pk.0, consensus::DST_POP).expect("pop");
 
         let work_folder = format!("/tmp/test_bootstrap_{}", std::process::id());
         let config = config::Config {
@@ -1032,7 +1033,7 @@ mod tests {
 
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls::sign(&sk, &pk, consensus::DST_POP).expect("pop");
+        let pop = bls::sign(&sk, &pk.0, consensus::DST_POP).expect("pop");
 
         let unique_id = format!("{}_{}", std::process::id(), utils::misc::get_unix_nanos_now());
         let config = config::Config {
@@ -1095,7 +1096,7 @@ mod tests {
 
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls::sign(&sk, &pk, consensus::DST_POP).expect("pop");
+        let pop = bls::sign(&sk, &pk.0, consensus::DST_POP).expect("pop");
 
         let unique_id = format!("{}_{}", std::process::id(), utils::misc::get_unix_nanos_now());
         let config = config::Config {

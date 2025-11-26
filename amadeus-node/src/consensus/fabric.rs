@@ -3,6 +3,7 @@ use crate::consensus::doms::entry::Entry;
 use crate::utils::misc::{TermExt, bin_to_bitvec, bitvec_to_bin};
 use crate::utils::rocksdb::RocksDb;
 use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
+use crate::utils::{Hash, PublicKey, Signature};
 use amadeus_utils::constants::{CF_ATTESTATION, CF_ENTRY, CF_ENTRY_META, CF_SYSCONF, CF_TX, CF_TX_ACCOUNT_NONCE};
 use amadeus_utils::misc::get_bits_percentage;
 use amadeus_utils::rocksdb::{Direction, IteratorMode, ReadOptions};
@@ -123,7 +124,7 @@ impl Fabric {
     // Methods migrated from free functions
     pub fn insert_entry(
         &self,
-        hash: &[u8; 32],
+        hash: &Hash,
         height: u64,
         slot: u64,
         entry_bin: &[u8],
@@ -181,15 +182,16 @@ impl Fabric {
         Ok(out)
     }
 
-    pub fn get_entry_by_hash(&self, hash: &[u8; 32]) -> Option<Entry> {
-        let bin = self.db.get(CF_ENTRY, hash).ok()??;
+    pub fn get_entry_by_hash(&self, hash: &Hash) -> Option<Entry> {
+        let bin = self.db.get(CF_ENTRY, hash.as_ref()).ok()??;
         Entry::from_vecpak_bin(&bin).ok()
     }
 
     pub fn my_attestation_by_entryhash(&self, hash: &[u8]) -> Result<Option<Attestation>, Error> {
         use amadeus_utils::database::pad_integer;
 
-        let entry = self.get_entry_by_hash(hash.try_into().map_err(|_| Error::BadEtf("hash_len"))?);
+        let hash_array: [u8; 32] = hash.try_into().map_err(|_| Error::BadEtf("hash_len"))?;
+        let entry = self.get_entry_by_hash(&Hash::from(hash_array));
         let entry = entry.ok_or(Error::BadEtf("entry_not_found"))?;
 
         let my_signer = self.db.get(CF_SYSCONF, b"trainer_pk")?.ok_or(Error::BadEtf("no_trainer_pk"))?;
@@ -213,7 +215,7 @@ impl Fabric {
     pub fn get_or_resign_my_attestation(
         &self,
         config: &crate::config::Config,
-        entry_hash: &[u8; 32],
+        entry_hash: &Hash,
     ) -> Result<Option<Attestation>, Error> {
         use amadeus_utils::database::pad_integer;
 
@@ -229,11 +231,11 @@ impl Fabric {
 
         for (_, value) in self.db.iter_prefix(CF_ATTESTATION, prefix.as_bytes())?.iter() {
             if let Some(att) = Attestation::from_vecpak_bin(value) {
-                if att.signer == my_pk {
+                if att.signer.as_ref() as &[u8] == my_pk.as_ref() as &[u8] {
                     return Ok(Some(att));
                 }
                 let sk = config.get_sk();
-                let new_a = Attestation::sign_with(&my_pk, &sk, entry_hash, &att.mutations_hash)?;
+                let new_a = Attestation::sign_with(my_pk.as_ref(), &sk, entry_hash, &att.mutations_hash)?;
 
                 let key = format!(
                     "attestation:{}:{}:{}:{}",
@@ -295,8 +297,8 @@ impl Fabric {
         use amadeus_utils::constants::DST_ATT;
 
         let mut to_sign = [0u8; 64];
-        to_sign[..32].copy_from_slice(&consensus.entry_hash);
-        to_sign[32..].copy_from_slice(&consensus.mutations_hash);
+        to_sign[..32].copy_from_slice(consensus.entry_hash.as_ref());
+        to_sign[32..].copy_from_slice(consensus.mutations_hash.as_ref());
 
         let entry = self.get_entry_by_hash(&consensus.entry_hash).ok_or(Error::BadEtf("invalid_entry"))?;
         //let curr_h = self.get_temporal_height()?.ok_or(Error::KvCell("temporal_height_missing"))?;
@@ -320,14 +322,15 @@ impl Fabric {
 
         let signed_pks = unmask_trainers(&mask, &trainers);
         let agg_pk = bls::aggregate_public_keys(&signed_pks).map_err(|_| Error::BadEtf("bls_aggregate_failed"))?;
-        bls::verify(&agg_pk, &consensus.agg_sig, &to_sign, DST_ATT).map_err(|_| Error::BadEtf("invalid_signature"))?;
+        bls::verify(&agg_pk.0, &consensus.agg_sig.0, &to_sign, DST_ATT)
+            .map_err(|_| Error::BadEtf("invalid_signature"))?;
 
         Ok(mask)
     }
 
     pub fn best_consensus_by_entryhash(
         &self,
-        trainers: &[[u8; 48]],
+        trainers: &[PublicKey],
         entry_hash: &[u8],
     ) -> Result<(Option<[u8; 32]>, Option<f64>, Option<StoredConsensus>), Error> {
         let prefix = format!("consensus:{}:", hex::encode(entry_hash));
@@ -380,7 +383,7 @@ impl Fabric {
     }
 
     pub fn get_temporal_entry(&self) -> Result<Option<Entry>, Error> {
-        Ok(self.get_temporal_hash()?.and_then(|h| self.get_entry_by_hash(&h)))
+        Ok(self.get_temporal_hash()?.and_then(|h| self.get_entry_by_hash(&Hash::from(h))))
     }
 
     pub fn get_temporal_hash(&self) -> Result<Option<[u8; 32]>, Error> {
@@ -434,7 +437,7 @@ impl Fabric {
     }
 
     pub fn get_rooted_entry(&self) -> Result<Option<Entry>, Error> {
-        Ok(self.get_rooted_hash()?.and_then(|h| self.get_entry_by_hash(&h)))
+        Ok(self.get_rooted_hash()?.and_then(|h| self.get_entry_by_hash(&Hash::from(h))))
     }
 
     pub fn get_rooted_hash(&self) -> Result<Option<[u8; 32]>, Error> {
@@ -477,39 +480,39 @@ impl Fabric {
         self.get_temporal_height_or_0() / 100_000
     }
 
-    pub fn trainers_for_height(&self, height: u64) -> Option<Vec<[u8; 48]>> {
+    pub fn trainers_for_height(&self, height: u64) -> Option<Vec<PublicKey>> {
         amadeus_runtime::consensus::bic::epoch::trainers_for_height(self.db(), height)
     }
 
-    pub fn get_muts_rev(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, Error> {
+    pub fn get_muts_rev(&self, hash: &Hash) -> Result<Option<Vec<u8>>, Error> {
         let key = format!("entry:{}:muts_rev", hex::encode(hash));
         Ok(self.db.get(CF_ENTRY_META, key.as_bytes())?)
     }
 
-    pub fn put_muts_rev(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
+    pub fn put_muts_rev(&self, hash: &Hash, data: &[u8]) -> Result<(), Error> {
         let key = format!("entry:{}:muts_rev", hex::encode(hash));
         self.db.put(CF_ENTRY_META, key.as_bytes(), data)?;
         Ok(())
     }
 
-    pub fn delete_muts_rev(&self, hash: &[u8; 32]) -> Result<(), Error> {
+    pub fn delete_muts_rev(&self, hash: &Hash) -> Result<(), Error> {
         let key = format!("entry:{}:muts_rev", hex::encode(hash));
         self.db.delete(CF_ENTRY_META, key.as_bytes())?;
         Ok(())
     }
 
-    pub fn get_muts(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, Error> {
+    pub fn get_muts(&self, hash: &Hash) -> Result<Option<Vec<u8>>, Error> {
         let key = format!("entry:{}:muts", hex::encode(hash));
         Ok(self.db.get(CF_ENTRY_META, key.as_bytes())?)
     }
 
-    pub fn put_muts(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
+    pub fn put_muts(&self, hash: &Hash, data: &[u8]) -> Result<(), Error> {
         let key = format!("entry:{}:muts", hex::encode(hash));
         self.db.put(CF_ENTRY_META, key.as_bytes(), data)?;
         Ok(())
     }
 
-    pub fn put_attestation(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
+    pub fn put_attestation(&self, hash: &Hash, data: &[u8]) -> Result<(), Error> {
         let attestation = Attestation::from_vecpak_bin(data).ok_or(Error::BadEtf("attestation_unpack_failed"))?;
         let entry = self.get_entry_by_hash(hash).ok_or(Error::BadEtf("entry_not_found"))?;
 
@@ -525,7 +528,7 @@ impl Fabric {
         Ok(())
     }
 
-    pub fn delete_attestation(&self, hash: &[u8; 32]) -> Result<(), Error> {
+    pub fn delete_attestation(&self, hash: &Hash) -> Result<(), Error> {
         let entry = self.get_entry_by_hash(hash).ok_or(Error::BadEtf("entry_not_found"))?;
         let my_signer = self.db.get(CF_SYSCONF, b"trainer_pk")?.ok_or(Error::BadEtf("no_trainer_pk"))?;
 
@@ -543,19 +546,19 @@ impl Fabric {
         Ok(())
     }
 
-    pub fn put_entry_seen_time(&self, hash: &[u8; 32], seen_time: u64) -> Result<(), Error> {
+    pub fn put_entry_seen_time(&self, hash: &Hash, seen_time: u64) -> Result<(), Error> {
         let key = format!("entry:{}:seentime", hex::encode(hash));
         self.db.put(CF_ENTRY_META, key.as_bytes(), seen_time.to_string().as_bytes())?;
         Ok(())
     }
 
-    pub fn delete_entry_seen_time(&self, hash: &[u8; 32]) -> Result<(), Error> {
+    pub fn delete_entry_seen_time(&self, hash: &Hash) -> Result<(), Error> {
         let key = format!("entry:{}:seentime", hex::encode(hash));
         self.db.delete(CF_ENTRY_META, key.as_bytes())?;
         Ok(())
     }
 
-    pub fn get_entry_seen_time(&self, hash: &[u8; 32]) -> Result<Option<u64>, Error> {
+    pub fn get_entry_seen_time(&self, hash: &Hash) -> Result<Option<u64>, Error> {
         let key = format!("entry:{}:seentime", hex::encode(hash));
         if let Some(bin) = self.db.get(CF_ENTRY_META, key.as_bytes())? {
             if let Ok(s) = std::str::from_utf8(&bin) {
@@ -568,7 +571,7 @@ impl Fabric {
         Ok(None)
     }
 
-    pub fn delete_consensus(&self, hash: &[u8; 32]) -> Result<(), Error> {
+    pub fn delete_consensus(&self, hash: &Hash) -> Result<(), Error> {
         let prefix = format!("consensus:{}:", hex::encode(hash));
         for (key, _) in self.db.iter_prefix(CF_ATTESTATION, prefix.as_bytes())?.iter() {
             self.db.delete(CF_ATTESTATION, &key)?;
@@ -576,8 +579,8 @@ impl Fabric {
         Ok(())
     }
 
-    pub fn delete_entry(&self, hash: &[u8; 32]) -> Result<(), Error> {
-        self.db.delete(CF_ENTRY, hash)?;
+    pub fn delete_entry(&self, hash: &Hash) -> Result<(), Error> {
+        self.db.delete(CF_ENTRY, hash.as_ref())?;
         Ok(())
     }
 
@@ -601,21 +604,21 @@ impl Fabric {
         Ok(())
     }
 
-    pub fn delete_tx_metadata(&self, hash: &[u8; 32]) -> Result<(), Error> {
+    pub fn delete_tx_metadata(&self, hash: &Hash) -> Result<(), Error> {
         let cf_tx = self.db.inner.cf_handle(CF_TX).unwrap();
 
         let txn = self.db.begin_transaction();
-        txn.delete_cf(&cf_tx, hash)?;
+        txn.delete_cf(&cf_tx, hash.as_ref() as &[u8])?;
         txn.commit()?;
 
         Ok(())
     }
 
-    pub fn put_tx_account_nonce(&self, key: &[u8], tx_hash: &[u8; 32]) -> Result<(), Error> {
+    pub fn put_tx_account_nonce(&self, key: &[u8], tx_hash: &Hash) -> Result<(), Error> {
         let cf_nonce = self.db.inner.cf_handle(CF_TX_ACCOUNT_NONCE).unwrap();
 
         let txn = self.db.begin_transaction();
-        txn.put_cf(&cf_nonce, key, tx_hash)?;
+        txn.put_cf(&cf_nonce, key, tx_hash.as_ref() as &[u8])?;
         txn.commit()?;
 
         Ok(())
@@ -631,7 +634,7 @@ impl Fabric {
         Ok(())
     }
 
-    pub fn put_entry_raw(&self, hash: &[u8; 32], data: &[u8]) -> Result<(), Error> {
+    pub fn put_entry_raw(&self, hash: &Hash, data: &[u8]) -> Result<(), Error> {
         let cf_entry = self.db.inner.cf_handle(CF_ENTRY).unwrap();
 
         let txn = self.db.begin_transaction();
@@ -641,9 +644,9 @@ impl Fabric {
         Ok(())
     }
 
-    pub fn get_entry_raw(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, Error> {
+    pub fn get_entry_raw(&self, hash: &Hash) -> Result<Option<Vec<u8>>, Error> {
         let entry_cf = CF_ENTRY;
-        Ok(self.db.get(entry_cf, hash)?)
+        Ok(self.db.get(entry_cf, hash.as_ref())?)
     }
 
     fn clean_muts_rev_range(&self, start: u64, end: u64) -> Result<(), crate::utils::rocksdb::Error> {
@@ -694,7 +697,7 @@ impl Fabric {
     }
 
     /// Select trainer for a slot from the roster for the corresponding height
-    pub fn get_trainer_for_slot(&self, height: u64, slot: u64) -> Option<[u8; 48]> {
+    pub fn get_trainer_for_slot(&self, height: u64, slot: u64) -> Option<PublicKey> {
         let trainers = self.trainers_for_height(height)?;
         if trainers.is_empty() {
             return None;
@@ -703,12 +706,12 @@ impl Fabric {
         trainers.get(idx).copied()
     }
 
-    pub fn get_trainer_for_current_slot(&self) -> Option<[u8; 48]> {
+    pub fn get_trainer_for_current_slot(&self) -> Option<PublicKey> {
         let h = self.get_temporal_height().ok()??;
         self.get_trainer_for_slot(h, h)
     }
 
-    pub fn get_trainer_for_next_slot(&self) -> Option<[u8; 48]> {
+    pub fn get_trainer_for_next_slot(&self) -> Option<PublicKey> {
         let h = self.get_temporal_height().ok()??;
         self.get_trainer_for_slot(h + 1, h + 1)
     }
@@ -720,7 +723,7 @@ impl Fabric {
         }
     }
 
-    pub fn is_in_chain(&self, target_hash: &[u8; 32]) -> bool {
+    pub fn is_in_chain(&self, target_hash: &Hash) -> bool {
         // check if entry exists
         let target_entry = match self.get_entry_by_hash(target_hash) {
             Some(e) => e,
@@ -734,7 +737,7 @@ impl Fabric {
             Ok(Some(h)) => h,
             _ => return false,
         };
-        let tip_entry = match self.get_entry_by_hash(&tip_hash) {
+        let tip_entry = match self.get_entry_by_hash(&Hash::from(tip_hash)) {
             Some(e) => e,
             None => return false,
         };
@@ -750,7 +753,7 @@ impl Fabric {
         self.is_in_chain_internal(&tip_entry.hash, target_hash, target_height)
     }
 
-    fn is_in_chain_internal(&self, current_hash: &[u8; 32], target_hash: &[u8; 32], target_height: u64) -> bool {
+    fn is_in_chain_internal(&self, current_hash: &Hash, target_hash: &Hash, target_height: u64) -> bool {
         // check if we found the target
         if current_hash == target_hash {
             return true;
@@ -951,7 +954,7 @@ pub mod chain_queries {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredConsensus {
     pub mask: BitVec<u8, Msb0>,
-    pub agg_sig: [u8; 96],
+    pub agg_sig: Signature,
 }
 
 #[allow(dead_code)]
@@ -987,7 +990,7 @@ fn parse_stored_consensus(bin: &[u8]) -> Option<StoredConsensus> {
 
     let mask_bytes: Vec<u8> = map.get_binary(b"mask")?;
     let mask = bin_to_bitvec(mask_bytes);
-    let agg_sig: [u8; 96] = map.get_binary(b"agg_sig")?;
+    let agg_sig: Signature = map.get_binary(b"agg_sig")?;
 
     Some(StoredConsensus { mask, agg_sig })
 }
@@ -1003,8 +1006,8 @@ mod tests {
         let fab = Fabric::new(&test_path).await.unwrap();
 
         // create test entry data
-        let entry_hash1: [u8; 32] = [1; 32];
-        let entry_hash2: [u8; 32] = [2; 32];
+        let entry_hash1: Hash = Hash([1; 32]);
+        let entry_hash2: Hash = Hash([2; 32]);
         let entry_bin1 = vec![1, 2, 3, 4];
         let entry_bin2 = vec![5, 6, 7, 8];
         let height = 12345;
@@ -1044,11 +1047,11 @@ mod tests {
         let test_path = format!("target/test_clean_muts_{}", std::process::id());
         let fab = Fabric::new(&test_path).await.unwrap();
 
-        let h0: [u8; 32] = [0; 32];
-        let h1: [u8; 32] = [1; 32];
-        let h2: [u8; 32] = [2; 32];
-        let h3: [u8; 32] = [3; 32];
-        let h4: [u8; 32] = [4; 32];
+        let h0: Hash = Hash([0; 32]);
+        let h1: Hash = Hash([1; 32]);
+        let h2: Hash = Hash([2; 32]);
+        let h3: Hash = Hash([3; 32]);
+        let h4: Hash = Hash([4; 32]);
         fab.insert_entry(&h0, 99, 999, &[0], 0).unwrap();
         fab.insert_entry(&h1, 100, 1000, &[1], 0).unwrap();
         fab.insert_entry(&h2, 101, 1001, &[2], 0).unwrap();

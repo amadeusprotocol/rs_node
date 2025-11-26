@@ -1,5 +1,6 @@
 // Consensus application environment and entry processing
 use amadeus_utils::rocksdb::{BoundColumnFamily, MultiThreaded, RocksDb, Transaction, TransactionDB};
+use amadeus_utils::{Hash, PublicKey, Signature};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -22,17 +23,17 @@ pub struct CallerEnv {
     pub readonly: bool,
     pub seed: Vec<u8>,
     pub seedf64: f64,
-    pub entry_signer: [u8; 48],
-    pub entry_prev_hash: [u8; 32],
+    pub entry_signer: PublicKey,
+    pub entry_prev_hash: Hash,
     pub entry_slot: u64,
     pub entry_prev_slot: u64,
     pub entry_height: u64,
     pub entry_epoch: u64,
     pub entry_vr: Vec<u8>,
-    pub entry_vr_b3: [u8; 32],
-    pub entry_dr: [u8; 32],
+    pub entry_vr_b3: Hash,
+    pub entry_dr: Hash,
     pub tx_hash: Vec<u8>,
-    pub tx_signer: [u8; 48],
+    pub tx_signer: PublicKey,
     pub account_origin: Vec<u8>,
     pub account_caller: Vec<u8>,
     pub account_current: Vec<u8>,
@@ -44,15 +45,15 @@ pub struct CallerEnv {
 }
 
 pub fn make_caller_env(
-    entry_signer: &[u8; 48],
-    entry_prev_hash: &[u8; 32],
+    entry_signer: &PublicKey,
+    entry_prev_hash: &Hash,
     entry_slot: u64,
     entry_prev_slot: u64,
     entry_height: u64,
     entry_epoch: u64,
-    entry_vr: &[u8; 96],
-    entry_vr_b3: &[u8; 32],
-    entry_dr: &[u8; 32],
+    entry_vr: &Signature,
+    entry_vr_b3: &Hash,
+    entry_dr: &Hash,
 ) -> CallerEnv {
     CallerEnv {
         readonly: false,
@@ -68,7 +69,7 @@ pub fn make_caller_env(
         entry_vr_b3: *entry_vr_b3,
         entry_dr: *entry_dr,
         tx_hash: vec![],
-        tx_signer: [0u8; 48],
+        tx_signer: PublicKey([0u8; 48]),
         account_origin: vec![],
         account_caller: vec![],
         account_current: vec![],
@@ -83,15 +84,15 @@ pub fn make_caller_env(
 pub fn make_apply_env<'db>(
     db: &'db RocksDb,
     cf_name: &str,
-    entry_signer: &[u8; 48],
-    entry_prev_hash: &[u8; 32],
+    entry_signer: &PublicKey,
+    entry_prev_hash: &Hash,
     entry_slot: u64,
     entry_prev_slot: u64,
     entry_height: u64,
     entry_epoch: u64,
-    entry_vr: &[u8; 96],
-    entry_vr_b3: &[u8; 32],
-    entry_dr: &[u8; 32],
+    entry_vr: &Signature,
+    entry_vr_b3: &Hash,
+    entry_dr: &Hash,
 ) -> ApplyEnv<'db> {
     ApplyEnv {
         caller_env: make_caller_env(

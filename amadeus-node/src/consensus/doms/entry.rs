@@ -5,6 +5,7 @@ use crate::node::protocol;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381;
 use crate::utils::misc::{bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
+use crate::utils::{Hash, PublicKey, Signature};
 use crate::utils::{archiver, blake3};
 /// Entry is a consensus block in Amadeus
 use amadeus_utils::constants::DST_VRF;
@@ -50,7 +51,7 @@ pub enum Error {
 #[derive(Debug, Clone)]
 pub struct EntrySummary {
     pub header: EntryHeader,
-    pub signature: [u8; 96],
+    pub signature: Signature,
     pub mask: Option<BitVec<u8, Msb0>>,
 }
 
@@ -81,7 +82,7 @@ impl EntrySummary {
         };
 
         let mask = map.get_binary::<Vec<u8>>(b"mask").map(bin_to_bitvec);
-        let signature: [u8; 96] = map.get_binary(b"signature").ok_or(Error::BadFormat("entry.signature"))?;
+        let signature: Signature = map.get_binary(b"signature").ok_or(Error::BadFormat("entry.signature"))?;
 
         Ok(Self { header, signature, mask })
     }
@@ -103,13 +104,13 @@ impl EntrySummary {
             height: 0,
             slot: 0,
             prev_slot: 0,
-            prev_hash: [0u8; 32],
-            dr: [0u8; 32],
-            vr: [0u8; 96],
-            signer: [0u8; 48],
-            txs_hash: [0u8; 32],
+            prev_hash: Hash::from([0u8; 32]),
+            dr: Hash::from([0u8; 32]),
+            vr: Signature::from([0u8; 96]),
+            signer: PublicKey::from([0u8; 48]),
+            txs_hash: Hash::from([0u8; 32]),
         };
-        Self { header, signature: [0u8; 96], mask: None }
+        Self { header, signature: Signature::from([0u8; 96]), mask: None }
     }
 }
 
@@ -118,11 +119,11 @@ pub struct EntryHeader {
     pub height: u64,
     pub slot: u64,
     pub prev_slot: i64, // is negative 1 in genesis entry
-    pub prev_hash: [u8; 32],
-    pub dr: [u8; 32], // deterministic random value
-    pub vr: [u8; 96], // verifiable random value
-    pub signer: [u8; 48],
-    pub txs_hash: [u8; 32],
+    pub prev_hash: Hash,
+    pub dr: Hash,      // deterministic random value
+    pub vr: Signature, // verifiable random value
+    pub signer: PublicKey,
+    pub txs_hash: Hash,
 }
 
 impl fmt::Debug for EntryHeader {
@@ -175,9 +176,9 @@ impl EntryHeader {
 
 #[derive(Clone)]
 pub struct Entry {
-    pub hash: [u8; 32],
+    pub hash: Hash,
     pub header: EntryHeader,
-    pub signature: [u8; 96],
+    pub signature: Signature,
     pub mask: Option<BitVec<u8, Msb0>>,
     pub txs: Vec<Vec<u8>>, // list of tx binaries that can be empty
 }
@@ -197,8 +198,8 @@ impl Entry {
     }
 
     pub fn from_vecpak_map(map: &amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
-        let hash: [u8; 32] = map.get_binary(b"hash").ok_or(Error::BadFormat("entry.hash"))?;
-        let signature: [u8; 96] = map.get_binary(b"signature").ok_or(Error::BadFormat("entry.signature"))?;
+        let hash: Hash = map.get_binary(b"hash").ok_or(Error::BadFormat("entry.hash"))?;
+        let signature: Signature = map.get_binary(b"signature").ok_or(Error::BadFormat("entry.signature"))?;
 
         let hmap = map
             .get_by_key(b"header")
@@ -296,21 +297,21 @@ impl Entry {
 
     /// Build next header skeleton similar to Entry.build_next/2.
     /// This requires chain state (pk/sk), so we only provide a helper to derive next header fields given inputs.
-    pub fn build_next_header(&self, slot: u64, signer_pk: &[u8; 48], signer_sk: &[u8]) -> Result<EntryHeader, Error> {
+    pub fn build_next_header(&self, slot: u64, signer_pk: &PublicKey, signer_sk: &[u8]) -> Result<EntryHeader, Error> {
         // dr' = blake3(dr)
-        let dr = blake3::hash(&self.header.dr);
+        let dr = blake3::hash(self.header.dr.as_ref());
         // vr' = sign(sk, prev_vr, DST_VRF)
-        let vr = bls12_381::sign(signer_sk, &self.header.vr, DST_VRF)?;
+        let vr = bls12_381::sign(signer_sk, self.header.vr.as_ref(), DST_VRF)?;
 
         Ok(EntryHeader {
             slot,
             height: self.header.height + 1,
             prev_slot: self.header.slot as i64,
             prev_hash: self.hash,
-            dr,
+            dr: Hash::from(dr),
             vr,
             signer: *signer_pk,
-            txs_hash: [0u8; 32], // to be filled when txs are known
+            txs_hash: Hash::from([0u8; 32]), // to be filled when txs are known
         })
     }
 

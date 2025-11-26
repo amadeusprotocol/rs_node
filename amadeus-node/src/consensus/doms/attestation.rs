@@ -3,6 +3,7 @@ use crate::node::protocol;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381 as bls;
 use crate::utils::bls12_381::Error as BlsError;
+use crate::utils::{Hash, PublicKey, Signature};
 use amadeus_utils::constants::DST_ATT;
 use amadeus_utils::vecpak::{Term, VecpakExt, decode, encode};
 use std::fmt::Debug;
@@ -34,10 +35,10 @@ pub struct EventAttestation {
 
 #[derive(Clone)]
 pub struct Attestation {
-    pub entry_hash: [u8; 32],
-    pub mutations_hash: [u8; 32],
-    pub signer: [u8; 48],
-    pub signature: [u8; 96],
+    pub entry_hash: Hash,
+    pub mutations_hash: Hash,
+    pub signer: PublicKey,
+    pub signature: Signature,
 }
 
 impl Debug for Attestation {
@@ -127,8 +128,8 @@ impl Attestation {
     #[instrument(skip(self), name = "Attestation::validate", err)]
     pub fn validate(&self) -> Result<(), Error> {
         let mut to_sign = [0u8; 64];
-        to_sign[..32].copy_from_slice(&self.entry_hash);
-        to_sign[32..].copy_from_slice(&self.mutations_hash);
+        to_sign[..32].copy_from_slice(self.entry_hash.as_ref());
+        to_sign[32..].copy_from_slice(self.mutations_hash.as_ref());
         bls::verify(&self.signer, &self.signature, &to_sign, DST_ATT)?;
         Ok(())
     }
@@ -139,7 +140,7 @@ impl Attestation {
     where
         TPk: AsRef<[u8]>,
     {
-        let is_allowed = trainers.iter().any(|pk| pk.as_ref() == self.signer);
+        let is_allowed = trainers.iter().any(|pk| pk.as_ref() == self.signer.as_ref() as &[u8]);
         if !is_allowed {
             return Err(Error::WrongType("signer_not_trainer"));
         }
@@ -151,15 +152,15 @@ impl Attestation {
     pub fn sign_with(
         pk_g1_48: &[u8],
         trainer_sk: &[u8],
-        entry_hash: &[u8; 32],
-        mutations_hash: &[u8; 32],
+        entry_hash: &Hash,
+        mutations_hash: &Hash,
     ) -> Result<Self, Error> {
         let mut msg = [0u8; 64];
-        msg[..32].copy_from_slice(entry_hash);
-        msg[32..].copy_from_slice(mutations_hash);
+        msg[..32].copy_from_slice(entry_hash.as_ref());
+        msg[32..].copy_from_slice(mutations_hash.as_ref());
         let signature = bls::sign(trainer_sk, &msg, DST_ATT)?;
-        let signer: [u8; 48] = pk_g1_48.try_into().map_err(|_| Error::InvalidLength("signer"))?;
-        let signature: [u8; 96] = signature.as_slice().try_into().map_err(|_| Error::InvalidLength("signature"))?;
+        let signer: PublicKey = pk_g1_48.try_into().map_err(|_| Error::InvalidLength("signer"))?;
+        let signature: Signature = signature.as_slice().try_into().map_err(|_| Error::InvalidLength("signature"))?;
         Ok(Self { entry_hash: *entry_hash, mutations_hash: *mutations_hash, signer, signature })
     }
 

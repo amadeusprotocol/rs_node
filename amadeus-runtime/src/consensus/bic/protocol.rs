@@ -24,6 +24,10 @@ pub fn pay_cost(env: &mut ApplyEnv, cost: i128) -> Result<()> {
         &crate::bcat(&[b"bic:coin:balance:", env.caller_env.entry_signer.as_slice(), b":AMA"]),
         cost / 2,
     )?;
-    consensus_kv::kv_increment(env, &crate::bcat(&[b"bic:coin:balance:", &coin::BURN_ADDRESS, b":AMA"]), cost / 2)?;
+    consensus_kv::kv_increment(
+        env,
+        &crate::bcat(&[b"bic:coin:balance:", coin::BURN_ADDRESS.as_ref(), b":AMA"]),
+        cost / 2,
+    )?;
     Ok(())
 }

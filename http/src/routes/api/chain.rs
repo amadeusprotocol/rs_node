@@ -1,4 +1,5 @@
 use crate::models::*;
+use amadeus_node::utils::Hash;
 use amadeus_node::{Context, decode_base58_hash, decode_base58_pk};
 use axum::{
     Json,
@@ -143,7 +144,7 @@ pub async fn get_transaction_by_id(
     };
 
     // Query CF_TX to get entry_hash
-    let entry_hash = match ctx.db_get(CF_TX, &tx_hash) {
+    let entry_hash = match ctx.db_get(CF_TX, tx_hash.as_ref()) {
         Ok(Some(hash)) if hash.len() == 32 => {
             let mut arr = [0u8; 32];
             arr.copy_from_slice(&hash);
@@ -153,7 +154,7 @@ pub async fn get_transaction_by_id(
     };
 
     // Get the entry and find the matching transaction
-    if let Some(entry) = ctx.get_entry_by_hash(&entry_hash) {
+    if let Some(entry) = ctx.get_entry_by_hash(&Hash::from(entry_hash)) {
         for tx_bytes in &entry.txs {
             if let Ok(txu) = TxU::from_vanilla(tx_bytes) {
                 if txu.hash == tx_hash {
@@ -196,7 +197,7 @@ pub async fn get_transaction_events_by_account(
 
     // Scan CF_TX_ACCOUNT_NONCE with account prefix
     let mut transactions = Vec::new();
-    if let Ok(items) = ctx.db_iter_prefix(CF_TX_ACCOUNT_NONCE, &account_bytes) {
+    if let Ok(items) = ctx.db_iter_prefix(CF_TX_ACCOUNT_NONCE, account_bytes.as_ref()) {
         // Limit to first 20 transactions for performance
         for (_key, tx_hash) in items.into_iter().take(20) {
             if tx_hash.len() != 32 {
@@ -216,7 +217,7 @@ pub async fn get_transaction_events_by_account(
                 entry_hash_arr.copy_from_slice(&entry_hash);
 
                 // Get entry and find the matching transaction
-                if let Some(entry) = ctx.get_entry_by_hash(&entry_hash_arr) {
+                if let Some(entry) = ctx.get_entry_by_hash(&Hash::from(entry_hash_arr)) {
                     for tx_bytes in &entry.txs {
                         if let Ok(txu) = TxU::from_vanilla(tx_bytes) {
                             if txu.hash == tx_hash_arr {

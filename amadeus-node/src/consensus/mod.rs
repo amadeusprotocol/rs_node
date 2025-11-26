@@ -38,6 +38,7 @@ pub fn chain_height(db: &RocksDb) -> u32 {
 mod tests {
     use crate::consensus::consensus::apply_entry;
     use crate::consensus::fabric::Fabric;
+    use crate::utils::Hash;
     use eetf::Term;
     use std::path::Path;
 
@@ -71,7 +72,7 @@ mod tests {
 
     async fn test_apply_entry_at_height(
         height: u32,
-        expected_muts_hash: [u8; 32],
+        expected_muts_hash: Hash,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let db_path = format!("../assets/rocksdb/{}", height);
         assert!(Path::new(&db_path).exists(), "Test database snapshot not found: {}", db_path);
@@ -130,7 +131,7 @@ mod tests {
         }
 
         // verify mutations hash
-        let my_att = fabric.my_attestation_by_entryhash(&entry.hash)?.ok_or("no attestation")?;
+        let my_att = fabric.my_attestation_by_entryhash(&entry.hash.0)?.ok_or("no attestation")?;
         assert_eq!(my_att.mutations_hash, expected_muts_hash, "mutations hash mismatch");
 
         std::fs::remove_dir_all(&temp).ok();
@@ -255,7 +256,7 @@ mod tests {
     fn create_test_config() -> crate::config::Config {
         let sk = crate::config::gen_sk();
         let pk = crate::config::get_pk(&sk);
-        let pop = crate::utils::bls12_381::sign(&sk, &pk, amadeus_utils::constants::DST_POP)
+        let pop = crate::utils::bls12_381::sign(&sk, &pk.0, amadeus_utils::constants::DST_POP)
             .map(|sig| sig.to_vec())
             .unwrap_or_else(|_| vec![0u8; 96]);
         crate::config::Config {
