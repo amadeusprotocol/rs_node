@@ -12,6 +12,7 @@ use crate::node::peers::HandshakeStatus;
 use crate::node::{anr, peers};
 use crate::utils::bls12_381;
 use crate::utils::misc::{Typename, get_unix_millis_now};
+use amadeus_utils::B3f4;
 use amadeus_utils::vecpak::{self as vecpak, PropListMap, VecpakExt};
 use std::fmt::Debug;
 use std::io::Error as IoError;
@@ -142,8 +143,8 @@ pub fn parse_vecpak_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
         EventAttestation::TYPENAME => Box::new(EventAttestation::from_vecpak_map_validated(map)?),
         Solution::TYPENAME => Box::new(Solution::from_vecpak_map_validated(map)?),
         EventTx::TYPENAME => Box::new(EventTx::from_vecpak_map_validated(map)?),
-        GetPeerAnrs::TYPENAME => Box::new(GetPeerAnrs::from_vecpak_map_validated(map)?),
-        GetPeerAnrsReply::TYPENAME => Box::new(GetPeerAnrsReply::from_vecpak_map_validated(map)?),
+        GetPeerAnrs::TYPENAME => Box::new(vecpak::from_slice::<GetPeerAnrs>(bin)?),
+        GetPeerAnrsReply::TYPENAME => Box::new(vecpak::from_slice::<GetPeerAnrsReply>(bin)?),
         NewPhoneWhoDis::TYPENAME => Box::new(vecpak::from_slice::<NewPhoneWhoDis>(bin)?),
         NewPhoneWhoDisReply::TYPENAME => Box::new(vecpak::from_slice::<NewPhoneWhoDisReply>(bin)?),
         SpecialBusiness::TYPENAME => Box::new(SpecialBusiness::from_vecpak_map_validated(map)?),
@@ -630,9 +631,11 @@ impl EventTx {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[allow(non_snake_case)]
 pub struct GetPeerAnrs {
-    pub has_peers_b3f4: Vec<[u8; 4]>,
+    pub op: String,
+    pub hasPeersb3f4: Vec<B3f4>,
 }
 
 impl Typename for GetPeerAnrs {
@@ -645,30 +648,24 @@ impl Typename for GetPeerAnrs {
 impl Protocol for GetPeerAnrs {
     fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
         let list = map.get_list(b"hasPeersb3f4").ok_or(Error::ParseError("hasPeersb3f4"))?;
-        let mut has_peers_b3f4 = Vec::<[u8; 4]>::new();
+        let mut has_peers_b3f4 = Vec::<B3f4>::new();
         for t in list {
             use std::convert::TryInto;
             let b = t.get_binary().ok_or(Error::ParseError("hasPeersb3f4"))?;
-            let b3f4 = b.try_into().map_err(|_| Error::ParseError("hasPeersb3f4_length"))?;
-            has_peers_b3f4.push(b3f4);
+            let b3f4: [u8; 4] = b.try_into().map_err(|_| Error::ParseError("hasPeersb3f4_length"))?;
+            has_peers_b3f4.push(B3f4(b3f4));
         }
 
-        Ok(Self { has_peers_b3f4 })
+        Ok(Self { op: Self::TYPENAME.to_string(), hasPeersb3f4: has_peers_b3f4 })
     }
 
     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, Error> {
-        use amadeus_utils::vecpak::encode;
-        let b3f4_terms: Vec<vecpak::Term> =
-            self.has_peers_b3f4.iter().map(|b3f4| vecpak::Term::Binary(b3f4.to_vec())).collect();
-        let pairs = vec![
-            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
-            (vecpak::Term::Binary(b"hasPeersb3f4".to_vec()), vecpak::Term::List(b3f4_terms)),
-        ];
-        Ok(encode(vecpak::Term::PropList(pairs)))
+        let bin = vecpak::to_vec(&self)?;
+        Ok(bin)
     }
 
     async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
-        let anrs = ctx.node_anrs.get_all_excluding_b3f4(&self.has_peers_b3f4).await;
+        let anrs = ctx.node_anrs.get_all_excluding_b3f4(&self.hasPeersb3f4).await;
 
         Ok(vec![Instruction::SendGetPeerAnrsReply { anrs, dst: src }])
     }
@@ -676,10 +673,15 @@ impl Protocol for GetPeerAnrs {
 
 impl GetPeerAnrs {
     pub const TYPENAME: &'static str = "get_peer_anrs";
+
+    pub fn new(has_peers_b3f4: Vec<B3f4>) -> Self {
+        Self { op: Self::TYPENAME.to_string(), hasPeersb3f4: has_peers_b3f4 }
+    }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct GetPeerAnrsReply {
+    pub op: String,
     pub anrs: Vec<Anr>,
 }
 
@@ -701,17 +703,12 @@ impl Protocol for GetPeerAnrsReply {
                 anrs.push(anr);
             }
         }
-        Ok(Self { anrs })
+        Ok(Self { op: Self::TYPENAME.to_string(), anrs })
     }
 
     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, Error> {
-        use amadeus_utils::vecpak::encode;
-        let anr_terms: Vec<vecpak::Term> = self.anrs.iter().map(|anr| anr.to_vecpak_term()).collect();
-        let pairs = vec![
-            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
-            (vecpak::Term::Binary(b"anrs".to_vec()), vecpak::Term::List(anr_terms)),
-        ];
-        Ok(encode(vecpak::Term::PropList(pairs)))
+        let bin = vecpak::to_vec(&self)?;
+        Ok(bin)
     }
 
     async fn handle(&self, ctx: &Context, _src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
@@ -724,6 +721,10 @@ impl Protocol for GetPeerAnrsReply {
 
 impl GetPeerAnrsReply {
     pub const TYPENAME: &'static str = "get_peer_anrs_reply";
+
+    pub fn new(anrs: Vec<Anr>) -> Self {
+        Self { op: Self::TYPENAME.to_string(), anrs }
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -947,7 +948,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_peers_vecpak_roundtrip() {
-        let peers = GetPeerAnrs { has_peers_b3f4: vec![[192, 168, 1, 1], [10, 0, 0, 1]] };
+        let peers = GetPeerAnrs::new(vec![B3f4([192, 168, 1, 1]), B3f4([10, 0, 0, 1])]);
 
         let bin = peers.to_vecpak_packet_bin().expect("should serialize");
         let result = parse_vecpak_bin(&bin).expect("should deserialize");
@@ -1258,7 +1259,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_peer_anrs_roundtrip_via_vecpak() {
-        let original = GetPeerAnrs { has_peers_b3f4: vec![[1, 2, 3, 4], [5, 6, 7, 8]] };
+        let original = GetPeerAnrs::new(vec![B3f4([1, 2, 3, 4]), B3f4([5, 6, 7, 8])]);
         let version = Ver::new(1, 2, 3);
         let payload = original.to_bin(version).expect("should encode");
 

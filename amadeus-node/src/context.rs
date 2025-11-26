@@ -234,7 +234,7 @@ impl Context {
 
         let verified_ips = self.node_anrs.get_random_verified(3).await;
         if !verified_ips.is_empty() {
-            let get_peer_anrs = GetPeerAnrs { has_peers_b3f4: self.node_anrs.get_all_b3f4().await };
+            let get_peer_anrs = GetPeerAnrs::new(self.node_anrs.get_all_b3f4().await);
             for ip in &verified_ips {
                 self.send_message_to(&get_peer_anrs, *ip).await?;
             }
@@ -742,7 +742,7 @@ impl Context {
             }
 
             Instruction::SendGetPeerAnrsReply { dst, anrs } => {
-                let peers_v2 = GetPeerAnrsReply { anrs };
+                let peers_v2 = GetPeerAnrsReply::new(anrs);
                 self.send_message_to(&peers_v2, dst).await?;
             }
 

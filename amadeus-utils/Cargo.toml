@@ -19,6 +19,7 @@ reed-solomon-simd = { version = "3.0.1", git = "https://github.com/AndersTrier/r
 thiserror = "2.0.17"
 async-trait = "0.1.89"
 serde = { version = "1.0.228", features = ["derive"] }
+serde_bytes = "0.11"
 serde_json = "1.0.145"
 hex = "0.4.3"
 eetf = "0.11.0"

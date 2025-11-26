@@ -3,6 +3,7 @@ use crate::utils::blake3;
 use crate::utils::bls12_381::{sign, verify};
 use crate::utils::misc::get_unix_secs_now;
 use crate::utils::version::Ver;
+use amadeus_utils::B3f4;
 use amadeus_utils::vecpak;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -90,7 +91,7 @@ pub struct Anr {
     pub next_check: u32,
     // Blake3 indexing fields (added in v1.1.8)
     pub pk_b3: [u8; 32],
-    pub pk_b3_f4: [u8; 4],
+    pub pk_b3_f4: B3f4,
     pub proto_reqs: HashMap<String, u64>,
     pub udp_packets: u64,
 }
@@ -183,9 +184,7 @@ impl<'de> serde::Deserialize<'de> for Anr {
                 let signature = signature.ok_or_else(|| serde::de::Error::missing_field("signature"))?;
 
                 let pk_b3 = blake3::hash(&pk_array);
-                let pk_b3_array: [u8; 32] = pk_b3.into();
-                let mut pk_b3_f4 = [0u8; 4];
-                pk_b3_f4.copy_from_slice(&pk_b3_array[0..4]);
+                let pk_b3_f4 = B3f4::new(&pk_b3);
 
                 Ok(Anr {
                     ip4,
@@ -202,7 +201,7 @@ impl<'de> serde::Deserialize<'de> for Anr {
                     error: None,
                     error_tries: 0,
                     next_check: 0,
-                    pk_b3: pk_b3_array,
+                    pk_b3,
                     pk_b3_f4,
                     proto_reqs: HashMap::new(),
                     udp_packets: 0,
@@ -218,8 +217,7 @@ impl From<SeedANR> for Anr {
     fn from(seed: SeedANR) -> Self {
         // Compute Blake3 hash fields for indexing
         let pk_b3 = blake3::hash(&seed.pk);
-        let mut pk_b3_f4 = [0u8; 4];
-        pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+        let pk_b3_f4 = B3f4::new(&pk_b3);
 
         Anr {
             ip4: seed.ip4.parse().unwrap_or(Ipv4Addr::new(0, 0, 0, 0)),
@@ -274,8 +272,7 @@ impl Anr {
         let ts_s = get_unix_secs_now();
 
         let pk_b3 = blake3::hash(pk);
-        let mut pk_b3_f4 = [0u8; 4];
-        pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+        let pk_b3_f4 = B3f4::new(&pk_b3);
 
         let mut anr = Anr {
             ip4,
@@ -341,8 +338,7 @@ impl Anr {
 
         // Compute Blake3 hash fields for indexing (v1.1.8 compatibility)
         let pk_b3 = blake3::hash(&pk);
-        let mut pk_b3_f4 = [0u8; 4];
-        pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+        let pk_b3_f4 = B3f4::new(&pk_b3);
 
         Ok(Self {
             ip4,
@@ -455,8 +451,7 @@ impl Anr {
         if anr.port == 36969 {
             // Compute Blake3 hash fields for compatibility
             let pk_b3 = blake3::hash(&anr.pk);
-            let mut pk_b3_f4 = [0u8; 4];
-            pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+            let pk_b3_f4 = B3f4::new(&pk_b3);
 
             Ok(Anr {
                 ip4: anr.ip4,
@@ -578,9 +573,9 @@ impl NodeAnrs {
     }
 
     /// Get all anrs
-    pub async fn get_all_b3f4(&self) -> Vec<[u8; 4]> {
+    pub async fn get_all_b3f4(&self) -> Vec<B3f4> {
         let map = self.store.read().await;
-        let anrs: Vec<[u8; 4]> = map.values().cloned().map(|a| a.pk_b3_f4).collect();
+        let anrs: Vec<B3f4> = map.values().cloned().map(|a| a.pk_b3_f4).collect();
         anrs
     }
 
@@ -723,7 +718,7 @@ impl NodeAnrs {
     }
 
     /// Get all handshaked (pk, ip4) pairs
-    pub async fn get_all_excluding_b3f4(&self, b3f4: &[[u8; 4]]) -> Vec<Anr> {
+    pub async fn get_all_excluding_b3f4(&self, b3f4: &[B3f4]) -> Vec<Anr> {
         let map = self.store.read().await;
         let mut results = Vec::new();
         for (_, v) in map.iter() {
@@ -823,8 +818,7 @@ mod tests {
 
         // manually create ANR without signature verification for testing
         let pk_b3 = blake3::hash(&pk);
-        let mut pk_b3_f4 = [0u8; 4];
-        pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+        let pk_b3_f4 = B3f4::new(&pk_b3);
 
         let anr = Anr {
             ip4,
@@ -899,8 +893,7 @@ mod tests {
 
         // compute Blake3 fields for testing
         let pk_b3 = blake3::hash(&pk);
-        let mut pk_b3_f4 = [0u8; 4];
-        pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+        let pk_b3_f4 = B3f4::new(&pk_b3);
 
         // insert initial anr
         let anr1 = Anr {
@@ -1029,8 +1022,7 @@ mod tests {
 
             // compute Blake3 fields for this pk
             let pk_b3 = blake3::hash(&pk);
-            let mut pk_b3_f4 = [0u8; 4];
-            pk_b3_f4.copy_from_slice(&pk_b3[0..4]);
+            let pk_b3_f4 = B3f4::new(&pk_b3);
 
             let anr = Anr {
                 ip4: Ipv4Addr::new(192, 168, 1, i), // different IPs

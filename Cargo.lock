@@ -158,6 +158,7 @@ dependencies = [
  "rust-librocksdb-sys",
  "rust-rocksdb",
  "serde",
+ "serde_bytes",
  "serde_json",
  "sysinfo",
  "thiserror",
