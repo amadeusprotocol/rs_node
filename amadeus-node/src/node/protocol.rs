@@ -1,7 +1,7 @@
 use crate::Context;
 use crate::consensus::consensus::{self, Consensus};
 use crate::consensus::doms::attestation::EventAttestation;
-use crate::consensus::doms::entry::Entry;
+use crate::consensus::doms::entry::{Entry, EntryProto};
 use crate::consensus::doms::sol::Solution;
 use crate::consensus::doms::{Attestation, EntrySummary};
 use crate::consensus::fabric::Fabric;
@@ -139,7 +139,7 @@ pub fn parse_vecpak_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
     let proto: Box<dyn Protocol> = match op_name.as_str() {
         Ping::TYPENAME => Box::new(vecpak::from_slice::<Ping>(bin)?),
         PingReply::TYPENAME => Box::new(vecpak::from_slice::<PingReply>(bin)?),
-        Entry::TYPENAME => Box::new(vecpak::from_slice::<Entry>(bin)?),
+        EntryProto::TYPENAME => Box::new(vecpak::from_slice::<EntryProto>(bin)?),
         EventTip::TYPENAME => Box::new(EventTip::from_vecpak_map_validated(map)?),
         EventAttestation::TYPENAME => Box::new(EventAttestation::from_vecpak_map_validated(map)?),
         Solution::TYPENAME => Box::new(Solution::from_vecpak_map_validated(map)?),
@@ -456,7 +456,8 @@ impl Protocol for CatchupReply {
                 for entry in entries {
                     if entry.header.height >= rooted_tip_height {
                         let seen_time_ms = get_unix_millis_now();
-                        if let Ok(entry_bin) = entry.to_vecpak_packet_bin() {
+                        let entry_bin = entry.to_vecpak_bin();
+                        {
                             let _ = ctx.fabric.insert_entry(
                                 &entry.hash,
                                 entry.header.height,
@@ -582,19 +583,17 @@ impl Typename for EventTx {
 #[async_trait::async_trait]
 impl Protocol for EventTx {
     fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
-        // txs_packed is a list of binary transaction packets, not a single binary
-        let txs_list = map.get_list(b"txs_packed").ok_or(Error::ParseError("txs_packed"))?;
+        let txs_list = map.get_list(b"txus").ok_or(Error::ParseError("txus"))?;
         let valid_txs = EventTx::get_valid_txs_from_list(txs_list)?;
         Ok(Self { valid_txs })
     }
 
     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, Error> {
         use amadeus_utils::vecpak::encode;
-        // create list of transaction binaries (txs_packed is directly a list of binaries)
         let tx_terms: Vec<vecpak::Term> = self.valid_txs.iter().map(|tx| vecpak::Term::Binary(tx.clone())).collect();
         let pairs = vec![
             (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
-            (vecpak::Term::Binary(b"txs_packed".to_vec()), vecpak::Term::List(tx_terms)),
+            (vecpak::Term::Binary(b"txus".to_vec()), vecpak::Term::List(tx_terms)),
         ];
         Ok(encode(vecpak::Term::PropList(pairs)))
     }
@@ -1013,7 +1012,8 @@ mod tests {
             dr: Hash::new([1u8; 32]),
             vr: Signature::new([2u8; 96]),
             signer: PublicKey::new([3u8; 48]),
-            txs_hash: Hash::new([4u8; 32]),
+            root_tx: Hash::new([4u8; 32]),
+            root_validator: Hash::new([15u8; 32]),
         };
 
         EntrySummary { header, signature: Signature::new([5u8; 96]), mask: None }
@@ -1138,7 +1138,23 @@ mod tests {
         let parsed_catchup = parse_vecpak_bin(&catchup_bin).expect("should deserialize catchup");
         assert_eq!(parsed_catchup.typename(), "catchup");
 
-        // Test CatchupReply with actual structs
+        use crate::consensus::doms::tx::{EntryTx, EntryTxAction, EntryTxInner};
+        let test_tx = EntryTx {
+            hash: Hash::new([0xAB; 32]),
+            signature: Signature::new([0xCD; 96]),
+            tx: EntryTxInner {
+                action: EntryTxAction {
+                    args: vec![vec![1, 2, 3]],
+                    contract: "Test".to_string(),
+                    function: "test".to_string(),
+                    op: "call".to_string(),
+                    attached_symbol: None,
+                    attached_amount: None,
+                },
+                nonce: 12345,
+                signer: PublicKey::new([0xEF; 48]),
+            },
+        };
         let entry1 = Entry {
             hash: Hash::new([1; 32]),
             header: EntryHeader {
@@ -1149,11 +1165,12 @@ mod tests {
                 dr: Hash::new([2; 32]),
                 vr: Signature::new([0; 96]),
                 signer: PublicKey::new([3; 48]),
-                txs_hash: Hash::new([4; 32]),
+                root_tx: Hash::new([4; 32]),
+                root_validator: Hash::new([15; 32]),
             },
             signature: Signature::new([5; 96]),
             mask: None,
-            txs: vec![vec![1, 2, 3, 4]],
+            txs: vec![test_tx],
         };
 
         let attestation1 = Attestation {

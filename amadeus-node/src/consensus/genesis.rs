@@ -24,7 +24,8 @@ pub struct GenesisHeaderUnpacked {
     pub dr: Hash,
     pub vr: Vec<u8>,
     pub signer: PublicKey,
-    pub txs_hash: Hash,
+    pub root_tx: Hash,
+    pub root_validator: Hash,
 }
 
 #[derive(Debug, Clone)]
@@ -91,10 +92,11 @@ const GENESIS_HEADER_UNPACKED_VR: Signature = Signature::new([
     253, 232, 57, 140, 196, 121, 187, 108, 46, 68, 159, 45, 220, 62, 254, 201, 44, 135, 201, 126, 206, 74, 140, 239,
     177, 95, 169, 40, 181, 104, 167, 84, 50, 207, 85, 35, 42, 10, 36, 196, 9, 13, 156, 79, 186, 117,
 ]);
-const GENESIS_HEADER_UNPACKED_TXS_HASH: Hash = Hash::new([
+const GENESIS_HEADER_UNPACKED_ROOT_TX: Hash = Hash::new([
     175, 19, 73, 185, 245, 249, 161, 166, 160, 64, 77, 234, 54, 220, 201, 73, 155, 203, 37, 201, 173, 193, 18, 183,
     204, 154, 147, 202, 228, 31, 50, 98,
 ]);
+const GENESIS_HEADER_UNPACKED_ROOT_VALIDATOR: Hash = Hash::new([0u8; 32]);
 
 // --- Public API ---
 
@@ -124,7 +126,8 @@ pub fn get_gen_entry() -> Entry {
         dr: GENESIS_HEADER_UNPACKED_DR,
         vr: GENESIS_HEADER_UNPACKED_VR,
         signer: SIGNER,
-        txs_hash: GENESIS_HEADER_UNPACKED_TXS_HASH,
+        root_tx: GENESIS_HEADER_UNPACKED_ROOT_TX,
+        root_validator: GENESIS_HEADER_UNPACKED_ROOT_VALIDATOR,
     };
 
     Entry { header, signature: GENESIS_SIGNATURE, hash: GENESIS_HASH, mask: None, txs: vec![] }

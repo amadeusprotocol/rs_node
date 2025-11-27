@@ -96,20 +96,16 @@ impl TxPool {
         }
         args.batch_state.balances.insert(signer_vec, new_balance);
 
-        // Validate solution if present
-        for action in &txu.tx.actions {
-            if action.function == "submit_sol" && !action.args.is_empty() {
-                let sol_bytes = &action.args[0];
-                if sol_bytes.len() >= 36 {
-                    let sol_epoch = u32::from_le_bytes([sol_bytes[0], sol_bytes[1], sol_bytes[2], sol_bytes[3]]);
-                    let sol_svrh = &sol_bytes[4..36];
+        let action = &txu.tx.action;
+        if action.function == "submit_sol" && !action.args.is_empty() {
+            let sol_bytes = &action.args[0];
+            if sol_bytes.len() >= 36 {
+                let sol_epoch = u32::from_le_bytes([sol_bytes[0], sol_bytes[1], sol_bytes[2], sol_bytes[3]]);
+                let sol_svrh = &sol_bytes[4..36];
 
-                    if sol_epoch != args.epoch
-                        || sol_svrh != &args.segment_vr_hash[..]
-                        || sol_bytes.len() != sol::SOL_SIZE
-                    {
-                        return Err(TxPoolError::InvalidSol { nonce: txu.tx.nonce, hash: txu.hash });
-                    }
+                if sol_epoch != args.epoch || sol_svrh != &args.segment_vr_hash[..] || sol_bytes.len() != sol::SOL_SIZE
+                {
+                    return Err(TxPoolError::InvalidSol { nonce: txu.tx.nonce, hash: txu.hash });
                 }
             }
         }

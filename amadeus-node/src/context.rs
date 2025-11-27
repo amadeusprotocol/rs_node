@@ -705,7 +705,10 @@ impl Context {
                         self.metrics.add_incoming_proto(proto.typename());
                         return Some(proto);
                     }
-                    Err(e) => self.metrics.add_error(&e),
+                    Err(e) => {
+                        warn!("parse error: {e}, packet: {}", hex::encode(&packet));
+                        self.metrics.add_error(&e);
+                    }
                 }
             }
             Ok(None) => {} // waiting for more shards, not an error

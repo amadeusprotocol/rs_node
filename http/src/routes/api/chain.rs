@@ -96,17 +96,8 @@ pub async fn get_entries_by_height_with_txs(
             let entries_with_txs: Vec<BlockEntryWithTxs> = entries
                 .into_iter()
                 .map(|entry| {
-                    use amadeus_node::consensus::doms::tx::TxU;
-
                     let block_entry = BlockEntry::from(&entry);
-
-                    // Decode transactions from entry.txs
-                    let txs: Vec<Transaction> = entry
-                        .txs
-                        .iter()
-                        .filter_map(|tx_bytes| TxU::from_vanilla(tx_bytes).ok().map(|txu| Transaction::from(&txu)))
-                        .collect();
-
+                    let txs: Vec<Transaction> = entry.txs.iter().map(Transaction::from).collect();
                     BlockEntryWithTxs { entry: block_entry, txs }
                 })
                 .collect();
@@ -135,9 +126,7 @@ pub async fn get_transaction_by_id(
     Path(tx_id): Path<String>,
 ) -> Json<TransactionResponse> {
     use amadeus_node::CF_TX;
-    use amadeus_node::consensus::doms::tx::TxU;
 
-    // Decode transaction hash from base58
     let tx_hash = match decode_base58_hash(&tx_id) {
         Some(hash) => hash,
         None => return Json(TransactionResponse::error("invalid_tx_hash")),
@@ -153,15 +142,12 @@ pub async fn get_transaction_by_id(
         _ => return Json(TransactionResponse::error("not_found")),
     };
 
-    // Get the entry and find the matching transaction
     if let Some(entry) = ctx.get_entry_by_hash(&Hash::from(entry_hash)) {
-        for tx_bytes in &entry.txs {
-            if let Ok(txu) = TxU::from_vanilla(tx_bytes) {
-                if txu.hash == tx_hash {
-                    let mut transaction = Transaction::from(&txu);
-                    transaction.hash = tx_id; // Keep original input hash string
-                    return Json(TransactionResponse::ok(Some(transaction)));
-                }
+        for tx in &entry.txs {
+            if tx.hash == tx_hash {
+                let mut transaction = Transaction::from(tx);
+                transaction.hash = tx_id;
+                return Json(TransactionResponse::ok(Some(transaction)));
             }
         }
     }
@@ -186,7 +172,6 @@ pub async fn get_transaction_events_by_account(
     State(ctx): State<Arc<Context>>,
     Path(account): Path<String>,
 ) -> Json<TransactionEventsResponse> {
-    use amadeus_node::consensus::doms::tx::TxU;
     use amadeus_node::{CF_TX, CF_TX_ACCOUNT_NONCE};
 
     // Decode account public key from base58
@@ -216,14 +201,11 @@ pub async fn get_transaction_events_by_account(
                 let mut entry_hash_arr = [0u8; 32];
                 entry_hash_arr.copy_from_slice(&entry_hash);
 
-                // Get entry and find the matching transaction
                 if let Some(entry) = ctx.get_entry_by_hash(&Hash::from(entry_hash_arr)) {
-                    for tx_bytes in &entry.txs {
-                        if let Ok(txu) = TxU::from_vanilla(tx_bytes) {
-                            if txu.hash == tx_hash_arr {
-                                transactions.push(Transaction::from(&txu));
-                                break;
-                            }
+                    for tx in &entry.txs {
+                        if tx.hash == tx_hash_arr {
+                            transactions.push(Transaction::from(tx));
+                            break;
                         }
                     }
                 }
@@ -261,14 +243,7 @@ pub async fn get_transactions_in_entry(
     };
 
     if let Some(entry) = ctx.get_entry_by_hash(&hash_bytes) {
-        use amadeus_node::consensus::doms::tx::TxU;
-
-        let transactions: Vec<Transaction> = entry
-            .txs
-            .iter()
-            .filter_map(|tx_bytes| TxU::from_vanilla(tx_bytes).ok().map(|txu| Transaction::from(&txu)))
-            .collect();
-
+        let transactions: Vec<Transaction> = entry.txs.iter().map(Transaction::from).collect();
         Json(TransactionsInEntryResponse::ok(transactions))
     } else {
         Json(TransactionsInEntryResponse::ok(vec![]))

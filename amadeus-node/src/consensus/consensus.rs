@@ -129,17 +129,12 @@ impl TxResult {
     }
 }
 
-/// Execute a single transaction, routing to the appropriate contract handler
-/// Returns (error, logs, mutations, mutations_reverse)
 fn execute_transaction(
     env: &mut ApplyEnv,
     db: &RocksDb,
     txu: &TxU,
 ) -> (String, Vec<String>, Vec<Mutation>, Vec<Mutation>) {
-    let action = match txu.tx.actions.first() {
-        Some(a) => a,
-        None => return ("no_actions".to_string(), vec![], vec![], vec![]),
-    };
+    let action = &txu.tx.action;
 
     env.muts.clear();
     env.muts_rev.clear();
@@ -150,14 +145,12 @@ fn execute_transaction(
     env.caller_env.attached_symbol = action.attached_symbol.clone().unwrap_or_default();
     env.caller_env.attached_amount = action.attached_amount.clone().unwrap_or_default();
 
-    let (error, logs) = match action.contract.as_slice() {
+    let contract_bytes = txu.contract_bytes();
+    let (error, logs) = match contract_bytes.as_slice() {
         b"Epoch" => execute_epoch_call(env, &action.function, &action.args),
         b"Coin" => execute_coin_call(env, &action.function, &action.args),
         b"Contract" => execute_contract_call(env, &action.function, &action.args),
-        contract if contract.len() == 48 => {
-            // WASM contract execution for 48-byte public key contracts
-            execute_wasm_call(env, db, contract, &action.function, &action.args)
-        }
+        contract if contract.len() == 48 => execute_wasm_call(env, db, contract, &action.function, &action.args),
         _ => ("invalid_contract".to_string(), vec![]),
     };
 
@@ -236,10 +229,7 @@ fn parse_epoch_call(
     }
 }
 
-/// Pre-process transactions: update nonces, deduct gas
-fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) -> Result<(), &'static str> {
-    // DON'T reset here - we want to accumulate mutations from the entire entry processing
-
+fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txs: &[TxU]) -> Result<(), &'static str> {
     let epoch = next_entry.header.height / 100_000;
 
     let entry_signer_key =
@@ -250,19 +240,19 @@ fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txus: &[TxU]) -> Result<
         b":AMA",
     ]);
 
-    for txu in txus {
-        let nonce_key = crate::utils::misc::bcat(&[b"bic:base:nonce:", txu.tx.signer.as_ref()]);
-        let nonce_i64 = i64::try_from(txu.tx.nonce).unwrap_or(i64::MAX);
+    for tx in txs {
+        let nonce_key = crate::utils::misc::bcat(&[b"bic:base:nonce:", tx.tx.signer.as_ref()]);
+        let nonce_i64 = i64::try_from(tx.tx.nonce).unwrap_or(i64::MAX);
         consensus_kv::kv_put(env, &nonce_key, &nonce_i64.to_string().into_bytes())?;
 
-        let bytes = txu.tx_encoded.len() + 32 + 96;
+        let bytes = tx.tx_encoded().len() + 32 + 96;
         let exec_cost = if epoch >= 295 {
             amadeus_runtime::consensus::bic::coin::to_cents((1 + bytes / 1024) as i128)
         } else {
             amadeus_runtime::consensus::bic::coin::to_cents((3 + bytes / 256 * 3) as i128)
         };
 
-        let signer_balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", txu.tx.signer.as_ref(), b":AMA"]);
+        let signer_balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", tx.tx.signer.as_ref(), b":AMA"]);
         consensus_kv::kv_increment(env, &signer_balance_key, -exec_cost)?;
 
         consensus_kv::kv_increment(env, &entry_signer_key, exec_cost / 2)?;
@@ -445,14 +435,7 @@ pub fn apply_entry(
         return Err(Error::WrongType("invalid_height"));
     }
 
-    // decode transactions
-    let mut txus = Vec::new();
-    for tx_packed in &next_entry.txs {
-        match TxU::from_vanilla(tx_packed) {
-            Ok(txu) => txus.push(txu),
-            Err(_) => continue,
-        }
-    }
+    let txs = &next_entry.txs;
 
     // Create transaction and ApplyEnv
     let entry_vr_b3 = crate::utils::blake3::hash(next_entry.header.vr.as_ref());
@@ -471,7 +454,7 @@ pub fn apply_entry(
     );
 
     // pre-process transactions (nonce updates, gas deduction)
-    call_txs_pre(&mut env, next_entry, &txus).map_err(Error::Runtime)?;
+    call_txs_pre(&mut env, next_entry, txs).map_err(Error::Runtime)?;
     // Collect mutations from pre-processing AFTER call_txs_pre
     let mut muts = env.muts.clone();
     let mut muts_rev = env.muts_rev.clone();
@@ -479,7 +462,7 @@ pub fn apply_entry(
     // execute transactions (mutations include gas)
     let mut tx_results = Vec::new();
     let db = fabric.db();
-    for txu in &txus {
+    for txu in txs {
         let (error, logs, m3, m_rev3) = execute_transaction(&mut env, db, txu);
 
         if error == "ok" {
@@ -548,31 +531,27 @@ pub fn apply_entry(
         seen_time_ms,
     )?;
 
-    // store transactions with results
-    for (tx_packed, result) in next_entry.txs.iter().zip(tx_results.iter()) {
-        if let Ok(txu) = TxU::from_vanilla(tx_packed) {
-            // Store tx_account_nonce index: signer:nonce -> tx_hash
-            let nonce_padded = format!("{:020}", txu.tx.nonce);
-            let key = format!("{}:{}", bs58::encode(&txu.tx.signer).into_string(), nonce_padded);
-            fabric.put_tx_account_nonce(key.as_bytes(), &txu.hash)?;
+    for (tx, result) in next_entry.txs.iter().zip(tx_results.iter()) {
+        let nonce_padded = format!("{:020}", tx.tx.nonce);
+        let key = format!("{}:{}", bs58::encode(&tx.tx.signer).into_string(), nonce_padded);
+        fabric.put_tx_account_nonce(key.as_bytes(), &tx.hash)?;
 
-            // find position in entry binary for indexing
-            let entry_bin = next_entry.to_vecpak_bin();
-            if let Some(pos) = entry_bin.windows(tx_packed.len()).position(|w| w == tx_packed) {
-                // Build tx metadata map matching Elixir structure
-                let mut tx_meta = HashMap::new();
-                tx_meta.insert(
-                    eetf::Term::Atom(eetf::Atom::from("entry_hash")),
-                    eetf::Term::from(eetf::Binary { bytes: next_entry.hash.to_vec() }),
-                );
-                tx_meta.insert(eetf::Term::Atom(eetf::Atom::from("result")), result.to_eetf_term());
-                tx_meta.insert(eetf::Term::Atom(eetf::Atom::from("index_start")), u64_to_term(pos as u64));
-                tx_meta.insert(eetf::Term::Atom(eetf::Atom::from("index_size")), u64_to_term(tx_packed.len() as u64));
+        let tx_bin = amadeus_utils::vecpak::to_vec(tx).unwrap_or_default();
+        let entry_bin = next_entry.to_vecpak_bin();
+        if let Some(pos) = entry_bin.windows(tx_bin.len()).position(|w| w == tx_bin) {
+            // Build tx metadata map matching Elixir structure
+            let mut tx_meta = HashMap::new();
+            tx_meta.insert(
+                eetf::Term::Atom(eetf::Atom::from("entry_hash")),
+                eetf::Term::from(eetf::Binary { bytes: next_entry.hash.to_vec() }),
+            );
+            tx_meta.insert(eetf::Term::Atom(eetf::Atom::from("result")), result.to_eetf_term());
+            tx_meta.insert(eetf::Term::Atom(eetf::Atom::from("index_start")), u64_to_term(pos as u64));
+            tx_meta.insert(eetf::Term::Atom(eetf::Atom::from("index_size")), u64_to_term(tx_bin.len() as u64));
 
-                let term = eetf::Term::Map(eetf::Map { map: tx_meta });
-                let tx_meta_bin = encode_safe_deterministic(&term);
-                fabric.put_tx_metadata(txu.hash.as_ref(), &tx_meta_bin)?;
-            }
+            let term = eetf::Term::Map(eetf::Map { map: tx_meta });
+            let tx_meta_bin = encode_safe_deterministic(&term);
+            fabric.put_tx_metadata(tx.hash.as_ref(), &tx_meta_bin)?;
         }
     }
 
@@ -588,15 +567,14 @@ pub fn produce_entry(fabric: &Fabric, config: &crate::config::Config, slot: u64)
     let next_header = cur_entry.build_next_header(slot, &pk, &sk)?;
 
     // TODO: grab transactions from TXPool
-    let txs = Vec::new();
+    let txs: Vec<crate::consensus::doms::tx::EntryTx> = Vec::new();
 
-    // compute txs_hash
-    let txs_bin: Vec<u8> = txs.iter().flatten().cloned().collect();
-    let txs_hash = crate::utils::blake3::hash(&txs_bin);
+    // Serialize all transactions to compute root_tx hash
+    let txs_bin: Vec<u8> = txs.iter().flat_map(|tx| amadeus_utils::vecpak::to_vec(tx).unwrap_or_default()).collect();
+    let root_tx = crate::utils::blake3::hash(&txs_bin);
 
-    // create entry with updated txs_hash
     let mut header = next_header;
-    header.txs_hash = Hash::from(txs_hash);
+    header.root_tx = Hash::from(root_tx);
 
     // sign the header
     let header_bin = header.to_vecpak_bin();
@@ -675,14 +653,11 @@ fn chain_rewind_internal(fabric: &Fabric, current_entry: &Entry, target_hash: &H
         fabric.delete_consensus(&current.hash)?;
         fabric.delete_attestation(&current.hash)?;
 
-        // remove transaction indices
-        for tx_packed in &current.txs {
-            if let Ok(txu) = TxU::from_vanilla(tx_packed) {
-                fabric.delete_tx_metadata(&txu.hash)?;
-                let nonce_padded = format!("{:020}", txu.tx.nonce);
-                let key = format!("{}:{}", bs58::encode(&txu.tx.signer).into_string(), nonce_padded);
-                fabric.delete_tx_account_nonce(key.as_bytes())?;
-            }
+        for tx in &current.txs {
+            fabric.delete_tx_metadata(&tx.hash)?;
+            let nonce_padded = format!("{:020}", tx.tx.nonce);
+            let key = format!("{}:{}", bs58::encode(&tx.tx.signer).into_string(), nonce_padded);
+            fabric.delete_tx_account_nonce(key.as_bytes())?;
         }
 
         // if we just unapplied the target, return its parent
@@ -945,7 +920,7 @@ fn is_quorum_synced_off_by_x(fabric: &Fabric, x: u64) -> bool {
     temporal_height.saturating_sub(rooted_height) <= x
 }
 
-pub fn delete_transactions_from_pool(_txs: &[Vec<u8>]) {
+pub fn delete_transactions_from_pool(_txs: &[crate::consensus::doms::tx::EntryTx]) {
     // TODO: integrate TXPool with Context to enable transaction removal
     // Implementation exists: TXPool::delete_packed has been implemented in node/txpool.rs
     // What's needed:

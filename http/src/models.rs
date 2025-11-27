@@ -121,17 +121,22 @@ impl From<&amadeus_node::node::anr::Anr> for Anr {
 
 impl From<&amadeus_node::consensus::doms::tx::TxU> for Transaction {
     fn from(txu: &amadeus_node::consensus::doms::tx::TxU) -> Self {
+        let action = &txu.tx.action;
         Self {
             hash: bs58::encode(&txu.hash).into_string(),
             from: bs58::encode(&txu.tx.signer).into_string(),
-            to: "pending_decode".to_string(), // Action decoding not yet implemented
-            amount: "0".to_string(),          // Action decoding not yet implemented
-            symbol: "AMA".to_string(),
+            to: action.args.first().map(|a| bs58::encode(a).into_string()).unwrap_or_default(),
+            amount: action.args.get(1).map(|a| bs58::encode(a).into_string()).unwrap_or_default(),
+            symbol: action
+                .args
+                .get(2)
+                .and_then(|a| String::from_utf8(a.clone()).ok())
+                .unwrap_or_else(|| "AMA".to_string()),
             fee: "0".to_string(),
             nonce: txu.tx.nonce as u64,
-            timestamp: 0, // Not available in transaction
+            timestamp: 0,
             signature: bs58::encode(&txu.signature).into_string(),
-            tx_type: "pending_decode".to_string(), // Action decoding not yet implemented
+            tx_type: action.function.clone(),
         }
     }
 }
@@ -143,7 +148,7 @@ impl From<&amadeus_node::consensus::doms::entry::Entry> for BlockEntry {
             height: entry.header.height,
             timestamp: 0, // Not stored in entry
             previous_hash: bs58::encode(&entry.header.prev_hash).into_string(),
-            merkle_root: bs58::encode(&entry.header.txs_hash).into_string(),
+            merkle_root: bs58::encode(&entry.header.root_tx).into_string(),
             signature: bs58::encode(&entry.signature).into_string(),
             mask: format!("{:?}", entry.mask),
         }

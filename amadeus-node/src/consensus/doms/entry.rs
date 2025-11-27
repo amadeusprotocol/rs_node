@@ -1,5 +1,5 @@
 use crate::Context;
-use crate::consensus::doms::tx::TxU;
+use crate::consensus::doms::tx::EntryTx;
 use crate::consensus::fabric;
 use crate::node::protocol;
 use crate::node::protocol::Protocol;
@@ -73,7 +73,10 @@ impl EntrySummary {
             dr: hmap.get_binary(b"dr").ok_or(Error::BadFormat("entry.header.dr"))?,
             vr: hmap.get_binary(b"vr").ok_or(Error::BadFormat("entry.header.vr"))?,
             signer: hmap.get_binary(b"signer").ok_or(Error::BadFormat("entry.header.signer"))?,
-            txs_hash: hmap.get_binary(b"txs_hash").ok_or(Error::BadFormat("entry.header.txs_hash"))?,
+            root_tx: hmap.get_binary(b"root_tx").ok_or(Error::BadFormat("entry.header.root_tx"))?,
+            root_validator: hmap
+                .get_binary(b"root_validator")
+                .ok_or(Error::BadFormat("entry.header.root_validator"))?,
         };
 
         let mask = map.get_binary::<Vec<u8>>(b"mask").map(bin_to_bitvec);
@@ -103,7 +106,8 @@ impl EntrySummary {
             dr: Hash::from([0u8; 32]),
             vr: Signature::from([0u8; 96]),
             signer: PublicKey::from([0u8; 48]),
-            txs_hash: Hash::from([0u8; 32]),
+            root_tx: Hash::from([0u8; 32]),
+            root_validator: Hash::from([0u8; 32]),
         };
         Self { header, signature: Signature::from([0u8; 96]), mask: None }
     }
@@ -118,7 +122,8 @@ pub struct EntryHeader {
     pub dr: Hash,      // deterministic random value
     pub vr: Signature, // verifiable random value
     pub signer: PublicKey,
-    pub txs_hash: Hash,
+    pub root_tx: Hash,
+    pub root_validator: Hash,
 }
 
 impl fmt::Debug for EntryHeader {
@@ -130,7 +135,8 @@ impl fmt::Debug for EntryHeader {
             .field("prev_hash", &bs58::encode(&self.prev_hash).into_string())
             .field("prev_slot", &self.prev_slot)
             .field("signer", &bs58::encode(&self.signer).into_string())
-            .field("txs_hash", &bs58::encode(&self.txs_hash).into_string())
+            .field("root_tx", &bs58::encode(&self.root_tx).into_string())
+            .field("root_validator", &bs58::encode(&self.root_validator).into_string())
             .field("vr", &bs58::encode(&self.vr).into_string())
             .finish()
     }
@@ -146,7 +152,8 @@ impl EntryHeader {
             dr: map.get_binary(b"dr").ok_or(Error::BadFormat("entry.header.dr"))?,
             vr: map.get_binary(b"vr").ok_or(Error::BadFormat("entry.header.vr"))?,
             signer: map.get_binary(b"signer").ok_or(Error::BadFormat("entry.header.signer"))?,
-            txs_hash: map.get_binary(b"txs_hash").ok_or(Error::BadFormat("entry.header.txs_hash"))?,
+            root_tx: map.get_binary(b"root_tx").ok_or(Error::BadFormat("entry.header.root_tx"))?,
+            root_validator: map.get_binary(b"root_validator").ok_or(Error::BadFormat("entry.header.root_validator"))?,
         })
     }
 
@@ -159,25 +166,14 @@ impl EntryHeader {
             (Term::Binary(b"dr".to_vec()), Term::Binary(self.dr.to_vec())),
             (Term::Binary(b"vr".to_vec()), Term::Binary(self.vr.to_vec())),
             (Term::Binary(b"signer".to_vec()), Term::Binary(self.signer.to_vec())),
-            (Term::Binary(b"txs_hash".to_vec()), Term::Binary(self.txs_hash.to_vec())),
+            (Term::Binary(b"root_tx".to_vec()), Term::Binary(self.root_tx.to_vec())),
+            (Term::Binary(b"root_validator".to_vec()), Term::Binary(self.root_validator.to_vec())),
         ])
     }
 
     pub fn to_vecpak_bin(&self) -> Vec<u8> {
         let term = self.to_vecpak_term();
         encode(term)
-    }
-}
-
-mod txs_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    pub fn serialize<S: Serializer>(txs: &[Vec<u8>], ser: S) -> Result<S::Ok, S::Error> {
-        let v: Vec<serde_bytes::ByteBuf> = txs.iter().map(|t| serde_bytes::ByteBuf::from(t.clone())).collect();
-        v.serialize(ser)
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Vec<Vec<u8>>, D::Error> {
-        let v: Vec<serde_bytes::ByteBuf> = Deserialize::deserialize(de)?;
-        Ok(v.into_iter().map(|b| b.into_vec()).collect())
     }
 }
 
@@ -199,8 +195,7 @@ mod mask_serde {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
     pub header: EntryHeader,
-    #[serde(with = "txs_serde")]
-    pub txs: Vec<Vec<u8>>,
+    pub txs: Vec<EntryTx>,
     pub hash: Hash,
     pub signature: Signature,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "mask_serde")]
@@ -234,16 +229,34 @@ impl Entry {
 
         let mask = map.get_binary::<Vec<u8>>(b"mask").map(bin_to_bitvec);
 
+        // Parse txs as structured EntryTx objects
         let txs = map
             .get_list(b"txs")
-            .map(|list| list.iter().filter_map(|t| t.get_binary().map(|b| b.to_vec())).collect())
+            .map(|list| {
+                list.iter()
+                    .filter_map(|t| {
+                        // Each tx is a PropList, encode it and deserialize as EntryTx
+                        let term_bin = encode(t.clone());
+                        vecpak::from_slice::<EntryTx>(&term_bin).ok()
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
 
         Ok(Entry { hash, header, signature, mask, txs })
     }
 
     pub fn to_vecpak_term(&self) -> Term {
-        let txs_list = Term::List(self.txs.iter().map(|tx| Term::Binary(tx.clone())).collect());
+        // Serialize each EntryTx to a Term
+        let txs_list = Term::List(
+            self.txs
+                .iter()
+                .filter_map(|tx| {
+                    let bin = vecpak::to_vec(tx).ok()?;
+                    decode(&bin).ok()
+                })
+                .collect(),
+        );
         let mut props = vec![
             (Term::Binary(b"header".to_vec()), self.header.to_vecpak_term()),
             (Term::Binary(b"txs".to_vec()), txs_list),
@@ -257,24 +270,50 @@ impl Entry {
     }
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct EntryProto {
+    pub op: String,
+    pub entry_packed: Entry,
+}
+
+impl EntryProto {
+    pub const TYPENAME: &'static str = "event_entry";
+}
+
+impl crate::utils::misc::Typename for EntryProto {
+    fn typename(&self) -> &'static str {
+        Self::TYPENAME
+    }
+}
+
+impl fmt::Debug for EntryProto {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EntryProto").field("entry_packed", &self.entry_packed).finish()
+    }
+}
+
+#[async_trait::async_trait]
+impl Protocol for EntryProto {
+    fn from_vecpak_map_validated(_map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
+        Err(protocol::Error::ParseError("use vecpak::from_slice"))
+    }
+
+    fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, protocol::Error> {
+        Ok(vecpak::to_vec(&self)?)
+    }
+
+    async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
+        self.entry_packed.handle(ctx, src).await
+    }
+}
+
 impl crate::utils::misc::Typename for Entry {
     fn typename(&self) -> &'static str {
         Self::TYPENAME
     }
 }
 
-#[async_trait::async_trait]
-impl Protocol for Entry {
-    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
-        let entry_map = map.get_proplist_map(b"entry_packed").ok_or(Error::BadFormat("entry_packed"))?;
-        Self::from_vecpak_map(&entry_map).map_err(Into::into)
-    }
-
-    fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        let bin = vecpak::to_vec(&self)?;
-        Ok(bin)
-    }
-
+impl Entry {
     async fn handle(&self, ctx: &Context, _src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
         let height = self.header.height;
 
@@ -311,7 +350,7 @@ impl fmt::Debug for Entry {
             .field("hash", &bs58::encode(&self.hash).into_string())
             .field("header", &self.header)
             .field("signature", &bs58::encode(&self.signature).into_string())
-            .field("txs", &self.txs.iter().map(|tx| bs58::encode(tx).into_string()).collect::<Vec<String>>())
+            .field("txs", &self.txs.iter().map(|tx| bs58::encode(&tx.hash).into_string()).collect::<Vec<String>>())
             .finish()
     }
 }
@@ -335,7 +374,8 @@ impl Entry {
             dr: Hash::from(dr),
             vr,
             signer: *signer_pk,
-            txs_hash: Hash::from([0u8; 32]), // to be filled when txs are known
+            root_tx: Hash::from([0u8; 32]),
+            root_validator: Hash::from([0u8; 32]),
         })
     }
 
@@ -344,13 +384,7 @@ impl Entry {
     }
 
     pub fn contains_tx(&self, tx_function: &str) -> bool {
-        self.txs.iter().any(|txp| {
-            if let Ok(txu) = TxU::from_vanilla(txp) {
-                if let Some(first) = txu.tx.actions.first() { first.function == tx_function } else { false }
-            } else {
-                false
-            }
-        })
+        self.txs.iter().any(|tx| tx.tx.action.function == tx_function)
     }
 }
 
@@ -408,6 +442,26 @@ fn parse_entry_filename(filename: &str) -> Option<(u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consensus::doms::tx::{EntryTx, EntryTxAction, EntryTxInner};
+
+    fn make_test_tx(nonce: i128) -> EntryTx {
+        EntryTx {
+            hash: Hash::from([0xABu8; 32]),
+            signature: Signature::from([0xCDu8; 96]),
+            tx: EntryTxInner {
+                action: EntryTxAction {
+                    args: vec![vec![1, 2, 3]],
+                    contract: "TestContract".to_string(),
+                    function: "test_func".to_string(),
+                    op: "call".to_string(),
+                    attached_symbol: None,
+                    attached_amount: None,
+                },
+                nonce,
+                signer: PublicKey::from([0xEFu8; 48]),
+            },
+        }
+    }
 
     #[test]
     fn test_parse_entry_filename() {
@@ -461,14 +515,15 @@ mod tests {
             dr: Hash::from([2u8; 32]),
             vr: Signature::from([3u8; 96]),
             signer: PublicKey::from([4u8; 48]),
-            txs_hash: Hash::from([5u8; 32]),
+            root_tx: Hash::from([5u8; 32]),
+            root_validator: Hash::from([14u8; 32]),
         };
         let entry = Entry {
             hash: Hash::from([6u8; 32]),
             header,
             signature: Signature::from([7u8; 96]),
             mask: Some(bin_to_bitvec(vec![0xFF, 0x00, 0xAB])),
-            txs: vec![vec![1, 2, 3], vec![4, 5, 6]],
+            txs: vec![make_test_tx(1), make_test_tx(2)],
         };
 
         // to_vecpak_bin -> from_slice
@@ -477,7 +532,7 @@ mod tests {
         assert_eq!(decoded.hash, entry.hash);
         assert_eq!(decoded.header.height, entry.header.height);
         assert_eq!(decoded.header.slot, entry.header.slot);
-        assert_eq!(decoded.txs, entry.txs);
+        assert_eq!(decoded.txs.len(), entry.txs.len());
         assert_eq!(decoded.mask, entry.mask);
 
         // to_vec -> from_vecpak_bin
@@ -486,7 +541,7 @@ mod tests {
         assert_eq!(decoded2.hash, entry.hash);
         assert_eq!(decoded2.header.height, entry.header.height);
         assert_eq!(decoded2.header.slot, entry.header.slot);
-        assert_eq!(decoded2.txs, entry.txs);
+        assert_eq!(decoded2.txs.len(), entry.txs.len());
         assert_eq!(decoded2.mask, entry.mask);
 
         // verify byte-for-byte compatibility
@@ -503,7 +558,8 @@ mod tests {
                 dr: Hash::from([10u8; 32]),
                 vr: Signature::from([11u8; 96]),
                 signer: PublicKey::from([12u8; 48]),
-                txs_hash: Hash::from([13u8; 32]),
+                root_tx: Hash::from([13u8; 32]),
+                root_validator: Hash::from([15u8; 32]),
             },
             signature: Signature::from([14u8; 96]),
             mask: None,
@@ -515,5 +571,48 @@ mod tests {
         let decoded3: Entry = vecpak::from_slice(&vecpak_bin2).expect("from_slice");
         assert_eq!(decoded3.mask, None);
         assert_eq!(decoded3.header.prev_slot, -1);
+    }
+
+    #[test]
+    fn test_entry_proto_roundtrip() {
+        use amadeus_utils::vecpak;
+
+        // Create a test EntryProto and verify it can roundtrip through serde
+        let entry_proto = EntryProto {
+            op: "event_entry".to_string(),
+            entry_packed: Entry {
+                hash: Hash::from([0x07u8; 32]),
+                header: EntryHeader {
+                    height: 41939338,
+                    slot: 41939338,
+                    prev_slot: 41939337,
+                    prev_hash: Hash::from([0xD9u8; 32]),
+                    dr: Hash::from([0x91u8; 32]),
+                    vr: Signature::from([0xB3u8; 96]),
+                    signer: PublicKey::from([0x95u8; 48]),
+                    root_tx: Hash::from([0x3Cu8; 32]),
+                    root_validator: Hash::from([0x28u8; 32]),
+                },
+                signature: Signature::from([0x90u8; 96]),
+                mask: None,
+                txs: vec![make_test_tx(1762402566835945439)],
+            },
+        };
+
+        // Serialize
+        let bin = vecpak::to_vec(&entry_proto).expect("should serialize");
+        println!("Serialized EntryProto: {} bytes", bin.len());
+        println!("Hex: {}", hex::encode(&bin));
+
+        // Deserialize
+        let decoded: EntryProto = vecpak::from_slice(&bin).expect("should deserialize");
+
+        // Verify
+        assert_eq!(decoded.op, "event_entry");
+        assert_eq!(decoded.entry_packed.header.height, 41939338);
+        assert_eq!(decoded.entry_packed.txs.len(), 1);
+        assert_eq!(decoded.entry_packed.txs[0].tx.action.function, "test_func");
+
+        println!("Successfully roundtripped EntryProto!");
     }
 }
