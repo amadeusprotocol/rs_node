@@ -20,10 +20,10 @@ pub struct Sol {
 
 pub fn unpack(sol: &[u8; SOL_SIZE]) -> Sol {
     let epoch = u32::from_le_bytes(sol[0..4].try_into().unwrap()) as u64;
-    let segment_vr_hash = Hash(sol[4..36].try_into().unwrap());
-    let pk = PublicKey(sol[36..84].try_into().unwrap());
-    let pop = Signature(sol[84..180].try_into().unwrap());
-    let computor = PublicKey(sol[180..228].try_into().unwrap());
+    let segment_vr_hash = Hash::new(sol[4..36].try_into().unwrap());
+    let pk = PublicKey::new(sol[36..84].try_into().unwrap());
+    let pop = Signature::new(sol[84..180].try_into().unwrap());
+    let computor = PublicKey::new(sol[180..228].try_into().unwrap());
     let nonce: [u8; 12] = sol[228..240].try_into().unwrap();
     let tensor_c: [u8; 1024] = sol[240..(240 + 1024)].try_into().unwrap();
     Sol { epoch, segment_vr_hash, pk, pop, computor, nonce, tensor_c }

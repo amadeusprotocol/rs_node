@@ -909,7 +909,7 @@ mod tests {
 
         let peer = Peer {
             ip,
-            pk: Some(PublicKey(test_pk)),
+            pk: Some(test_pk.into()),
             version: Some(Ver::new(1, 0, 0)),
             latency: Some(100),
             last_msg: ts_m,

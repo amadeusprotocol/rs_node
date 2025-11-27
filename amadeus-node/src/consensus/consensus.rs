@@ -923,7 +923,7 @@ pub fn validate_next_entry(current_entry: &Entry, next_entry: &Entry) -> Result<
     }
 
     // validate vr (verifiable random)
-    if bls::verify(&neh.signer, &neh.vr, &ceh.vr.0, DST_VRF).is_err() {
+    if bls::verify(&neh.signer, &neh.vr, &*ceh.vr, DST_VRF).is_err() {
         return Err(Error::InvalidSignature);
     }
 

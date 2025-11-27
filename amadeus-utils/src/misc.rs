@@ -425,7 +425,7 @@ mod tests {
     fn test_decode_base58_pk() {
         // Test valid 48-byte public key
         let test_pk = PublicKey::from([0u8; 48]);
-        let encoded = bs58::encode(&test_pk.0).into_string();
+        let encoded = bs58::encode(&test_pk).into_string();
         let decoded = decode_base58_pk(&encoded);
         assert_eq!(decoded, Some(test_pk));
 
@@ -442,7 +442,7 @@ mod tests {
     fn test_decode_base58_hash() {
         // Test valid 32-byte hash
         let test_hash = Hash::from([0xFF; 32]);
-        let encoded = bs58::encode(&test_hash.0).into_string();
+        let encoded = bs58::encode(&test_hash).into_string();
         let decoded = decode_base58_hash(&encoded);
         assert_eq!(decoded, Some(test_hash));
 

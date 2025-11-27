@@ -69,7 +69,7 @@ pub fn make_caller_env(
         entry_vr_b3: *entry_vr_b3,
         entry_dr: *entry_dr,
         tx_hash: vec![],
-        tx_signer: PublicKey([0u8; 48]),
+        tx_signer: PublicKey::new([0u8; 48]),
         account_origin: vec![],
         account_caller: vec![],
         account_current: vec![],

@@ -868,7 +868,7 @@ mod tests {
         // create test config
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls::sign(&sk, &pk.0, consensus::DST_POP).expect("pop");
+        let pop = bls::sign(&sk, &*pk, consensus::DST_POP).expect("pop");
 
         let config = config::Config {
             work_folder: "/tmp/test".to_string(),
@@ -925,7 +925,7 @@ mod tests {
         // create test config with minimal requirements
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls::sign(&sk, &pk.0, consensus::DST_POP).expect("pop");
+        let pop = bls::sign(&sk, &*pk, consensus::DST_POP).expect("pop");
 
         // Use unique work folder to avoid OnceCell conflicts with other tests
         let unique_id = format!("{}_{}", std::process::id(), utils::misc::get_unix_nanos_now());
@@ -979,7 +979,7 @@ mod tests {
         // create test config
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls::sign(&sk, &pk.0, consensus::DST_POP).expect("pop");
+        let pop = bls::sign(&sk, &*pk, consensus::DST_POP).expect("pop");
 
         let work_folder = format!("/tmp/test_bootstrap_{}", std::process::id());
         let config = config::Config {
@@ -1033,7 +1033,7 @@ mod tests {
 
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls::sign(&sk, &pk.0, consensus::DST_POP).expect("pop");
+        let pop = bls::sign(&sk, &*pk, consensus::DST_POP).expect("pop");
 
         let unique_id = format!("{}_{}", std::process::id(), utils::misc::get_unix_nanos_now());
         let config = config::Config {
@@ -1096,7 +1096,7 @@ mod tests {
 
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls::sign(&sk, &pk.0, consensus::DST_POP).expect("pop");
+        let pop = bls::sign(&sk, &*pk, consensus::DST_POP).expect("pop");
 
         let unique_id = format!("{}_{}", std::process::id(), utils::misc::get_unix_nanos_now());
         let config = config::Config {

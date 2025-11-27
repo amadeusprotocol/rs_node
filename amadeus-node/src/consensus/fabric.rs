@@ -322,7 +322,7 @@ impl Fabric {
 
         let signed_pks = unmask_trainers(&mask, &trainers);
         let agg_pk = bls::aggregate_public_keys(&signed_pks).map_err(|_| Error::BadEtf("bls_aggregate_failed"))?;
-        bls::verify(&agg_pk.0, &consensus.agg_sig.0, &to_sign, DST_ATT)
+        bls::verify(&*agg_pk, &*consensus.agg_sig, &to_sign, DST_ATT)
             .map_err(|_| Error::BadEtf("invalid_signature"))?;
 
         Ok(mask)
@@ -1006,8 +1006,8 @@ mod tests {
         let fab = Fabric::new(&test_path).await.unwrap();
 
         // create test entry data
-        let entry_hash1: Hash = Hash([1; 32]);
-        let entry_hash2: Hash = Hash([2; 32]);
+        let entry_hash1: Hash = Hash::new([1; 32]);
+        let entry_hash2: Hash = Hash::new([2; 32]);
         let entry_bin1 = vec![1, 2, 3, 4];
         let entry_bin2 = vec![5, 6, 7, 8];
         let height = 12345;
@@ -1047,11 +1047,11 @@ mod tests {
         let test_path = format!("target/test_clean_muts_{}", std::process::id());
         let fab = Fabric::new(&test_path).await.unwrap();
 
-        let h0: Hash = Hash([0; 32]);
-        let h1: Hash = Hash([1; 32]);
-        let h2: Hash = Hash([2; 32]);
-        let h3: Hash = Hash([3; 32]);
-        let h4: Hash = Hash([4; 32]);
+        let h0: Hash = Hash::new([0; 32]);
+        let h1: Hash = Hash::new([1; 32]);
+        let h2: Hash = Hash::new([2; 32]);
+        let h3: Hash = Hash::new([3; 32]);
+        let h4: Hash = Hash::new([4; 32]);
         fab.insert_entry(&h0, 99, 999, &[0], 0).unwrap();
         fab.insert_entry(&h1, 100, 1000, &[1], 0).unwrap();
         fab.insert_entry(&h2, 101, 1001, &[2], 0).unwrap();

@@ -43,13 +43,13 @@ pub struct GenesisEntry {
 
 // --- Static constants copied from the original Elixir module comments ---
 // Signer pk (48 bytes in compressed G1)
-const SIGNER: PublicKey = PublicKey([
+const SIGNER: PublicKey = PublicKey::new([
     140, 27, 75, 245, 48, 112, 140, 244, 78, 114, 11, 45, 8, 201, 199, 184, 71, 69, 96, 112, 52, 204, 31, 56, 143, 115,
     222, 87, 7, 185, 3, 168, 252, 90, 91, 114, 16, 244, 47, 228, 198, 82, 12, 130, 10, 126, 118, 193,
 ]);
 
 // Proof of possession signature over pk in DST_POP (96 bytes)
-const POP: Signature = Signature([
+const POP: Signature = Signature::new([
     175, 176, 86, 129, 118, 228, 182, 86, 225, 187, 236, 131, 170, 81, 121, 174, 164, 44, 71, 123, 136, 151, 170, 187,
     43, 43, 211, 181, 163, 103, 93, 122, 11, 207, 92, 1, 190, 71, 46, 129, 210, 134, 62, 169, 152, 161, 189, 58, 18,
     246, 6, 151, 128, 196, 116, 93, 20, 204, 153, 217, 81, 205, 1, 133, 65, 204, 177, 138, 74, 8, 104, 109, 214, 59,
@@ -57,23 +57,23 @@ const POP: Signature = Signature([
 ]);
 
 // Attestation constants
-const ATTESTATION_SIGNATURE: Signature = Signature([
+const ATTESTATION_SIGNATURE: Signature = Signature::new([
     151, 160, 206, 230, 190, 143, 68, 181, 248, 53, 105, 176, 56, 44, 82, 68, 252, 20, 61, 83, 33, 137, 74, 216, 149,
     11, 242, 157, 237, 53, 139, 120, 202, 52, 30, 65, 9, 155, 243, 52, 53, 41, 236, 86, 235, 128, 52, 74, 12, 80, 187,
     82, 174, 138, 121, 69, 159, 251, 97, 201, 238, 119, 163, 203, 122, 207, 179, 5, 178, 32, 145, 32, 183, 62, 184,
     189, 136, 134, 80, 7, 193, 218, 133, 171, 154, 215, 219, 77, 33, 161, 152, 129, 142, 35, 9, 183,
 ]);
-const ATTESTATION_MUTATIONS_HASH: Hash = Hash([
+const ATTESTATION_MUTATIONS_HASH: Hash = Hash::new([
     72, 67, 216, 106, 224, 102, 200, 77, 84, 86, 71, 38, 221, 89, 178, 87, 170, 13, 141, 117, 29, 103, 251, 177, 92,
     143, 88, 218, 21, 177, 139, 196,
 ]);
-const ATTESTATION_ENTRY_HASH: Hash = Hash([
+const ATTESTATION_ENTRY_HASH: Hash = Hash::new([
     250, 154, 199, 170, 114, 250, 155, 84, 2, 215, 37, 236, 138, 98, 19, 87, 19, 163, 21, 138, 131, 205, 205, 189, 176,
     217, 5, 112, 225, 13, 15, 217,
 ]);
 
 // Genesis entry constants
-const GENESIS_SIGNATURE: Signature = Signature([
+const GENESIS_SIGNATURE: Signature = Signature::new([
     179, 146, 253, 87, 173, 166, 85, 68, 73, 181, 204, 201, 40, 101, 234, 64, 243, 202, 202, 35, 214, 166, 101, 4, 82,
     168, 131, 119, 230, 126, 98, 253, 153, 117, 239, 112, 203, 145, 116, 17, 53, 235, 113, 23, 73, 26, 91, 171, 11, 28,
     244, 153, 250, 238, 23, 205, 114, 124, 195, 112, 171, 200, 45, 108, 129, 26, 219, 122, 24, 43, 162, 187, 120, 106,
@@ -81,17 +81,17 @@ const GENESIS_SIGNATURE: Signature = Signature([
 ]);
 const GENESIS_HASH: Hash = ATTESTATION_ENTRY_HASH; // same as in attestation section
 
-const GENESIS_HEADER_UNPACKED_DR: Hash = Hash([
+const GENESIS_HEADER_UNPACKED_DR: Hash = Hash::new([
     85, 13, 37, 23, 114, 150, 131, 140, 136, 174, 76, 72, 122, 45, 180, 165, 94, 229, 194, 27, 2, 87, 249, 159, 121,
     177, 233, 167, 179, 0, 217, 219,
 ]);
-const GENESIS_HEADER_UNPACKED_VR: Signature = Signature([
+const GENESIS_HEADER_UNPACKED_VR: Signature = Signature::new([
     181, 221, 57, 62, 159, 101, 228, 75, 242, 59, 58, 92, 179, 234, 71, 120, 2, 232, 181, 156, 102, 142, 148, 152, 180,
     116, 198, 158, 94, 152, 24, 27, 115, 224, 103, 169, 12, 237, 98, 44, 113, 237, 198, 210, 218, 83, 162, 181, 5, 65,
     253, 232, 57, 140, 196, 121, 187, 108, 46, 68, 159, 45, 220, 62, 254, 201, 44, 135, 201, 126, 206, 74, 140, 239,
     177, 95, 169, 40, 181, 104, 167, 84, 50, 207, 85, 35, 42, 10, 36, 196, 9, 13, 156, 79, 186, 117,
 ]);
-const GENESIS_HEADER_UNPACKED_TXS_HASH: Hash = Hash([
+const GENESIS_HEADER_UNPACKED_TXS_HASH: Hash = Hash::new([
     175, 19, 73, 185, 245, 249, 161, 166, 160, 64, 77, 234, 54, 220, 201, 73, 155, 203, 37, 201, 173, 193, 18, 183,
     204, 154, 147, 202, 228, 31, 50, 98,
 ]);

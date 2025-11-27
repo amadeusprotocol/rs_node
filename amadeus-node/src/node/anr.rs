@@ -361,13 +361,13 @@ impl Anr {
     pub fn verify_signature(&self) -> bool {
         // verify proof of possession (pop is signature of pk with pk as key)
         // this proves the sender owns the private key for pk
-        if verify(&self.pk.0, &self.pop, &self.pk.0, crate::consensus::DST_POP).is_err() {
+        if verify(&*self.pk, &self.pop, &*self.pk, crate::consensus::DST_POP).is_err() {
             return false;
         }
 
         // verify main signature using vecpak encoding (matching Elixir's RDB.vecpak_encode)
         let to_sign = self.to_vecpak_for_signing();
-        if verify(&self.pk.0, &self.signature, &to_sign, crate::consensus::DST_ANR).is_err() {
+        if verify(&*self.pk, &self.signature, &to_sign, crate::consensus::DST_ANR).is_err() {
             return false;
         }
 
@@ -815,7 +815,7 @@ mod tests {
         let pk_b3 = blake3::hash(&pk);
         let pk_b3_f4 = B3f4::new(&pk_b3);
 
-        let pk_wrapped = PublicKey(pk);
+        let pk_wrapped = PublicKey::new(pk);
         let anr = Anr {
             ip4,
             pk: pk_wrapped,
@@ -831,7 +831,7 @@ mod tests {
             error: None,
             error_tries: 0,
             next_check: 1234567893,
-            pk_b3: Hash(pk_b3.into()),
+            pk_b3: Hash::new(pk_b3.into()),
             pk_b3_f4,
             proto_reqs: HashMap::new(),
             udp_packets: 0,
@@ -841,26 +841,26 @@ mod tests {
         registry.insert(anr.clone()).await;
 
         // test get
-        let retrieved = registry.get(&pk_wrapped.0).await.unwrap();
-        assert_eq!(retrieved.pk.0, pk);
+        let retrieved = registry.get(pk_wrapped.as_ref()).await.unwrap();
+        assert_eq!(&*retrieved.pk, &pk);
         assert!(!retrieved.handshaked, "Expected handshaked to be false after insert, got true");
 
         // test set_handshaked
-        registry.set_handshaked(&pk_wrapped.0).await;
-        let retrieved = registry.get(&pk_wrapped.0).await.unwrap();
+        registry.set_handshaked(pk_wrapped.as_ref()).await;
+        let retrieved = registry.get(pk_wrapped.as_ref()).await.unwrap();
         assert!(retrieved.handshaked, "Expected handshaked to be true after set_handshaked");
 
         // test handshaked query
         let handshaked_pks = registry.handshaked().await;
-        assert!(handshaked_pks.iter().any(|p| p.0 == pk), "pk should be in handshaked list");
+        assert!(handshaked_pks.iter().any(|p| &**p == &pk), "pk should be in handshaked list");
 
         // test is_handshaked
-        assert!(registry.is_handshaked(&pk_wrapped.0).await, "is_handshaked should return true");
+        assert!(registry.is_handshaked(pk_wrapped.as_ref()).await, "is_handshaked should return true");
 
         // test get_all
         let all = registry.get_all().await;
         assert!(!all.is_empty());
-        assert!(all.iter().any(|a| a.pk.0 == pk));
+        assert!(all.iter().any(|a| &*a.pk == &pk));
 
         // test count functions
         let total_count = registry.count().await;
@@ -870,7 +870,7 @@ mod tests {
         registry.clear_all().await;
 
         // verify our pk was removed
-        assert!(registry.get(&pk_wrapped.0).await.is_none(), "Our pk should be removed");
+        assert!(registry.get(pk_wrapped.as_ref()).await.is_none(), "Our pk should be removed");
     }
 
     #[tokio::test]
@@ -891,7 +891,7 @@ mod tests {
         let pk_b3 = blake3::hash(&pk);
         let pk_b3_f4 = B3f4::new(&pk_b3);
 
-        let pk_wrapped = PublicKey(pk);
+        let pk_wrapped = PublicKey::new(pk);
         // insert initial anr
         let anr1 = Anr {
             ip4,
@@ -908,13 +908,13 @@ mod tests {
             error: None,
             error_tries: 0,
             next_check: 1003,
-            pk_b3: Hash(pk_b3.into()),
+            pk_b3: Hash::new(pk_b3.into()),
             pk_b3_f4,
             proto_reqs: HashMap::new(),
             udp_packets: 0,
         };
         registry.insert(anr1).await;
-        registry.set_handshaked(&pk_wrapped.0).await;
+        registry.set_handshaked(pk_wrapped.as_ref()).await;
 
         // try to insert older anr (should not update)
         let anr2 = Anr {
@@ -932,7 +932,7 @@ mod tests {
             error: None,
             error_tries: 0,
             next_check: 1002,
-            pk_b3: Hash(pk_b3.into()),
+            pk_b3: Hash::new(pk_b3.into()),
             pk_b3_f4,
             proto_reqs: HashMap::new(),
             udp_packets: 0,
@@ -940,7 +940,7 @@ mod tests {
         registry.insert(anr2).await;
 
         // verify old anr was not updated
-        let retrieved = registry.get(&pk_wrapped.0).await.unwrap();
+        let retrieved = registry.get(pk_wrapped.as_ref()).await.unwrap();
         assert_eq!(retrieved.ip4, Ipv4Addr::new(192, 168, 1, 1));
         assert_eq!(retrieved.ts, 1000);
         assert!(retrieved.handshaked);
@@ -961,14 +961,14 @@ mod tests {
             error: None,
             error_tries: 0,
             next_check: 2003,
-            pk_b3: Hash(pk_b3.into()),
+            pk_b3: Hash::new(pk_b3.into()),
             pk_b3_f4,
             proto_reqs: HashMap::new(),
             udp_packets: 0,
         };
         registry.insert(anr3).await;
 
-        let retrieved = registry.get(&pk_wrapped.0).await.unwrap();
+        let retrieved = registry.get(pk_wrapped.as_ref()).await.unwrap();
         assert_eq!(retrieved.ts, 2000);
         assert_eq!(retrieved.version, Ver::new(2, 0, 0));
         assert!(retrieved.handshaked); // should be preserved
@@ -989,14 +989,14 @@ mod tests {
             error: Some("old error".to_string()),
             error_tries: 5,
             next_check: 3003,
-            pk_b3: Hash(pk_b3.into()),
+            pk_b3: Hash::new(pk_b3.into()),
             pk_b3_f4,
             proto_reqs: HashMap::new(),
             udp_packets: 0,
         };
         registry.insert(anr4).await;
 
-        let retrieved = registry.get(&pk_wrapped.0).await.unwrap();
+        let retrieved = registry.get(pk_wrapped.as_ref()).await.unwrap();
         assert_eq!(retrieved.ts, 3000);
         assert_eq!(retrieved.ip4, Ipv4Addr::new(10, 0, 0, 1));
         assert!(!retrieved.handshaked); // should be reset
@@ -1023,7 +1023,7 @@ mod tests {
 
             let anr = Anr {
                 ip4: Ipv4Addr::new(192, 168, 1, i), // different IPs
-                pk: PublicKey(pk),
+                pk: PublicKey::new(pk),
                 pop: vec![i as u8; 96],
                 port: 36969,
                 signature: vec![i as u8; 96],
@@ -1036,7 +1036,7 @@ mod tests {
                 error: None,
                 error_tries: 0,
                 next_check: 2000,
-                pk_b3: Hash(pk_b3.into()),
+                pk_b3: Hash::new(pk_b3.into()),
                 pk_b3_f4,
                 proto_reqs: HashMap::new(),
                 udp_packets: 0,
@@ -1072,10 +1072,11 @@ mod tests {
         // Generate test keys
         let sk = bls12_381::generate_sk();
         let pk = bls12_381::get_public_key(&sk).expect("get pk");
-        let pop = bls12_381::sign(&sk, &pk.0, crate::consensus::DST_POP).expect("sign pop");
+        let pop = bls12_381::sign(&sk, pk.as_ref(), crate::consensus::DST_POP).expect("sign pop");
 
         // Build ANR with vecpak signature
-        let anr = Anr::build(&sk, &pk, &pop.0, Ipv4Addr::new(127, 0, 0, 1), Ver::new(1, 2, 5)).expect("build anr");
+        let anr =
+            Anr::build(&sk, &pk, pop.as_ref(), Ipv4Addr::new(127, 0, 0, 1), Ver::new(1, 2, 5)).expect("build anr");
 
         // Verify the signature works
         assert!(anr.verify_signature(), "ANR signature should verify");
@@ -1097,9 +1098,10 @@ mod tests {
 
         let sk = bls12_381::generate_sk();
         let pk = bls12_381::get_public_key(&sk).expect("get pk");
-        let pop = bls12_381::sign(&sk, &pk.0, crate::consensus::DST_POP).expect("sign pop");
+        let pop = bls12_381::sign(&sk, pk.as_ref(), crate::consensus::DST_POP).expect("sign pop");
 
-        let anr = Anr::build(&sk, &pk, &pop.0, Ipv4Addr::new(192, 168, 1, 1), Ver::new(1, 2, 3)).expect("build anr");
+        let anr =
+            Anr::build(&sk, &pk, pop.as_ref(), Ipv4Addr::new(192, 168, 1, 1), Ver::new(1, 2, 3)).expect("build anr");
 
         // Get the data we're signing
         let to_sign = anr.to_vecpak_for_signing();

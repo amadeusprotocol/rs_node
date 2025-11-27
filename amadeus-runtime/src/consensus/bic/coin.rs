@@ -4,7 +4,7 @@ use crate::{Result, bcat, consensus};
 use amadeus_utils::{Hash, PublicKey, Signature};
 
 pub const DECIMALS: u32 = 9;
-pub const BURN_ADDRESS: PublicKey = PublicKey([0u8; 48]);
+pub const BURN_ADDRESS: PublicKey = PublicKey::new([0u8; 48]);
 
 pub fn to_flat(coins: i128) -> i128 {
     coins.saturating_mul(1_000_000_000)

@@ -2,7 +2,7 @@
 
 /// First 4 bytes of the BLAKE3 hash (for optimisation purposes)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, bincode::Encode, bincode::Decode)]
-pub struct B3f4(pub [u8; 4]);
+pub struct B3f4([u8; 4]);
 
 impl B3f4 {
     pub fn new(b3: &[u8; 32]) -> Self {
@@ -58,10 +58,10 @@ impl std::ops::Deref for B3f4 {
 
 /// BLS12-381 signature
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, bincode::Encode, bincode::Decode)]
-pub struct Signature(pub [u8; 96]);
+pub struct Signature([u8; 96]);
 
 impl Signature {
-    pub fn new(bytes: [u8; 96]) -> Self {
+    pub const fn new(bytes: [u8; 96]) -> Self {
         Signature(bytes)
     }
 }
@@ -164,10 +164,10 @@ impl std::borrow::Borrow<[u8; 96]> for Signature {
 
 /// Blake3/SHA256 32byte hash
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, bincode::Encode, bincode::Decode)]
-pub struct Hash(pub [u8; 32]);
+pub struct Hash([u8; 32]);
 
 impl Hash {
-    pub fn new(bytes: [u8; 32]) -> Self {
+    pub const fn new(bytes: [u8; 32]) -> Self {
         Hash(bytes)
     }
 }
@@ -282,10 +282,10 @@ impl std::borrow::Borrow<[u8; 32]> for Hash {
 
 /// BLS12-381 public key
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, bincode::Encode, bincode::Decode)]
-pub struct PublicKey(pub [u8; 48]);
+pub struct PublicKey([u8; 48]);
 
 impl PublicKey {
-    pub fn new(bytes: [u8; 48]) -> Self {
+    pub const fn new(bytes: [u8; 48]) -> Self {
         PublicKey(bytes)
     }
 }

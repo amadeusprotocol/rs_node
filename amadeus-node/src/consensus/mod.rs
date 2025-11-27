@@ -131,7 +131,7 @@ mod tests {
         }
 
         // verify mutations hash
-        let my_att = fabric.my_attestation_by_entryhash(&entry.hash.0)?.ok_or("no attestation")?;
+        let my_att = fabric.my_attestation_by_entryhash(&*entry.hash)?.ok_or("no attestation")?;
         assert_eq!(my_att.mutations_hash, expected_muts_hash, "mutations hash mismatch");
 
         std::fs::remove_dir_all(&temp).ok();
@@ -256,7 +256,7 @@ mod tests {
     fn create_test_config() -> crate::config::Config {
         let sk = crate::config::gen_sk();
         let pk = crate::config::get_pk(&sk);
-        let pop = crate::utils::bls12_381::sign(&sk, &pk.0, amadeus_utils::constants::DST_POP)
+        let pop = crate::utils::bls12_381::sign(&sk, pk.as_ref(), amadeus_utils::constants::DST_POP)
             .map(|sig| sig.to_vec())
             .unwrap_or_else(|_| vec![0u8; 96]);
         crate::config::Config {

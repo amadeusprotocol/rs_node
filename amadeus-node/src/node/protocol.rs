@@ -654,7 +654,7 @@ impl Protocol for GetPeerAnrs {
             use std::convert::TryInto;
             let b = t.get_binary().ok_or(Error::ParseError("hasPeersb3f4"))?;
             let b3f4: [u8; 4] = b.try_into().map_err(|_| Error::ParseError("hasPeersb3f4_length"))?;
-            has_peers_b3f4.push(B3f4(b3f4));
+            has_peers_b3f4.push(b3f4.into());
         }
 
         Ok(Self { op: Self::TYPENAME.to_string(), hasPeersb3f4: has_peers_b3f4 })
@@ -950,7 +950,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_peers_vecpak_roundtrip() {
-        let peers = GetPeerAnrs::new(vec![B3f4([192, 168, 1, 1]), B3f4([10, 0, 0, 1])]);
+        let peers = GetPeerAnrs::new(vec![[192, 168, 1, 1].into(), [10, 0, 0, 1].into()]);
 
         let bin = peers.to_vecpak_packet_bin().expect("should serialize");
         let result = parse_vecpak_bin(&bin).expect("should deserialize");
@@ -967,9 +967,9 @@ mod tests {
         // build a valid ANR for 127.0.0.1
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls_sign(&sk, &pk.0, crate::consensus::DST_POP).expect("pop");
+        let pop = bls_sign(&sk, pk.as_ref(), crate::consensus::DST_POP).expect("pop");
         let ip = Ipv4Addr::new(127, 0, 0, 1);
-        let _my_anr = anr::Anr::build(&sk, &pk, &pop.0, ip, Ver::new(1, 0, 0)).expect("anr");
+        let _my_anr = anr::Anr::build(&sk, &pk, pop.as_ref(), ip, Ver::new(1, 0, 0)).expect("anr");
 
         let _challenge_s = get_unix_secs_now();
         let msg = NewPhoneWhoDis::new();
@@ -992,9 +992,9 @@ mod tests {
 
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls_sign(&sk, &pk.0, crate::consensus::DST_POP).expect("pop");
+        let pop = bls_sign(&sk, pk.as_ref(), crate::consensus::DST_POP).expect("pop");
         let ip = Ipv4Addr::new(127, 0, 0, 1);
-        let _my_anr = anr::Anr::build(&sk, &pk, &pop.0, ip, Ver::new(1, 0, 0)).expect("anr");
+        let _my_anr = anr::Anr::build(&sk, &pk, pop.as_ref(), ip, Ver::new(1, 0, 0)).expect("anr");
         let _challenge_s = get_unix_secs_now();
         let _msg = NewPhoneWhoDis::new();
 
@@ -1009,14 +1009,14 @@ mod tests {
             height: 1,
             slot: 1,
             prev_slot: 0,
-            prev_hash: Hash([0u8; 32]),
-            dr: Hash([1u8; 32]),
-            vr: Signature([2u8; 96]),
-            signer: PublicKey([3u8; 48]),
-            txs_hash: Hash([4u8; 32]),
+            prev_hash: Hash::new([0u8; 32]),
+            dr: Hash::new([1u8; 32]),
+            vr: Signature::new([2u8; 96]),
+            signer: PublicKey::new([3u8; 48]),
+            txs_hash: Hash::new([4u8; 32]),
         };
 
-        EntrySummary { header, signature: Signature([5u8; 96]), mask: None }
+        EntrySummary { header, signature: Signature::new([5u8; 96]), mask: None }
     }
 
     #[tokio::test]
@@ -1043,7 +1043,7 @@ mod tests {
 
         let sk = bls::generate_sk();
         let pk = bls::get_public_key(&sk).expect("pk");
-        let pop = bls_sign(&sk, &pk.0, crate::consensus::DST_POP).expect("pop");
+        let pop = bls_sign(&sk, pk.as_ref(), crate::consensus::DST_POP).expect("pop");
 
         let config = Config {
             work_folder: "/tmp/test_protocol_send_to".to_string(),
@@ -1140,34 +1140,34 @@ mod tests {
 
         // Test CatchupReply with actual structs
         let entry1 = Entry {
-            hash: Hash([1; 32]),
+            hash: Hash::new([1; 32]),
             header: EntryHeader {
                 height: 100,
                 slot: 1,
                 prev_slot: 0,
-                prev_hash: Hash([0; 32]),
-                dr: Hash([2; 32]),
-                vr: Signature([0; 96]),
-                signer: PublicKey([3; 48]),
-                txs_hash: Hash([4; 32]),
+                prev_hash: Hash::new([0; 32]),
+                dr: Hash::new([2; 32]),
+                vr: Signature::new([0; 96]),
+                signer: PublicKey::new([3; 48]),
+                txs_hash: Hash::new([4; 32]),
             },
-            signature: Signature([5; 96]),
+            signature: Signature::new([5; 96]),
             mask: None,
             txs: vec![vec![1, 2, 3, 4]],
         };
 
         let attestation1 = Attestation {
-            entry_hash: Hash([6; 32]),
-            mutations_hash: Hash([7; 32]),
-            signer: PublicKey([8; 48]),
-            signature: Signature([9; 96]),
+            entry_hash: Hash::new([6; 32]),
+            mutations_hash: Hash::new([7; 32]),
+            signer: PublicKey::new([8; 48]),
+            signature: Signature::new([9; 96]),
         };
 
         let consensus1 = Consensus {
-            entry_hash: Hash([10; 32]),
-            mutations_hash: Hash([11; 32]),
+            entry_hash: Hash::new([10; 32]),
+            mutations_hash: Hash::new([11; 32]),
             mask: bitvec![u8, Msb0; 1, 0, 1],
-            agg_sig: Signature([12; 96]),
+            agg_sig: Signature::new([12; 96]),
         };
 
         let trie1 = CatchupHeightReply {
@@ -1248,9 +1248,9 @@ mod tests {
         // create a test ANR
         let sk = bls12_381::generate_sk();
         let pk = bls12_381::get_public_key(&sk).expect("pk");
-        let pop = bls12_381::sign(&sk, &pk.0, crate::consensus::DST_POP).expect("pop");
+        let pop = bls12_381::sign(&sk, pk.as_ref(), crate::consensus::DST_POP).expect("pop");
 
-        let anr = Anr::build(&sk, &pk, &pop.0, Ipv4Addr::new(192, 168, 1, 1), Ver::new(1, 2, 5)).expect("anr");
+        let anr = Anr::build(&sk, &pk, pop.as_ref(), Ipv4Addr::new(192, 168, 1, 1), Ver::new(1, 2, 5)).expect("anr");
 
         let original = NewPhoneWhoDisReply::new(anr);
         let version = Ver::new(1, 2, 3);
@@ -1265,7 +1265,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_peer_anrs_roundtrip_via_vecpak() {
-        let original = GetPeerAnrs::new(vec![B3f4([1, 2, 3, 4]), B3f4([5, 6, 7, 8])]);
+        let original = GetPeerAnrs::new(vec![[1, 2, 3, 4].into(), [5, 6, 7, 8].into()]);
         let version = Ver::new(1, 2, 3);
         let payload = original.to_bin(version).expect("should encode");
 

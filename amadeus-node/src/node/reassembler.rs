@@ -501,7 +501,7 @@ mod tests {
         let version = Ver::new(1, 1, 8);
 
         // Alice encrypts a message to Bob
-        let encrypted_messages = Message::encrypt(&pk_alice, &shared_secret_alice.0, test_message, version)
+        let encrypted_messages = Message::encrypt(&pk_alice, &*shared_secret_alice, test_message, version)
             .expect("encryption should succeed");
 
         assert_eq!(encrypted_messages.len(), 1, "Should create single message for small payload");
@@ -509,14 +509,14 @@ mod tests {
 
         // Verify message structure
         assert_eq!(encrypted_msg.version, version);
-        assert_eq!(encrypted_msg.pk.0, pk_alice.0);
+        assert_eq!(*encrypted_msg.pk, *pk_alice);
         assert_eq!(encrypted_msg.shard_index, 0);
         assert_eq!(encrypted_msg.shard_total, 1);
         // original_size is the encrypted payload size (nonce + tag + ciphertext), not plaintext size
         assert_eq!(encrypted_msg.original_size, encrypted_msg.payload.len() as u32);
 
         // Bob decrypts the message
-        let decrypted = encrypted_msg.decrypt(&shared_secret_bob.0).expect("decryption should succeed");
+        let decrypted = encrypted_msg.decrypt(&*shared_secret_bob).expect("decryption should succeed");
 
         assert_eq!(decrypted, test_message, "Decrypted message should match original");
 
@@ -534,7 +534,7 @@ mod tests {
 
         // Bob can still decrypt the deserialized message
         let decrypted2 =
-            deserialized.decrypt(&shared_secret_bob.0).expect("decryption of deserialized message should succeed");
+            deserialized.decrypt(&*shared_secret_bob).expect("decryption of deserialized message should succeed");
         assert_eq!(decrypted2, test_message, "Decrypted deserialized message should match original");
     }
 
@@ -555,11 +555,11 @@ mod tests {
         let test_message = b"64-byte key compatibility test message";
         let version = Ver::new(1, 1, 7);
 
-        let encrypted_messages = Message::encrypt(&pk_alice, &shared_secret_alice.0, test_message, version)
+        let encrypted_messages = Message::encrypt(&pk_alice, &*shared_secret_alice, test_message, version)
             .expect("64-byte key encryption should succeed");
 
         let decrypted =
-            encrypted_messages[0].decrypt(&shared_secret_bob.0).expect("64-byte key decryption should succeed");
+            encrypted_messages[0].decrypt(&*shared_secret_bob).expect("64-byte key decryption should succeed");
 
         assert_eq!(decrypted, test_message, "64-byte key messages should round-trip correctly");
     }
@@ -577,7 +577,7 @@ mod tests {
         let version = Ver::new(1, 1, 8);
 
         let encrypted_messages =
-            Message::encrypt(&pk_alice, &shared_secret.0, test_message, version).expect("encryption should succeed");
+            Message::encrypt(&pk_alice, &*shared_secret, test_message, version).expect("encryption should succeed");
 
         let reassembler = ReedSolomonReassembler::new();
 
@@ -686,7 +686,7 @@ mod tests {
         let computed_shared_secret =
             bls12_381::get_shared_secret(&dst_pk, &src_sk).expect("Should compute shared secret from src to dst");
         assert_eq!(
-            computed_shared_secret.0, expected_shared_secret,
+            *computed_shared_secret, expected_shared_secret,
             "Computed shared secret should match expected value"
         );
 
@@ -694,7 +694,7 @@ mod tests {
         let symmetric_shared_secret =
             bls12_381::get_shared_secret(&src_pk, &dst_sk).expect("Should compute shared secret from dst to src");
         assert_eq!(
-            symmetric_shared_secret.0, expected_shared_secret,
+            *symmetric_shared_secret, expected_shared_secret,
             "Symmetric shared secret should match expected value"
         );
 
@@ -704,13 +704,13 @@ mod tests {
 
         // Verify message structure matches expected format
         assert_eq!(encrypted_msg.version, Ver::new(1, 1, 8), "Version should be 1.1.8");
-        assert_eq!(encrypted_msg.pk.0, src_pk, "Sender public key should match src_pk");
+        assert_eq!(*encrypted_msg.pk, src_pk, "Sender public key should match src_pk");
         assert_eq!(encrypted_msg.shard_index, 0, "Should be single shard (index 0)");
         assert_eq!(encrypted_msg.shard_total, 1, "Should be single shard (total 1)");
         assert_eq!(encrypted_msg.original_size, 29, "Original plaintext size should be 37");
 
         // Test 4: Decrypt the message using dst's secret key
-        let decrypted = encrypted_msg.decrypt(&computed_shared_secret.0).expect("Should decrypt message successfully");
+        let decrypted = encrypted_msg.decrypt(&*computed_shared_secret).expect("Should decrypt message successfully");
 
         // Verify decrypted content
         assert_eq!(decrypted.len(), 29, "Decrypted length should match original_size");
