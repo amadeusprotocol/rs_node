@@ -419,7 +419,9 @@ impl Context {
         }
 
         for (chunk, peer_ip) in chunks.into_iter().zip(shuffled_peers.into_iter().cycle()) {
-            Catchup { heights: chunk }.send_to_with_metrics(self, peer_ip).await?;
+            Catchup { op: Catchup::TYPENAME.to_string(), height_flags: chunk }
+                .send_to_with_metrics(self, peer_ip)
+                .await?;
         }
         Ok(())
     }

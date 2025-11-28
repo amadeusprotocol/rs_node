@@ -1,8 +1,9 @@
 use crate::Context;
 use crate::consensus::consensus::{self, Consensus};
 use crate::consensus::doms::attestation::EventAttestation;
-use crate::consensus::doms::entry::{Entry, EntryProto};
+use crate::consensus::doms::entry::{Entry, EventEntry};
 use crate::consensus::doms::sol::Solution;
+use crate::consensus::doms::tx::TxU;
 use crate::consensus::doms::{Attestation, EntrySummary};
 use crate::consensus::fabric::Fabric;
 use crate::node::anr::Anr;
@@ -139,27 +140,28 @@ pub fn parse_vecpak_bin(bin: &[u8]) -> Result<Box<dyn Protocol>, Error> {
     let proto: Box<dyn Protocol> = match op_name.as_str() {
         Ping::TYPENAME => Box::new(vecpak::from_slice::<Ping>(bin)?),
         PingReply::TYPENAME => Box::new(vecpak::from_slice::<PingReply>(bin)?),
-        EntryProto::TYPENAME => Box::new(vecpak::from_slice::<EntryProto>(bin)?),
-        EventTip::TYPENAME => Box::new(EventTip::from_vecpak_map_validated(map)?),
-        EventAttestation::TYPENAME => Box::new(EventAttestation::from_vecpak_map_validated(map)?),
+        EventEntry::TYPENAME => Box::new(vecpak::from_slice::<EventEntry>(bin)?),
+        EventTip::TYPENAME => Box::new(vecpak::from_slice::<EventTip>(bin)?),
+        EventAttestation::TYPENAME => Box::new(vecpak::from_slice::<EventAttestation>(bin)?),
         Solution::TYPENAME => Box::new(Solution::from_vecpak_map_validated(map)?),
-        EventTx::TYPENAME => Box::new(EventTx::from_vecpak_map_validated(map)?),
+        EventTx::TYPENAME => Box::new(vecpak::from_slice::<EventTx>(bin)?),
         GetPeerAnrs::TYPENAME => Box::new(vecpak::from_slice::<GetPeerAnrs>(bin)?),
         GetPeerAnrsReply::TYPENAME => Box::new(vecpak::from_slice::<GetPeerAnrsReply>(bin)?),
         NewPhoneWhoDis::TYPENAME => Box::new(vecpak::from_slice::<NewPhoneWhoDis>(bin)?),
         NewPhoneWhoDisReply::TYPENAME => Box::new(vecpak::from_slice::<NewPhoneWhoDisReply>(bin)?),
         SpecialBusiness::TYPENAME => Box::new(SpecialBusiness::from_vecpak_map_validated(map)?),
         SpecialBusinessReply::TYPENAME => Box::new(SpecialBusinessReply::from_vecpak_map_validated(map)?),
-        Catchup::TYPENAME => Box::new(Catchup::from_vecpak_map_validated(map)?),
-        CatchupReply::TYPENAME => Box::new(CatchupReply::from_vecpak_map_validated(map)?),
+        Catchup::TYPENAME => Box::new(vecpak::from_slice::<Catchup>(bin)?),
+        CatchupReply::TYPENAME => Box::new(vecpak::from_slice::<CatchupReply>(bin)?),
         _ => return Err(Error::ParseError("op")),
     };
 
     Ok(proto)
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct EventTip {
+    pub op: String,
     pub temporal: EntrySummary,
     pub rooted: EntrySummary,
 }
@@ -172,22 +174,12 @@ impl Typename for EventTip {
 
 #[async_trait::async_trait]
 impl Protocol for EventTip {
-    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
-        let temporal_term = map.get_proplist_map(b"temporal").ok_or(Error::ParseError("temporal"))?;
-        let rooted_term = map.get_proplist_map(b"rooted").ok_or(Error::ParseError("rooted"))?;
-        let temporal = EntrySummary::from_vecpak_map(&temporal_term)?;
-        let rooted = EntrySummary::from_vecpak_map(&rooted_term)?;
-
-        Ok(Self { temporal, rooted })
+    fn from_vecpak_map_validated(_map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        Err(Error::ParseError("use vecpak::from_slice"))
     }
+
     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, Error> {
-        use amadeus_utils::vecpak::encode;
-        let pairs = vec![
-            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
-            (vecpak::Term::Binary(b"temporal".to_vec()), self.temporal.to_vecpak_term()),
-            (vecpak::Term::Binary(b"rooted".to_vec()), self.rooted.to_vecpak_term()),
-        ];
-        Ok(encode(vecpak::Term::PropList(pairs)))
+        Ok(vecpak::to_vec(&self)?)
     }
 
     #[instrument(skip(self, ctx), fields(src = %src), name = "EventTip::handle")]
@@ -213,7 +205,7 @@ impl EventTip {
     pub const TYPENAME: &'static str = "event_tip";
 
     pub fn new(temporal: EntrySummary, rooted: EntrySummary) -> Self {
-        Self { temporal, rooted }
+        Self { op: Self::TYPENAME.to_string(), temporal, rooted }
     }
 
     pub fn from_current_tips() -> Result<Self, Error> {
@@ -238,7 +230,7 @@ impl EventTip {
             None => EntrySummary::empty(),
         };
 
-        Ok(Self { temporal: temporal_summary, rooted: rooted_summary })
+        Ok(Self { op: Self::TYPENAME.to_string(), temporal: temporal_summary, rooted: rooted_summary })
     }
 }
 
@@ -256,19 +248,23 @@ pub struct PingReply {
     pub seen_time: u64,
 }
 
-/// Requests information about selected heights (<1000 heights per request)
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Catchup {
-    pub heights: Vec<CatchupHeight>,
+    pub op: String,
+    pub height_flags: Vec<CatchupHeight>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CatchupHeight {
     pub height: u64,
-    pub c: Option<bool>,              // consensus flag (matches Elixir)
-    pub e: Option<bool>,              // entries flag (matches Elixir)
-    pub a: Option<bool>,              // attestations flag (matches Elixir)
-    pub hashes: Option<Vec<Vec<u8>>>, // skip these entry hashes (matches Elixir)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub c: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub a: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hashes: Option<Vec<Vec<u8>>>,
 }
 
 impl Catchup {
@@ -283,82 +279,33 @@ impl Typename for Catchup {
 
 #[async_trait::async_trait]
 impl Protocol for Catchup {
-    fn from_vecpak_map_validated(map: PropListMap) -> Result<Self, Error> {
-        let height_flags_term = map.get_list(b"height_flags").ok_or(Error::ParseError("height_flags"))?;
-        let mut height_flags = Vec::new();
-
-        for item in height_flags_term {
-            if let Some(flag_map) = item.get_proplist_map() {
-                let height = flag_map.get_integer::<u64>(b"height").ok_or(Error::ParseError("height"))?;
-
-                let c = flag_map.get_string(b"c").map(|s| s == "true");
-                let e = flag_map.get_string(b"e").map(|s| s == "true");
-                let a = flag_map.get_string(b"a").map(|s| s == "true");
-
-                let hashes = flag_map.get_list(b"hashes").map(|hashes_list| {
-                    hashes_list.iter().filter_map(|h| h.get_binary().map(|bytes| bytes.to_vec())).collect()
-                });
-
-                height_flags.push(CatchupHeight { height, c, e, a, hashes });
-            }
-        }
-
-        Ok(Self { heights: height_flags })
+    fn from_vecpak_map_validated(_map: PropListMap) -> Result<Self, Error> {
+        Err(Error::ParseError("use vecpak::from_slice"))
     }
 
     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, Error> {
-        use amadeus_utils::vecpak::encode;
-
-        let height_flags_list: Vec<vecpak::Term> = self
-            .heights
-            .iter()
-            .map(|flag| {
-                let mut flag_pairs = Vec::new();
-                flag_pairs.push((vecpak::Term::Binary(b"height".to_vec()), vecpak::Term::VarInt(flag.height as i128)));
-
-                if let Some(true) = flag.c {
-                    flag_pairs.push((vecpak::Term::Binary(b"c".to_vec()), vecpak::Term::Binary(b"true".to_vec())));
-                }
-                if let Some(true) = flag.e {
-                    flag_pairs.push((vecpak::Term::Binary(b"e".to_vec()), vecpak::Term::Binary(b"true".to_vec())));
-                }
-                if let Some(true) = flag.a {
-                    flag_pairs.push((vecpak::Term::Binary(b"a".to_vec()), vecpak::Term::Binary(b"true".to_vec())));
-                }
-                if let Some(ref hashes) = flag.hashes {
-                    if !hashes.is_empty() {
-                        let hashes_terms: Vec<vecpak::Term> =
-                            hashes.iter().map(|h| vecpak::Term::Binary(h.clone())).collect();
-                        flag_pairs.push((vecpak::Term::Binary(b"hashes".to_vec()), vecpak::Term::List(hashes_terms)));
-                    }
-                }
-                vecpak::Term::PropList(flag_pairs)
-            })
-            .collect();
-
-        let pairs = vec![
-            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
-            (vecpak::Term::Binary(b"height_flags".to_vec()), vecpak::Term::List(height_flags_list)),
-        ];
-        Ok(encode(vecpak::Term::PropList(pairs)))
+        Ok(vecpak::to_vec(&self)?)
     }
 
     async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
-        // TODO: implement catchup handling logic
         Ok(vec![Instruction::Noop { why: "catchup received".to_string() }])
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct CatchupReply {
-    pub heights: Vec<CatchupHeightReply>,
+    pub op: String,
+    pub tries: Vec<CatchupHeightReply>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CatchupHeightReply {
     pub height: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entries: Option<Vec<Entry>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestations: Option<Vec<Attestation>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consensuses: Option<Vec<Consensus>>,
 }
 
@@ -374,84 +321,19 @@ impl Typename for CatchupReply {
 
 #[async_trait::async_trait]
 impl Protocol for CatchupReply {
-    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
-        let tries_term = map.get_list(b"tries").ok_or(Error::ParseError("tries"))?;
-        let mut tries = Vec::new();
-
-        for item in tries_term.iter() {
-            if let Some(trie_map) = item.get_proplist_map() {
-                let height = trie_map.get_integer::<u64>(b"height").ok_or(Error::ParseError("height"))?;
-
-                let entries = trie_map.get_list(b"entries").and_then(|list| {
-                    let parsed: Vec<Entry> =
-                        list.iter().filter_map(|term| Entry::from_vecpak_map(&term.get_proplist_map()?).ok()).collect();
-                    if parsed.is_empty() { None } else { Some(parsed) }
-                });
-
-                let attestations = trie_map.get_list(b"attestations").and_then(|list| {
-                    let parsed: Vec<Attestation> = list
-                        .iter()
-                        .filter_map(|term| Attestation::from_vecpak_map(&term.get_proplist_map()?).ok())
-                        .collect();
-                    if parsed.is_empty() { None } else { Some(parsed) }
-                });
-
-                let consensuses = trie_map.get_list(b"consensuses").and_then(|list| {
-                    let parsed: Vec<Consensus> = list
-                        .iter()
-                        .filter_map(|term| Consensus::from_vecpak_map(&term.get_proplist_map()?).ok())
-                        .collect();
-                    if parsed.is_empty() { None } else { Some(parsed) }
-                });
-
-                tries.push(CatchupHeightReply { height, entries, attestations, consensuses });
-            }
-        }
-
-        Ok(Self { heights: tries })
+    fn from_vecpak_map_validated(_map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        Err(Error::ParseError("use vecpak::from_slice"))
     }
 
     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, Error> {
-        use amadeus_utils::vecpak::{self, encode};
-
-        let tries_list: Vec<vecpak::Term> = self
-            .heights
-            .iter()
-            .map(|trie| {
-                let mut trie_pairs = Vec::new();
-                trie_pairs.push((vecpak::Term::Binary(b"height".to_vec()), vecpak::Term::VarInt(trie.height as i128)));
-
-                if let Some(ref entries) = trie.entries {
-                    let term = entries.iter().map(|e| e.to_vecpak_term()).collect::<Vec<_>>();
-                    trie_pairs.push((vecpak::Term::Binary(b"entries".to_vec()), vecpak::Term::List(term)));
-                }
-
-                if let Some(ref attestations) = trie.attestations {
-                    let term = attestations.iter().map(|e| e.to_vecpak_term()).collect::<Vec<_>>();
-                    trie_pairs.push((vecpak::Term::Binary(b"attestations".to_vec()), vecpak::Term::List(term)));
-                }
-
-                if let Some(ref consensuses) = trie.consensuses {
-                    let term = consensuses.iter().map(|e| e.to_vecpak_term()).collect::<Vec<_>>();
-                    trie_pairs.push((vecpak::Term::Binary(b"consensuses".to_vec()), vecpak::Term::List(term)));
-                }
-
-                vecpak::Term::PropList(trie_pairs)
-            })
-            .collect();
-
-        let pairs = vec![
-            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
-            (vecpak::Term::Binary(b"tries".to_vec()), vecpak::Term::List(tries_list)),
-        ];
-        Ok(encode(vecpak::Term::PropList(pairs)))
+        Ok(vecpak::to_vec(&self)?)
     }
 
     async fn handle(&self, ctx: &Context, _src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
         let instructions = Vec::new();
         let rooted_tip_height = ctx.fabric.get_rooted_height()?.unwrap_or(0);
 
-        for trie in &self.heights {
+        for trie in &self.tries {
             if let Some(ref entries) = trie.entries {
                 for entry in entries {
                     if entry.header.height >= rooted_tip_height {
@@ -471,9 +353,7 @@ impl Protocol for CatchupReply {
             }
 
             if let Some(ref attestations) = trie.attestations {
-                for _attestation in attestations {
-                    // TODO: implement attestation validation and insertion
-                }
+                for _attestation in attestations {}
             }
 
             if let Some(ref consensuses) = trie.consensuses {
@@ -569,9 +449,11 @@ impl PingReply {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct EventTx {
-    pub valid_txs: Vec<Vec<u8>>,
+    pub op: String,
+    #[serde(rename = "txus")]
+    pub txs: Vec<TxU>,
 }
 
 impl Typename for EventTx {
@@ -582,24 +464,15 @@ impl Typename for EventTx {
 
 #[async_trait::async_trait]
 impl Protocol for EventTx {
-    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
-        let txs_list = map.get_list(b"txus").ok_or(Error::ParseError("txus"))?;
-        let valid_txs = EventTx::get_valid_txs_from_list(txs_list)?;
-        Ok(Self { valid_txs })
+    fn from_vecpak_map_validated(_map: amadeus_utils::vecpak::PropListMap) -> Result<Self, Error> {
+        Err(Error::ParseError("use vecpak::from_slice"))
     }
 
     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, Error> {
-        use amadeus_utils::vecpak::encode;
-        let tx_terms: Vec<vecpak::Term> = self.valid_txs.iter().map(|tx| vecpak::Term::Binary(tx.clone())).collect();
-        let pairs = vec![
-            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
-            (vecpak::Term::Binary(b"txus".to_vec()), vecpak::Term::List(tx_terms)),
-        ];
-        Ok(encode(vecpak::Term::PropList(pairs)))
+        Ok(vecpak::to_vec(&self)?)
     }
 
     async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
-        // TODO: update ETS-like tx pool with valid_txs
         Ok(vec![Instruction::Noop { why: "event_tx handling not implemented".to_string() }])
     }
 }
@@ -607,27 +480,8 @@ impl Protocol for EventTx {
 impl EventTx {
     pub const TYPENAME: &'static str = "event_tx";
 
-    fn get_valid_txs_from_list(txs_list: &[amadeus_utils::vecpak::Term]) -> Result<Vec<Vec<u8>>, Error> {
-        use amadeus_utils::vecpak::Term as VTerm;
-
-        let mut good: Vec<Vec<u8>> = Vec::with_capacity(txs_list.len());
-
-        for t in txs_list {
-            // each item must be a binary (a packed transaction)
-            let bin = if let VTerm::Binary(b) = t {
-                b.as_slice()
-            } else {
-                // skip non-binary entries silently
-                continue;
-            };
-
-            // validate basic tx rules, special-meeting context is false in gossip path
-            if crate::consensus::doms::tx::validate(bin, false).is_ok() {
-                good.push(bin.to_vec());
-            }
-        }
-
-        Ok(good)
+    pub fn new(txs: Vec<TxU>) -> Self {
+        Self { op: Self::TYPENAME.to_string(), txs }
     }
 }
 
@@ -907,7 +761,6 @@ mod tests {
     use crate::consensus::doms::entry::{EntryHeader, EntrySummary};
     use crate::utils::bls12_381::sign as bls_sign;
     use amadeus_utils::version::Ver;
-    use bitvec::prelude::{Msb0, bitvec};
 
     #[tokio::test]
     async fn test_ping_vecpak_roundtrip() {
@@ -939,7 +792,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_txpool_vecpak_roundtrip() {
-        let event_tx = EventTx { valid_txs: vec![vec![1, 2, 3], vec![4, 5, 6]] };
+        use crate::consensus::doms::tx::{Tx, TxAction, TxU};
+
+        let tx1 = TxU {
+            hash: Hash::new([1u8; 32]),
+            signature: Signature::new([2u8; 96]),
+            tx: Tx {
+                action: TxAction {
+                    args: vec![vec![1, 2, 3]],
+                    contract: "Test".to_string(),
+                    function: "test".to_string(),
+                    op: "call".to_string(),
+                    attached_symbol: None,
+                    attached_amount: None,
+                },
+                nonce: 12345,
+                signer: PublicKey::new([3u8; 48]),
+            },
+        };
+
+        let event_tx = EventTx::new(vec![tx1]);
 
         let bin = event_tx.to_vecpak_packet_bin().expect("should serialize");
         let result = parse_vecpak_bin(&bin).expect("should deserialize");
@@ -1131,7 +1003,7 @@ mod tests {
             hashes: Some(vec![vec![1, 2, 3], vec![4, 5, 6]]),
         };
 
-        let catchup = Catchup { heights: vec![height_flag] };
+        let catchup = Catchup { op: Catchup::TYPENAME.to_string(), height_flags: vec![height_flag] };
 
         // Test Catchup serialization
         let catchup_bin = catchup.to_vecpak_packet_bin().expect("should serialize catchup");
@@ -1183,8 +1055,12 @@ mod tests {
         let consensus1 = Consensus {
             entry_hash: Hash::new([10; 32]),
             mutations_hash: Hash::new([11; 32]),
-            mask: bitvec![u8, Msb0; 1, 0, 1],
-            agg_sig: Signature::new([12; 96]),
+            aggsig: crate::consensus::consensus::Aggsig {
+                mask: vec![0b10100000], // equivalent to bitvec![1, 0, 1]
+                aggsig: [12; 96].to_vec(),
+                mask_size: 3,
+                mask_set_size: 2,
+            },
         };
 
         let trie1 = CatchupHeightReply {
@@ -1195,7 +1071,7 @@ mod tests {
         };
         let trie2 =
             CatchupHeightReply { height: 101, entries: None, attestations: None, consensuses: Some(vec![consensus1]) };
-        let catchup_reply = CatchupReply { heights: vec![trie1, trie2] };
+        let catchup_reply = CatchupReply { op: CatchupReply::TYPENAME.to_string(), tries: vec![trie1, trie2] };
 
         // Test CatchupReply serialization
         let reply_bin = catchup_reply.to_vecpak_packet_bin().expect("should serialize catchup_reply");
@@ -1295,10 +1171,43 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_tx_roundtrip_via_vecpak() {
-        // create simple test transaction
-        let tx1 = vec![1u8, 2, 3, 4, 5];
-        let tx2 = vec![6u8, 7, 8, 9, 10];
-        let original = EventTx { valid_txs: vec![tx1, tx2] };
+        use crate::consensus::doms::tx::{Tx, TxAction, TxU};
+
+        // create simple test transactions
+        let tx1 = TxU {
+            hash: Hash::new([1u8; 32]),
+            signature: Signature::new([2u8; 96]),
+            tx: Tx {
+                action: TxAction {
+                    args: vec![vec![1, 2, 3]],
+                    contract: "Test".to_string(),
+                    function: "test".to_string(),
+                    op: "call".to_string(),
+                    attached_symbol: None,
+                    attached_amount: None,
+                },
+                nonce: 12345,
+                signer: PublicKey::new([3u8; 48]),
+            },
+        };
+        let tx2 = TxU {
+            hash: Hash::new([4u8; 32]),
+            signature: Signature::new([5u8; 96]),
+            tx: Tx {
+                action: TxAction {
+                    args: vec![vec![4, 5, 6]],
+                    contract: "Test2".to_string(),
+                    function: "test2".to_string(),
+                    op: "call".to_string(),
+                    attached_symbol: None,
+                    attached_amount: None,
+                },
+                nonce: 67890,
+                signer: PublicKey::new([6u8; 48]),
+            },
+        };
+
+        let original = EventTx::new(vec![tx1, tx2]);
         let version = Ver::new(1, 2, 3);
         let payload = original.to_bin(version).expect("should encode");
 
@@ -1320,5 +1229,44 @@ mod tests {
         let version = Ver::new(1, 2, 3);
         let re_encoded = parsed.to_bin(version).expect("should re-encode");
         assert_eq!(packet, re_encoded, "re-encoded must match original from Elixir");
+    }
+
+    #[tokio::test]
+    async fn test_parse_event_tx_with_structured_txu() {
+        // Real packet that previously failed with "invalid type tag" error
+        // This is an event_tx containing a structured TxU (map) instead of raw bytes
+        let packet = hex::decode("0701020501026f700501086576656e745f74780501047478757306010107010305010274780701030501056e6f6e63650308187c02e8527c7cbf050106616374696f6e0701040501026f7005010463616c6c05010461726773060101050204f09e01000060f7e2fb1fbd6e6425d1fdb53a172e548a3369d041508952e0c27ee7bd548963904796524edd0037f341613e24a7bf2c1992044ea66cbc8d8f1ff91b3d61705de2780321cc74bb12c693913edf938ca4b6348ad0d56c1fb45c5d0c573ccc09771dcf89434cba91a977f5d8e7bcddd60220ca849cbf3babb55d515b14e8d248a40f6a515f91174b41fe9296f0cf027bc1d3cb1d8b2e4c5bfee88c3f0c914678ad45ac8fbf59b9cb0f535861ef54c474ad904796524edd0037f341613e24a7bf2c1992044ea66cbc8d8f1ff91b3d61705de2780321cc74bb12c693913edf938ca48566b77b83ee09c66333f2a34deba8ffa9f1aeff6205baffd891e5ffdb1fa8ff4190a6ffe96ef1ffd9cfc9ffb1bdb6ffe72ee5ff41e3eeffad23daff3c69b4ffb042cbff3d3e0d005e3696ffa7119dffd030bcffaaceaeff6f25caff76d5a3ffe40c9bff7291e4ff14fcd0ff2fe5cfffc2b7f5ffc869d2ffce69d6ffa7a0dbff24cfc7ff71ec09008862a3ff4b237dffe554d9ff9e84baff0adcd7ff8d9f9fff48e1b7ffce29daff0236a7ffad19bbffb065fbffe7cac0ffd941f2ff9e1d96ffad5ec7ffd4111300c0078bffd82db8ff8353bcff01dfd8fff139acff79c5afffa4bcb2ff617aeaffbaa4caff3a2ed4ff04730b00e66dc6ff6946cdff29e4abffac5ba3fff9571a008b19aeffde77aaff0987bcffe226b1ffb11cbbff88d1a6ff8ab1d6ff9b3ed8ff8460cdff6841e7ff9d16dbffebc1d3ffb76cfdffffd9c3ff9329c5fffa46f5ff649c99ff78fab1ffcf64bdffc65fc1ff7316c6ffed4eb2fff3a8a1ff8ec9cfff95d5d4ff8b66c0ffc1aff5ff889ac2ff87f3f5ff49fab0ff2a3db6ffebaf130008d88bffc1ab91ff5d00cdffd864a0ff06edceff66decbff8181c6ffda9dbcff2826ccffbcb2c0ff27c5e0ff294edaff5b8bd9ff07c998ff4571b6ff9fc8160069eeb5ffad93b2ff80a7bbffbae9c2ff65ecbdffa591a4ff2683c8ffe9c5d8ffc969b6ff1ba6c5ff19400e00830bc9ff5857bcff0cb89bffe8a4b4ffdeefffff547badfffd76b1ffeed4b0ffbc44cbff0c3ebfff0cb9b5ff08c9a8ff97b4caffc11de3ff2173a7fff744eaffdbd1f1ff3ab3dfffaefc96ffeca3abff8aba2100f8e084ff90cabeffdb0bbaffca18d1ffaff6c0ff45a38dffe05aaeff3db7cfff87c9bcffbabdc0ffb81be9ffeb1bcdff7741d5ff6ef9b2ffba33b6ff5b1a02006593a9ff4398b4ff666bb3ffe42fcbff7fceb9ffa179c3ffaaadd4ffa48efbff0578c6ffe541c9ff43dff8ff257498ff0d88dbff49758affb3c7c1ff8f7df9ff1ff587ff0842d6ffe954b9fff39fc8ffbd55a3ff2ea1a2ffa28bc5ff874bdcffa06ddcff9b74b6ff1976e6ffa2a8b8ff1d27d9ff31ffc3ff8603bbff760b270029349dff40c8a4ff27b8c5ff97faa1ff7087c9ff66cfa3ff46bdb2ffd404e8ff387dc5ff0512d7ffe955f5ffcd6bc6ffc777d9fff0439aff0034b0ffc1ad5100f9b4adff79379eff7e5eb9ff444096ffb8f0d2ff6f4cc5ffe4cbd7ff2abdf1ff8ccec0ff152cc7ffa7ccf4fff186ceff7a99d3ff608e94ffc9dfd4ff1a9b1c00a5f4bfff21dda5ff21b5ceff0d1ba6ff6388edff336fa7ffdd29b8ff41a8d5ffaccdc5ffbfdcc3ff64cff1ffdad7c2ff79afdfff699c9dfff1b2d1ff0014460022f399ffc803a5ff1a1396ff7df5ceff95eec6ff182eadff834ab1ff8de1d6ff8af2c1ffee38c9ff4a90eaff1b29c0ff6390cbff724aa8ffa417adffae762900ca90a2ff050108636f6e747261637405010545706f636805010866756e6374696f6e05010a7375626d69745f736f6c0501067369676e657205013098b033f3c88d92c3ed617e06b87ff452bebc505fcdcc094f5f673433817825801ba0eaa8319f05804ed4728c9809d3380501046861736805012092a51d6e44c6e8b662d2870c4a8a9efd99f026de98c6a3a67f1652a79fa2d6b20501097369676e6174757265050160ad01c361a5845bf5772540c3719bd7088a742c4905271bb89edbd3808accf0e2a2186d300370d42f7da17cddab2ddb310517521e67a74438d25cf549b46e51d385f32cafe2b8e8a4f3c71dd384f7456f41c0d83556205890ae5522cd2a18c45f").unwrap();
+
+        let parsed = parse_vecpak_bin(&packet).expect("should parse event_tx with structured TxU");
+        assert_eq!(parsed.typename(), "event_tx");
+    }
+
+    #[tokio::test]
+    async fn test_parse_catchup_reply_from_elixir() {
+        // Real CatchupReply packet from Elixir node
+        // Tests deserialization of Entry, Consensus, and Attestation with Elixir's nested aggsig format
+        // Load from file if it exists, otherwise skip
+        let paths = ["packet", "../packet", "../../packet"];
+        let packet = match paths.iter().find_map(|p| std::fs::read_to_string(p).ok()) {
+            Some(hex_str) => match hex::decode(hex_str.trim()) {
+                Ok(bytes) => bytes,
+                Err(_) => return, // Skip if not valid hex
+            },
+            None => return, // Skip if file not found
+        };
+
+        // Verify basic structure
+        let term = vecpak::decode(&packet).expect("should decode as vecpak");
+        let map = term.get_proplist_map().expect("should be a proplist");
+        assert_eq!(map.get_string(b"op").expect("should have op"), "catchup_reply");
+
+        // Full deserialization test
+        let parsed = vecpak::from_slice::<CatchupReply>(&packet).expect("should parse catchup_reply");
+        assert!(!parsed.tries.is_empty(), "should have at least one trie");
+
+        // Verify first trie has expected structure
+        let first_trie = &parsed.tries[0];
+        assert!(first_trie.entries.as_ref().map_or(false, |e| !e.is_empty()), "should have entries");
+        assert!(first_trie.consensuses.as_ref().map_or(false, |c| !c.is_empty()), "should have consensuses");
     }
 }

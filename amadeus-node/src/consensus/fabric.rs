@@ -262,8 +262,9 @@ impl Fabric {
         if let Some(existing_bin) = self.db.get(CF_ATTESTATION, key.as_bytes())? {
             if let Ok(existing_term) = decode(&existing_bin) {
                 if let Some(existing_mask) = extract_mask_from_consensus_term(&existing_term) {
+                    let consensus_mask = consensus.mask();
                     if existing_mask.all()
-                        || (!consensus.mask.is_empty() && existing_mask.count_ones() >= consensus.mask.count_ones())
+                        || (!consensus_mask.is_empty() && existing_mask.count_ones() >= consensus_mask.count_ones())
                     {
                         return Ok(());
                     }
@@ -275,7 +276,7 @@ impl Fabric {
 
         let consensus_term = VTerm::PropList(vec![
             (VTerm::Binary(b"mask".to_vec()), VTerm::Binary(bitvec_to_bin(&mask))),
-            (VTerm::Binary(b"agg_sig".to_vec()), VTerm::Binary(consensus.agg_sig.to_vec())),
+            (VTerm::Binary(b"agg_sig".to_vec()), VTerm::Binary(consensus.aggsig.aggsig.clone())),
         ]);
 
         self.db.put(CF_ATTESTATION, key.as_bytes(), &vecpak::encode(consensus_term))?;
@@ -312,8 +313,8 @@ impl Fabric {
             return Err(Error::KvCell("trainers_for_height:empty"));
         }
 
-        let mask =
-            if consensus.mask.is_empty() { bitvec![u8, Msb0; 1; trainers.len()] } else { consensus.mask.clone() };
+        let consensus_mask = consensus.mask();
+        let mask = if consensus_mask.is_empty() { bitvec![u8, Msb0; 1; trainers.len()] } else { consensus_mask };
 
         let score = get_bits_percentage(&mask, trainers.len());
         if score < 0.67 {
@@ -322,8 +323,8 @@ impl Fabric {
 
         let signed_pks = unmask_trainers(&mask, &trainers);
         let agg_pk = bls::aggregate_public_keys(&signed_pks).map_err(|_| Error::BadEtf("bls_aggregate_failed"))?;
-        bls::verify(&*agg_pk, &*consensus.agg_sig, &to_sign, DST_ATT)
-            .map_err(|_| Error::BadEtf("invalid_signature"))?;
+        let sig = consensus.signature().ok_or(Error::BadEtf("invalid_signature_length"))?;
+        bls::verify(&*agg_pk, &*sig, &to_sign, DST_ATT).map_err(|_| Error::BadEtf("invalid_signature"))?;
 
         Ok(mask)
     }
@@ -429,8 +430,7 @@ impl Fabric {
 
         let txn = self.db.begin_transaction();
         txn.put_cf(&cf_sysconf, b"rooted_tip", &entry.hash)?;
-        let height_term = encode_safe_deterministic(&u64_to_term(entry.header.height));
-        txn.put_cf(&cf_sysconf, b"rooted_height", &height_term)?;
+        txn.put_cf(&cf_sysconf, b"rooted_height", entry.header.height.to_string().as_bytes())?;
         txn.commit()?;
 
         Ok(())
@@ -455,15 +455,17 @@ impl Fabric {
 
         match self.db.get(CF_SYSCONF, b"rooted_height")? {
             Some(hb) => {
-                // Try u64 big-endian bytes (8 bytes)
-                if hb.len() == 8 {
-                    let arr: [u8; 8] = hb.try_into().map_err(|_| Error::KvCell("rooted_height"))?;
-                    return Ok(Some(u64::from_be_bytes(arr)));
+                // Try string format (primary format)
+                if let Ok(s) = std::str::from_utf8(&hb) {
+                    if let Ok(height) = s.parse::<u64>() {
+                        return Ok(Some(height));
+                    }
                 }
-                // Try u32 big-endian bytes (4 bytes) for backward compatibility
-                if hb.len() == 4 {
-                    let arr: [u8; 4] = hb.try_into().map_err(|_| Error::KvCell("rooted_height"))?;
-                    return Ok(Some(u32::from_be_bytes(arr) as u64));
+                // Try ETF term (for Elixir compatibility / migration)
+                if let Ok(term) = eetf::Term::decode(&mut std::io::Cursor::new(&hb)) {
+                    if let Some(height) = TermExt::get_integer(&term) {
+                        return Ok(Some(height as u64));
+                    }
                 }
                 Err(Error::KvCell("rooted_height"))
             }

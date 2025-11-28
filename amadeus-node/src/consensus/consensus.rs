@@ -5,7 +5,7 @@ use crate::consensus::fabric;
 use crate::consensus::fabric::Fabric;
 use crate::node::protocol::Protocol;
 use crate::utils::bls12_381 as bls;
-use crate::utils::misc::{bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
+use crate::utils::misc::{bin_to_bitvec, get_unix_millis_now};
 use crate::utils::rocksdb::RocksDb;
 use crate::utils::safe_etf::{encode_safe_deterministic, u64_to_term};
 use crate::utils::{Hash, PublicKey, Signature};
@@ -49,14 +49,24 @@ pub enum Error {
     BadFormat(&'static str),
 }
 
-/// Consensus message holding aggregated attestation for an entry and a particular
-/// mutations_hash. Mask denotes which trainers signed the aggregate.
-#[derive(Debug, Clone, PartialEq)]
+/// Nested aggsig structure matching Elixir's format
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Aggsig {
+    #[serde(with = "serde_bytes")]
+    pub mask: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    pub aggsig: Vec<u8>,
+    #[serde(default)]
+    pub mask_size: u64,
+    #[serde(default)]
+    pub mask_set_size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Consensus {
     pub entry_hash: Hash,
     pub mutations_hash: Hash,
-    pub mask: BitVec<u8, Msb0>,
-    pub agg_sig: Signature,
+    pub aggsig: Aggsig,
 }
 
 impl Consensus {
@@ -74,22 +84,48 @@ impl Consensus {
         let entry_hash: Hash = map.get_binary(b"entry_hash").ok_or(Error::BadFormat("consensus.entry_hash"))?;
         let mutations_hash: Hash =
             map.get_binary(b"mutations_hash").ok_or(Error::BadFormat("consensus.mutations_hash"))?;
-        let agg_sig: Signature = map.get_binary(b"aggsig").ok_or(Error::BadFormat("consensus.aggsig"))?;
-        let mask = map.get_binary::<Vec<u8>>(b"mask").map(bin_to_bitvec).unwrap_or_else(BitVec::new);
 
-        Ok(Self { entry_hash, mutations_hash, mask, agg_sig })
+        // Parse nested aggsig structure
+        let aggsig_map = map.get_proplist_map(b"aggsig").ok_or(Error::BadFormat("consensus.aggsig"))?;
+        let aggsig = Aggsig {
+            mask: aggsig_map.get_binary(b"mask").unwrap_or_default(),
+            aggsig: aggsig_map.get_binary(b"aggsig").ok_or(Error::BadFormat("consensus.aggsig.aggsig"))?,
+            mask_size: aggsig_map.get_integer(b"mask_size").unwrap_or(0),
+            mask_set_size: aggsig_map.get_integer(b"mask_set_size").unwrap_or(0),
+        };
+
+        Ok(Self { entry_hash, mutations_hash, aggsig })
     }
 
     pub fn to_vecpak_term(&self) -> Term {
-        let mut pairs = vec![
+        // Build nested aggsig structure
+        let mut aggsig_pairs = vec![
+            (Term::Binary(b"mask".to_vec()), Term::Binary(self.aggsig.mask.clone())),
+            (Term::Binary(b"aggsig".to_vec()), Term::Binary(self.aggsig.aggsig.clone())),
+        ];
+        if self.aggsig.mask_size > 0 {
+            aggsig_pairs.push((Term::Binary(b"mask_size".to_vec()), Term::VarInt(self.aggsig.mask_size as i128)));
+        }
+        if self.aggsig.mask_set_size > 0 {
+            aggsig_pairs
+                .push((Term::Binary(b"mask_set_size".to_vec()), Term::VarInt(self.aggsig.mask_set_size as i128)));
+        }
+
+        Term::PropList(vec![
+            (Term::Binary(b"aggsig".to_vec()), Term::PropList(aggsig_pairs)),
             (Term::Binary(b"entry_hash".to_vec()), Term::Binary(self.entry_hash.to_vec())),
             (Term::Binary(b"mutations_hash".to_vec()), Term::Binary(self.mutations_hash.to_vec())),
-        ];
-        if self.mask.count_ones() < self.mask.len() {
-            pairs.push((Term::Binary(b"mask".to_vec()), Term::Binary(bitvec_to_bin(&self.mask))));
-        }
-        pairs.push((Term::Binary(b"aggsig".to_vec()), Term::Binary(self.agg_sig.to_vec())));
-        Term::PropList(pairs)
+        ])
+    }
+
+    /// Get mask as BitVec for compatibility
+    pub fn mask(&self) -> BitVec<u8, Msb0> {
+        bin_to_bitvec(self.aggsig.mask.clone())
+    }
+
+    /// Get signature for compatibility
+    pub fn signature(&self) -> Option<Signature> {
+        Signature::try_from(self.aggsig.aggsig.as_slice()).ok()
     }
 }
 
@@ -679,7 +715,8 @@ pub fn best_by_weight(
 
     for (k, v) in consensuses.iter() {
         // calculate weighted score
-        let trainers_signed = if v.mask.is_empty() { trainers.to_vec() } else { unmask_trainers(&v.mask, trainers) };
+        let mask = v.mask();
+        let trainers_signed = if mask.is_empty() { trainers.to_vec() } else { unmask_trainers(&mask, trainers) };
         let mut score = 0.0;
         for _pk in trainers_signed {
             // TODO: implement ConsensusWeight.count(pk) - for now use unit weight
@@ -1013,7 +1050,7 @@ async fn broadcast_attestation(ctx: &crate::Context, attestation_packed: &[u8], 
         return;
     };
 
-    let event_att = EventAttestation { attestations: vec![attestation] };
+    let event_att = EventAttestation::new(vec![attestation]);
 
     if let Ok(peers) = ctx.node_peers.get_all().await {
         for peer in peers {

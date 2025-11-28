@@ -43,10 +43,11 @@ pub enum Error {
 }
 
 /// Shared summary of an entry's tip
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EntrySummary {
     pub header: EntryHeader,
     pub signature: Signature,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "mask_serde")]
     pub mask: Option<BitVec<u8, Msb0>>,
 }
 
@@ -122,8 +123,18 @@ pub struct EntryHeader {
     pub dr: Hash,      // deterministic random value
     pub vr: Signature, // verifiable random value
     pub signer: PublicKey,
+    #[serde(default = "zero_hash", skip_serializing_if = "is_zero_hash")]
     pub root_tx: Hash,
+    #[serde(default = "zero_hash", skip_serializing_if = "is_zero_hash")]
     pub root_validator: Hash,
+}
+
+fn zero_hash() -> Hash {
+    Hash::from([0u8; 32])
+}
+
+fn is_zero_hash(h: &Hash) -> bool {
+    *AsRef::<[u8; 32]>::as_ref(h) == [0u8; 32]
 }
 
 impl fmt::Debug for EntryHeader {
@@ -152,13 +163,13 @@ impl EntryHeader {
             dr: map.get_binary(b"dr").ok_or(Error::BadFormat("entry.header.dr"))?,
             vr: map.get_binary(b"vr").ok_or(Error::BadFormat("entry.header.vr"))?,
             signer: map.get_binary(b"signer").ok_or(Error::BadFormat("entry.header.signer"))?,
-            root_tx: map.get_binary(b"root_tx").ok_or(Error::BadFormat("entry.header.root_tx"))?,
-            root_validator: map.get_binary(b"root_validator").ok_or(Error::BadFormat("entry.header.root_validator"))?,
+            root_tx: map.get_binary(b"root_tx").unwrap_or_else(zero_hash),
+            root_validator: map.get_binary(b"root_validator").unwrap_or_else(zero_hash),
         })
     }
 
     pub fn to_vecpak_term(&self) -> Term {
-        Term::PropList(vec![
+        let mut props = vec![
             (Term::Binary(b"height".to_vec()), Term::VarInt(self.height as i128)),
             (Term::Binary(b"slot".to_vec()), Term::VarInt(self.slot as i128)),
             (Term::Binary(b"prev_slot".to_vec()), Term::VarInt(self.prev_slot as i128)),
@@ -166,9 +177,14 @@ impl EntryHeader {
             (Term::Binary(b"dr".to_vec()), Term::Binary(self.dr.to_vec())),
             (Term::Binary(b"vr".to_vec()), Term::Binary(self.vr.to_vec())),
             (Term::Binary(b"signer".to_vec()), Term::Binary(self.signer.to_vec())),
-            (Term::Binary(b"root_tx".to_vec()), Term::Binary(self.root_tx.to_vec())),
-            (Term::Binary(b"root_validator".to_vec()), Term::Binary(self.root_validator.to_vec())),
-        ])
+        ];
+        if !is_zero_hash(&self.root_tx) {
+            props.push((Term::Binary(b"root_tx".to_vec()), Term::Binary(self.root_tx.to_vec())));
+        }
+        if !is_zero_hash(&self.root_validator) {
+            props.push((Term::Binary(b"root_validator".to_vec()), Term::Binary(self.root_validator.to_vec())));
+        }
+        Term::PropList(props)
     }
 
     pub fn to_vecpak_bin(&self) -> Vec<u8> {
@@ -192,9 +208,83 @@ mod mask_serde {
     }
 }
 
+/// Custom deserializer for txs that handles both binary blobs (from Elixir) and structured EntryTx
+mod txs_serde {
+    use super::EntryTx;
+    use amadeus_utils::vecpak;
+    use serde::de::{self, SeqAccess, Visitor};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::fmt;
+
+    pub fn serialize<S: Serializer>(txs: &Vec<EntryTx>, ser: S) -> Result<S::Ok, S::Error> {
+        txs.serialize(ser)
+    }
+
+    /// Visitor for individual tx items that handles both binary and structured
+    struct TxItemVisitor;
+
+    impl<'de> Visitor<'de> for TxItemVisitor {
+        type Value = Option<EntryTx>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a binary blob or structured EntryTx")
+        }
+
+        fn visit_bytes<E: de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+            // Binary blob - decode as vecpak
+            Ok(vecpak::from_slice::<EntryTx>(v).ok())
+        }
+
+        fn visit_byte_buf<E: de::Error>(self, v: Vec<u8>) -> Result<Self::Value, E> {
+            Ok(vecpak::from_slice::<EntryTx>(&v).ok())
+        }
+
+        fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+            // Structured EntryTx - use normal deserialization
+            let de = de::value::MapAccessDeserializer::new(map);
+            EntryTx::deserialize(de).map(Some)
+        }
+    }
+
+    struct TxItemDeserializer;
+
+    impl<'de> de::DeserializeSeed<'de> for TxItemDeserializer {
+        type Value = Option<EntryTx>;
+
+        fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
+            de.deserialize_any(TxItemVisitor)
+        }
+    }
+
+    struct TxsVisitor;
+
+    impl<'de> Visitor<'de> for TxsVisitor {
+        type Value = Vec<EntryTx>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a list of transactions")
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut txs = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+            while let Some(maybe_tx) = seq.next_element_seed(TxItemDeserializer)? {
+                if let Some(tx) = maybe_tx {
+                    txs.push(tx);
+                }
+            }
+            Ok(txs)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Vec<EntryTx>, D::Error> {
+        de.deserialize_seq(TxsVisitor)
+    }
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
     pub header: EntryHeader,
+    #[serde(with = "txs_serde")]
     pub txs: Vec<EntryTx>,
     pub hash: Hash,
     pub signature: Signature,
@@ -271,29 +361,29 @@ impl Entry {
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct EntryProto {
+pub struct EventEntry {
     pub op: String,
     pub entry_packed: Entry,
 }
 
-impl EntryProto {
+impl EventEntry {
     pub const TYPENAME: &'static str = "event_entry";
 }
 
-impl crate::utils::misc::Typename for EntryProto {
+impl crate::utils::misc::Typename for EventEntry {
     fn typename(&self) -> &'static str {
         Self::TYPENAME
     }
 }
 
-impl fmt::Debug for EntryProto {
+impl fmt::Debug for EventEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EntryProto").field("entry_packed", &self.entry_packed).finish()
     }
 }
 
 #[async_trait::async_trait]
-impl Protocol for EntryProto {
+impl Protocol for EventEntry {
     fn from_vecpak_map_validated(_map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
         Err(protocol::Error::ParseError("use vecpak::from_slice"))
     }
@@ -578,7 +668,7 @@ mod tests {
         use amadeus_utils::vecpak;
 
         // Create a test EntryProto and verify it can roundtrip through serde
-        let entry_proto = EntryProto {
+        let entry_proto = EventEntry {
             op: "event_entry".to_string(),
             entry_packed: Entry {
                 hash: Hash::from([0x07u8; 32]),
@@ -605,7 +695,7 @@ mod tests {
         println!("Hex: {}", hex::encode(&bin));
 
         // Deserialize
-        let decoded: EntryProto = vecpak::from_slice(&bin).expect("should deserialize");
+        let decoded: EventEntry = vecpak::from_slice(&bin).expect("should deserialize");
 
         // Verify
         assert_eq!(decoded.op, "event_entry");

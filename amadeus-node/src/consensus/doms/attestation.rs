@@ -5,10 +5,10 @@ use crate::utils::bls12_381 as bls;
 use crate::utils::bls12_381::Error as BlsError;
 use crate::utils::{Hash, PublicKey, Signature};
 use amadeus_utils::constants::DST_ATT;
-use amadeus_utils::vecpak::{Term, VecpakExt, decode, encode};
+use amadeus_utils::vecpak::{self as vecpak, Term, VecpakExt, decode, encode};
 use std::fmt::Debug;
 use std::net::Ipv4Addr;
-use tracing::{instrument, warn};
+use tracing::instrument;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -24,12 +24,13 @@ pub enum Error {
     Bls(#[from] BlsError),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EventAttestation {
+    pub op: String,
     pub attestations: Vec<Attestation>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Attestation {
     pub entry_hash: Hash,
     pub mutations_hash: Hash,
@@ -55,52 +56,26 @@ impl crate::utils::misc::Typename for EventAttestation {
 
 #[async_trait::async_trait]
 impl Protocol for EventAttestation {
-    #[instrument(skip(map), name = "EventAttestation::from_vecpak_map_validated")]
-    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
-        use amadeus_utils::vecpak::{Term, VecpakExt};
-
-        let attestations_list = map.get_list(b"attestations").ok_or(Error::Missing("attestations"))?;
-
-        let mut attestations = Vec::new();
-        for term in attestations_list.iter() {
-            match term {
-                Term::PropList(_) => {
-                    let att_map = term.get_proplist_map().ok_or(Error::AttestationNotVecpak)?;
-                    let attestation = Attestation::from_vecpak_map(&att_map)?;
-                    attestations.push(attestation);
-                }
-                _ => return Err(Error::AttestationNotVecpak.into()),
-            }
-        }
-
-        Ok(Self { attestations })
+    fn from_vecpak_map_validated(_map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
+        Err(protocol::Error::ParseError("use vecpak::from_slice"))
     }
 
     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        use amadeus_utils::vecpak::{self, encode};
-
-        let attestations_list: Vec<vecpak::Term> = self
-            .attestations
-            .iter()
-            .map(|attestation| Ok(attestation.to_vecpak_term()))
-            .collect::<Result<Vec<_>, protocol::Error>>()?;
-
-        let pairs = vec![
-            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Self::TYPENAME.as_bytes().to_vec())),
-            (vecpak::Term::Binary(b"attestations".to_vec()), vecpak::Term::List(attestations_list)),
-        ];
-        Ok(encode(vecpak::Term::PropList(pairs)))
+        Ok(vecpak::to_vec(&self)?)
     }
 
     #[instrument(skip(self, _ctx), name = "EventAttestation::handle", err)]
     async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
-        // TODO: handle the event_attestation
         Ok(vec![protocol::Instruction::Noop { why: "event_attestation handling not implemented".to_string() }])
     }
 }
 
 impl EventAttestation {
     pub const TYPENAME: &'static str = "event_attestation";
+
+    pub fn new(attestations: Vec<Attestation>) -> Self {
+        Self { op: Self::TYPENAME.to_string(), attestations }
+    }
 }
 
 impl Attestation {
