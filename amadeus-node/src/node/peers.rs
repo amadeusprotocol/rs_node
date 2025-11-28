@@ -1,8 +1,8 @@
 use crate::config::Config;
 use crate::consensus::doms::EntrySummary;
 use crate::node::anr;
-use crate::node::protocol::{EventTip, PingReply};
-use crate::utils::misc::{Typename, get_unix_millis_now};
+use crate::node::protocol::{EventTip, PingReply, Typename};
+use crate::utils::misc::get_unix_millis_now;
 use crate::utils::{Hash, PublicKey};
 use crate::{Context, Ver};
 use serde::{Deserialize, Serialize};

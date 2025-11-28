@@ -33,6 +33,7 @@ thiserror = "2.0.17"
 sha2 = "0.10.9"
 zstd = "0.13.3"
 serde_bytes = "0.11.19"
+ambassador = "0.4.2"
 
 [features]
 default = []

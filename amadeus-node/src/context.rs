@@ -1,13 +1,13 @@
 use crate::node::anr::{Anr, NodeAnrs};
 use crate::node::peers::{HandshakeStatus, PeersSummary};
 use crate::node::protocol::*;
-use crate::node::protocol::{Catchup, CatchupHeight, Instruction, NewPhoneWhoDis, NewPhoneWhoDisReply};
+use crate::node::protocol::{Catchup, CatchupHeight, Instruction, NewPhoneWhoDis, NewPhoneWhoDisReply, Typename};
 use crate::node::{anr, peers};
 use crate::socket::UdpSocketExt;
-use crate::utils::misc::Typename;
 use crate::utils::misc::format_duration;
 use crate::utils::{Hash, PublicKey};
 use crate::{SystemStats, Ver, config, consensus, get_system_stats, metrics, node, utils};
+use amadeus_utils::vecpak;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -57,8 +57,8 @@ pub struct Context {
     pub(crate) config: config::Config,
     pub(crate) metrics: metrics::Metrics,
     pub(crate) reassembler: node::ReedSolomonReassembler,
-    pub(crate) node_peers: peers::NodePeers,
-    pub(crate) node_anrs: NodeAnrs,
+    pub(crate) peers: peers::NodePeers,
+    pub(crate) anrs: NodeAnrs,
     pub(crate) fabric: crate::consensus::fabric::Fabric,
     pub(crate) socket: Arc<dyn UdpSocketExt>,
 }
@@ -90,14 +90,14 @@ impl Context {
         node_anrs.seed(&config).await; // must be done before node_peers.seed()
         node_peers.seed(&fabric, &config, &node_anrs).await?;
 
-        let ctx = Arc::new(Self { config, metrics, reassembler, node_peers, node_anrs, fabric, socket });
+        let ctx = Arc::new(Self { config, metrics, reassembler, peers: node_peers, anrs: node_anrs, fabric, socket });
 
         tokio::spawn({
             let ctx = ctx.clone();
             async move {
                 if let Err(e) = ctx.bootstrap_task().await {
                     warn!("bootstrap task error: {e}");
-                    ctx.metrics.add_error(&e);
+                    // ctx.metrics.add_error(&e);
                 }
             }
         });
@@ -122,7 +122,7 @@ impl Context {
                     ticker.tick().await;
                     if let Err(e) = ctx.anr_task().await {
                         warn!("anr task error: {e}");
-                        ctx.metrics.add_error(&e);
+                        // ctx.metrics.add_error(&e);
                     }
                 }
             }
@@ -180,7 +180,7 @@ impl Context {
                     ticker.tick().await;
                     if let Err(e) = ctx.autoupdate_task().await {
                         warn!("autoupdate task error: {e}");
-                        ctx.metrics.add_error(&e);
+                        // ctx.metrics.add_error(&e);
                     }
                 }
             }
@@ -191,7 +191,7 @@ impl Context {
 
     #[instrument(skip(self), name = "bootstrap_task")]
     async fn bootstrap_task(&self) -> Result<(), Error> {
-        let new_phone_who_dis = NewPhoneWhoDis::new();
+        let new_phone_who_dis = Protocol::NewPhoneWhoDis(NewPhoneWhoDis::new());
 
         for ip in &self.config.seed_ips {
             // Prefer encrypted handshake (requires ANR); if it fails, log and continue without aborting.
@@ -205,7 +205,7 @@ impl Context {
                 }
             }
             // Mark handshake as initiated regardless of send outcome to reflect intent to connect.
-            self.node_peers.set_handshake_status(*ip, HandshakeStatus::Initiated).await?;
+            self.peers.set_handshake_status(*ip, HandshakeStatus::Initiated).await?;
         }
 
         info!("sent new_phone_who_dis to {} seed nodes", self.config.seed_ips.len());
@@ -214,9 +214,9 @@ impl Context {
 
     #[instrument(skip(self), name = "cleanup_task")]
     async fn cleanup_task(&self) {
-        self.node_anrs.update_rate_limiting_counters().await;
+        self.anrs.update_rate_limiting_counters().await;
         let cleared_shards = self.reassembler.clear_stale().await;
-        let cleared_peers = self.node_peers.clear_stale(&self.fabric, &self.node_anrs).await;
+        let cleared_peers = self.peers.clear_stale(&self.fabric, &self.anrs).await;
         if cleared_shards > 0 || cleared_peers > 0 {
             debug!("cleared {} stale shards, {} stale peers", cleared_shards, cleared_peers);
         }
@@ -224,18 +224,18 @@ impl Context {
 
     #[instrument(skip(self), name = "anr_task")]
     async fn anr_task(&self) -> Result<(), Error> {
-        let unverified_ips = self.node_anrs.get_random_not_verified(3).await;
+        let unverified_ips = self.anrs.get_random_not_verified(3).await;
         if !unverified_ips.is_empty() {
-            let new_phone_who_dis = NewPhoneWhoDis::new();
+            let new_phone_who_dis = Protocol::NewPhoneWhoDis(NewPhoneWhoDis::new());
             for ip in &unverified_ips {
                 new_phone_who_dis.send_to_with_metrics(self, *ip).await?;
-                self.node_peers.set_handshake_status(*ip, HandshakeStatus::Initiated).await?;
+                self.peers.set_handshake_status(*ip, HandshakeStatus::Initiated).await?;
             }
         }
 
-        let verified_ips = self.node_anrs.get_random_verified(3).await;
+        let verified_ips = self.anrs.get_random_verified(3).await;
         if !verified_ips.is_empty() {
-            let get_peer_anrs = GetPeerAnrs::new(self.node_anrs.get_all_b3f4().await);
+            let get_peer_anrs = Protocol::GetPeerAnrs(GetPeerAnrs::new(self.anrs.get_all_b3f4().await));
             for ip in &verified_ips {
                 self.send_message_to(&get_peer_anrs, *ip).await?;
             }
@@ -248,11 +248,11 @@ impl Context {
 
     #[instrument(skip(self), name = "broadcast_task")]
     async fn broadcast_task(&self) -> Result<(), Error> {
-        let ping = Ping::new();
-        let tip = EventTip::from_current_tips_db(&self.fabric)?;
+        let ping = Protocol::Ping(Ping::new());
+        let tip = Protocol::EventTip(EventTip::from_current_tips_db(&self.fabric)?);
 
         let my_ip = self.config.get_public_ipv4();
-        let peers = self.node_peers.get_all().await?;
+        let peers = self.peers.get_all().await?;
         if !peers.is_empty() {
             let mut sent_count = 0;
             for peer in peers {
@@ -306,7 +306,7 @@ impl Context {
         info!("Temporal: {} Rooted: {}", temporal_height, rooted_height);
 
         let trainer_pks = self.fabric.trainers_for_height(temporal_height).unwrap_or_default();
-        let (peers_temporal, peers_rooted, peers_bft) = self.node_peers.get_heights(&trainer_pks).await?;
+        let (peers_temporal, peers_rooted, peers_bft) = self.peers.get_heights(&trainer_pks).await?;
 
         let behind_temporal = peers_temporal.saturating_sub(temporal_height);
         let behind_rooted = peers_rooted.saturating_sub(rooted_height);
@@ -319,8 +319,7 @@ impl Context {
                 temporal_height - rooted_height,
                 rooted_height + 1
             );
-            let online_trainer_ips =
-                self.node_peers.get_trainer_ips_above_temporal(temporal_height, &trainer_pks).await?;
+            let online_trainer_ips = self.peers.get_trainer_ips_above_temporal(temporal_height, &trainer_pks).await?;
             let heights: Vec<u64> = (rooted_height + 1..=temporal_height).take(200).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
@@ -335,7 +334,7 @@ impl Context {
 
         if behind_bft > 0 {
             info!("Behind BFT: Syncing {} entries", behind_bft);
-            let online_trainer_ips = self.node_peers.get_trainer_ips_above_temporal(peers_bft, &trainer_pks).await?;
+            let online_trainer_ips = self.peers.get_trainer_ips_above_temporal(peers_bft, &trainer_pks).await?;
             let heights: Vec<u64> = (rooted_height + 1..=peers_bft).take(200).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
@@ -350,7 +349,7 @@ impl Context {
 
         if behind_rooted > 0 {
             info!("Behind rooted: Syncing {} entries", behind_rooted);
-            let online_trainer_ips = self.node_peers.get_trainer_ips_above_rooted(peers_rooted, &trainer_pks).await?;
+            let online_trainer_ips = self.peers.get_trainer_ips_above_rooted(peers_rooted, &trainer_pks).await?;
             let heights: Vec<u64> = (rooted_height + 1..=peers_rooted).take(200).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
@@ -369,8 +368,7 @@ impl Context {
 
         if behind_temporal > 0 {
             info!("Behind temporal: Syncing {} entries", behind_temporal);
-            let online_trainer_ips =
-                self.node_peers.get_trainer_ips_above_temporal(peers_temporal, &trainer_pks).await?;
+            let online_trainer_ips = self.peers.get_trainer_ips_above_temporal(peers_temporal, &trainer_pks).await?;
             let heights: Vec<u64> = (temporal_height..=peers_temporal).take(200).collect();
             let chunks: Vec<Vec<CatchupHeight>> = heights
                 .into_iter()
@@ -389,8 +387,7 @@ impl Context {
 
         if behind_temporal == 0 {
             info!("In sync: Fetching attestations for last entry");
-            let online_trainer_ips =
-                self.node_peers.get_trainer_ips_above_temporal(peers_temporal, &trainer_pks).await?;
+            let online_trainer_ips = self.peers.get_trainer_ips_above_temporal(peers_temporal, &trainer_pks).await?;
             let entries = self.fabric.entries_by_height(temporal_height).unwrap_or_default();
             let hashes = entries;
             let chunk = vec![CatchupHeight {
@@ -419,9 +416,7 @@ impl Context {
         }
 
         for (chunk, peer_ip) in chunks.into_iter().zip(shuffled_peers.into_iter().cycle()) {
-            Catchup { op: Catchup::TYPENAME.to_string(), height_flags: chunk }
-                .send_to_with_metrics(self, peer_ip)
-                .await?;
+            Protocol::Catchup(Catchup { height_flags: chunk }).send_to_with_metrics(self, peer_ip).await?;
         }
         Ok(())
     }
@@ -439,7 +434,7 @@ impl Context {
     }
 
     /// Convenience function to send UDP data with metrics tracking
-    pub async fn send_message_to(&self, message: &impl Protocol, dst: Ipv4Addr) -> Result<(), Error> {
+    pub async fn send_message_to(&self, message: &Protocol, dst: Ipv4Addr) -> Result<(), Error> {
         message.send_to_with_metrics(self, dst).await.map_err(Into::into)
     }
 
@@ -449,9 +444,9 @@ impl Context {
     }
 
     pub async fn is_peer_handshaked(&self, ip: Ipv4Addr) -> bool {
-        if let Some(peer) = self.node_peers.by_ip(ip).await {
+        if let Some(peer) = self.peers.by_ip(ip).await {
             if let Some(ref pk) = peer.pk {
-                if self.node_anrs.is_handshaked(pk.as_ref()).await {
+                if self.anrs.is_handshaked(pk.as_ref()).await {
                     return true;
                 }
             }
@@ -463,7 +458,7 @@ impl Context {
         let my_ip = self.config.get_public_ipv4();
         let temporal_height = self.get_temporal_height();
         let trainer_pks = self.fabric.trainers_for_height(temporal_height + 1).unwrap_or_default();
-        self.node_peers.get_peers_summary(my_ip, &trainer_pks).await.map_err(Into::into)
+        self.peers.get_peers_summary(my_ip, &trainer_pks).await.map_err(Into::into)
     }
 
     pub fn get_softfork_status(&self) -> SoftforkStatus {
@@ -553,7 +548,7 @@ impl Context {
 
     /// Set handshake status for a peer by IP address
     pub async fn set_peer_handshake_status(&self, ip: Ipv4Addr, status: HandshakeStatus) -> Result<(), peers::Error> {
-        self.node_peers.set_handshake_status(ip, status).await
+        self.peers.set_handshake_status(ip, status).await
     }
 
     /// Update peer information from ANR data
@@ -564,12 +559,12 @@ impl Context {
         version: &Ver,
         status: Option<HandshakeStatus>,
     ) {
-        self.node_peers.update_peer_from_anr(ip, pk, version, status).await
+        self.peers.update_peer_from_anr(ip, pk, version, status).await
     }
 
     /// Get all ANRs
     pub async fn get_all_anrs(&self) -> Vec<anr::Anr> {
-        self.node_anrs.get_all().await
+        self.anrs.get_all().await
     }
 
     /// Get ANR by public key (Base58 encoded)
@@ -586,13 +581,13 @@ impl Context {
 
     /// Get ANR by public key bytes
     pub async fn get_anr_by_pk(&self, pk: &PublicKey) -> Option<anr::Anr> {
-        let all_anrs = self.node_anrs.get_all().await;
+        let all_anrs = self.anrs.get_all().await;
         all_anrs.into_iter().find(|anr| &anr.pk == pk)
     }
 
     /// Get all handshaked ANRs (validators)
     pub async fn get_validator_anrs(&self) -> Vec<anr::Anr> {
-        let all_anrs = self.node_anrs.get_all().await;
+        let all_anrs = self.anrs.get_all().await;
         all_anrs.into_iter().filter(|anr| anr.handshaked).collect()
     }
 
@@ -677,54 +672,50 @@ impl Context {
 
     /// Reads UDP datagram and silently does parsing, validation and reassembly
     /// If the protocol message is complete, returns Some(Protocol)
-    pub async fn parse_udp(&self, buf: &[u8], src: Ipv4Addr) -> Option<Box<dyn Protocol>> {
+    pub async fn parse_udp(&self, buf: &[u8], src: Ipv4Addr) -> Option<Protocol> {
         self.metrics.add_incoming_udp_packet(buf.len());
 
-        if !self.node_anrs.is_within_udp_limit(src).await? {
-            return None; // nodes sends too many UDP packets
+        if !self.anrs.is_within_udp_limit(src).await? {
+            return None; // peer sends too many UDP packets
         }
 
         // Process encrypted message shards
         match self.reassembler.add_shard(buf, &self.config.get_sk()).await {
             Ok(Some((packet, pk))) => {
-                match parse_vecpak_bin(&packet) {
+                match vecpak::from_slice::<Protocol>(&packet) {
                     Ok(proto) => {
-                        self.node_peers.update_peer_from_proto(src, proto.typename()).await;
-                        let has_handshake =
-                            matches!(proto.typename(), NewPhoneWhoDis::TYPENAME | NewPhoneWhoDisReply::TYPENAME)
-                                || self.node_anrs.handshaked_and_valid_ip4(pk.as_ref(), &src).await;
+                        self.peers.update_peer_from_proto(src, proto.typename()).await;
+                        let is_allowed =
+                            matches!(proto, Protocol::NewPhoneWhoDis(_) | Protocol::NewPhoneWhoDisReply(_))
+                                || self.anrs.handshaked_and_valid_ip4(pk.as_ref(), &src).await;
 
-                        if !has_handshake {
-                            self.node_anrs.unset_handshaked(pk.as_ref()).await;
-                            self.metrics.add_error(&Error::Other(format!("handshake needed {src}")));
+                        if !is_allowed {
+                            self.anrs.unset_handshaked(pk.as_ref()).await;
+                            warn!("handshake needed {src}");
                             return None; // neither handshake message nor handshaked peer
                         }
 
-                        if !self.node_anrs.is_within_proto_limit(pk.as_ref(), proto.typename()).await? {
-                            return None; // node sends too many proto requests
+                        if !self.anrs.is_within_proto_limit(pk.as_ref(), proto.typename()).await? {
+                            return None; // peer sends too many proto requests
                         }
 
                         self.metrics.add_incoming_proto(proto.typename());
                         return Some(proto);
                     }
-                    Err(e) => {
-                        warn!("parse error: {e}, packet: {}", hex::encode(&packet));
-                        self.metrics.add_error(&e);
-                    }
+                    Err(e) => warn!("parse error: {e}"),
                 }
             }
             Ok(None) => {} // waiting for more shards, not an error
-            Err(e) => self.metrics.add_error(&Error::Other(format!("bad udp frame from {src} - {e}"))),
+            Err(e) => warn!("bad udp frame from {src} - {e}"),
         }
 
         None
     }
 
-    pub async fn handle(&self, message: Box<dyn Protocol>, src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
+    pub async fn handle(&self, message: Protocol, src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
         self.metrics.add_incoming_proto(message.typename());
         message.handle(self, src).await.map_err(|e| {
             warn!("can't handle {}: {e}", message.typename());
-            self.metrics.add_error(&e);
             e.into()
         })
     }
@@ -743,17 +734,17 @@ impl Context {
 
             Instruction::SendNewPhoneWhoDisReply { dst } => {
                 let anr = Anr::from_config(&self.config)?;
-                let reply = NewPhoneWhoDisReply::new(anr);
+                let reply = Protocol::NewPhoneWhoDisReply(NewPhoneWhoDisReply::new(anr));
                 self.send_message_to(&reply, dst).await?;
             }
 
             Instruction::SendGetPeerAnrsReply { dst, anrs } => {
-                let peers_v2 = GetPeerAnrsReply::new(anrs);
+                let peers_v2 = Protocol::GetPeerAnrsReply(GetPeerAnrsReply::new(anrs));
                 self.send_message_to(&peers_v2, dst).await?;
             }
 
             Instruction::SendPingReply { ts_m, dst } => {
-                let pong = PingReply::new(ts_m);
+                let pong = Protocol::PingReply(PingReply::new(ts_m));
                 self.send_message_to(&pong, dst).await?;
             }
 
@@ -1075,7 +1066,7 @@ mod tests {
         let reassembler = node::ReedSolomonReassembler::new();
 
         let fabric = crate::consensus::fabric::Fabric::new(&config.get_root()).await.unwrap();
-        let ctx = Context { config, metrics, reassembler, node_peers, node_anrs, fabric, socket };
+        let ctx = Context { config, metrics, reassembler, peers: node_peers, anrs: node_anrs, fabric, socket };
 
         // Test task tracking via Context wrapper methods
         let snapshot = ctx.get_metrics_snapshot();
@@ -1137,8 +1128,7 @@ mod tests {
                 let mut buf = [0u8; 1024];
                 let target: Ipv4Addr = "127.0.0.1".parse().unwrap();
 
-                let pong =
-                    PingReply { op: PingReply::TYPENAME.to_string(), ts_m: 1234567890, seen_time: 1234567890123 };
+                let pong = Protocol::PingReply(PingReply { ts_m: 1234567890, seen_time: 1234567890123 });
                 // Test send_to convenience function - should return error with MockSocket but not panic
                 match context.send_message_to(&pong, target).await {
                     Ok(_) => {

@@ -1050,9 +1050,9 @@ async fn broadcast_attestation(ctx: &crate::Context, attestation_packed: &[u8], 
         return;
     };
 
-    let event_att = EventAttestation::new(vec![attestation]);
+    let event_att = Protocol::EventAttestation(EventAttestation::new(vec![attestation]));
 
-    if let Ok(peers) = ctx.node_peers.get_all().await {
+    if let Ok(peers) = ctx.peers.get_all().await {
         for peer in peers {
             let _ = event_att.send_to_with_metrics(ctx, peer.ip).await;
         }

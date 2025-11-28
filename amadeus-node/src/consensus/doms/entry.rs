@@ -2,7 +2,7 @@ use crate::Context;
 use crate::consensus::doms::tx::EntryTx;
 use crate::consensus::fabric;
 use crate::node::protocol;
-use crate::node::protocol::Protocol;
+use crate::node::protocol::{Handle, Typename};
 use crate::utils::bls12_381;
 use crate::utils::misc::{bin_to_bitvec, bitvec_to_bin, get_unix_millis_now};
 use crate::utils::{Hash, PublicKey, Signature};
@@ -362,7 +362,6 @@ impl Entry {
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct EventEntry {
-    pub op: String,
     pub entry_packed: Entry,
 }
 
@@ -370,7 +369,7 @@ impl EventEntry {
     pub const TYPENAME: &'static str = "event_entry";
 }
 
-impl crate::utils::misc::Typename for EventEntry {
+impl Typename for EventEntry {
     fn typename(&self) -> &'static str {
         Self::TYPENAME
     }
@@ -383,15 +382,7 @@ impl fmt::Debug for EventEntry {
 }
 
 #[async_trait::async_trait]
-impl Protocol for EventEntry {
-    fn from_vecpak_map_validated(_map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
-        Err(protocol::Error::ParseError("use vecpak::from_slice"))
-    }
-
-    fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        Ok(vecpak::to_vec(&self)?)
-    }
-
+impl Handle for EventEntry {
     async fn handle(&self, ctx: &Context, src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
         self.entry_packed.handle(ctx, src).await
     }
@@ -669,7 +660,6 @@ mod tests {
 
         // Create a test EntryProto and verify it can roundtrip through serde
         let entry_proto = EventEntry {
-            op: "event_entry".to_string(),
             entry_packed: Entry {
                 hash: Hash::from([0x07u8; 32]),
                 header: EntryHeader {
@@ -698,7 +688,6 @@ mod tests {
         let decoded: EventEntry = vecpak::from_slice(&bin).expect("should deserialize");
 
         // Verify
-        assert_eq!(decoded.op, "event_entry");
         assert_eq!(decoded.entry_packed.header.height, 41939338);
         assert_eq!(decoded.entry_packed.txs.len(), 1);
         assert_eq!(decoded.entry_packed.txs[0].tx.action.function, "test_func");

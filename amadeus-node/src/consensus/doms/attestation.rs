@@ -1,11 +1,11 @@
 use crate::Context;
 use crate::node::protocol;
-use crate::node::protocol::Protocol;
+use crate::node::protocol::{Handle, Typename};
 use crate::utils::bls12_381 as bls;
 use crate::utils::bls12_381::Error as BlsError;
 use crate::utils::{Hash, PublicKey, Signature};
 use amadeus_utils::constants::DST_ATT;
-use amadeus_utils::vecpak::{self as vecpak, Term, VecpakExt, decode, encode};
+use amadeus_utils::vecpak::{Term, VecpakExt, decode, encode};
 use std::fmt::Debug;
 use std::net::Ipv4Addr;
 use tracing::instrument;
@@ -26,7 +26,6 @@ pub enum Error {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EventAttestation {
-    pub op: String,
     pub attestations: Vec<Attestation>,
 }
 
@@ -48,22 +47,14 @@ impl Debug for Attestation {
     }
 }
 
-impl crate::utils::misc::Typename for EventAttestation {
+impl Typename for EventAttestation {
     fn typename(&self) -> &'static str {
         Self::TYPENAME
     }
 }
 
 #[async_trait::async_trait]
-impl Protocol for EventAttestation {
-    fn from_vecpak_map_validated(_map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
-        Err(protocol::Error::ParseError("use vecpak::from_slice"))
-    }
-
-    fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        Ok(vecpak::to_vec(&self)?)
-    }
-
+impl Handle for EventAttestation {
     #[instrument(skip(self, _ctx), name = "EventAttestation::handle", err)]
     async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
         Ok(vec![protocol::Instruction::Noop { why: "event_attestation handling not implemented".to_string() }])
@@ -74,7 +65,7 @@ impl EventAttestation {
     pub const TYPENAME: &'static str = "event_attestation";
 
     pub fn new(attestations: Vec<Attestation>) -> Self {
-        Self { op: Self::TYPENAME.to_string(), attestations }
+        Self { attestations }
     }
 }
 

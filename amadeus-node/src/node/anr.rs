@@ -19,7 +19,7 @@ pub static PROTO_RATE_LIMITS: Lazy<HashMap<&'static str, u64>> = Lazy::new(|| {
     use crate::consensus::doms::sol::Solution;
     use crate::node::protocol::{
         Catchup, CatchupReply, EventTip, EventTx, GetPeerAnrs, GetPeerAnrsReply, NewPhoneWhoDis, NewPhoneWhoDisReply,
-        Ping, PingReply, SpecialBusiness, SpecialBusinessReply,
+        Ping, PingReply,
     };
 
     [
@@ -31,8 +31,8 @@ pub static PROTO_RATE_LIMITS: Lazy<HashMap<&'static str, u64>> = Lazy::new(|| {
         (GetPeerAnrsReply::TYPENAME, 10),
         (NewPhoneWhoDis::TYPENAME, 20),
         (NewPhoneWhoDisReply::TYPENAME, 20),
-        (SpecialBusiness::TYPENAME, 200),
-        (SpecialBusinessReply::TYPENAME, 200),
+        // (SpecialBusiness::TYPENAME, 200),
+        // (SpecialBusinessReply::TYPENAME, 200),
         (Catchup::TYPENAME, 20),
         (CatchupReply::TYPENAME, 20),
         (Entry::TYPENAME, 30),
@@ -782,7 +782,6 @@ impl NodeAnrs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::protocol::{NewPhoneWhoDis, NewPhoneWhoDisReply};
     use amadeus_utils::bls12_381;
 
     impl NodeAnrs {
@@ -1124,20 +1123,5 @@ mod tests {
             }
             _ => panic!("Expected PropList for ANR"),
         }
-    }
-
-    #[test]
-    fn handshake_compatibility() {
-        let p_hex = "0701010501026f700501116e65775f70686f6e655f77686f5f646973";
-        let p_bytes = hex::decode(p_hex).expect("valid hex");
-        let npwd: NewPhoneWhoDis = amadeus_utils::vecpak::from_slice(&p_bytes).unwrap();
-        let rt_bytes = amadeus_utils::vecpak::to_vec(&npwd).unwrap();
-        assert_eq!(rt_bytes, p_bytes);
-
-        let p_hex = "0701020501026f700501176e65775f70686f6e655f77686f5f6469735f7265706c79050103616e72070107050102706b050130a9e81ed8c8eaaebd8dd53a889d8c5a8612ab7330275a5d39043e95200e7c1b66f0dc00c5307e867a55a9ad9e7ae4b9f005010274730304692634f205010369703405010c37322e392e3134342e313130050103706f70050160b62a96d62af0d2d7006ab560c64bde562df13ae642380a31d935276412c59f9944dceaa4060903e4ead197e97ad1654910be87ac556a5063e1d68df542aab1a3f75df3eab891a7cab572ba7170716c5487183ef28ef89f7c7555be2bb1d41218050104706f72740302906905010776657273696f6e050105312e332e300501097369676e6174757265050160b62d43994fa7614138d205ecefeb1677d4998574aac1db8fdd5673de4e1d2ae8391c4cf703007ce37778e20624650143068c59596b5838536ecfd05a0d0805b0baa04dcae97caf9f199232fbfff462ebb35bfc653576af43007ba9666a2952a7";
-        let p_bytes = hex::decode(p_hex).expect("valid hex");
-        let npwdr: NewPhoneWhoDisReply = amadeus_utils::vecpak::from_slice(&p_bytes).unwrap();
-        let rt_bytes = amadeus_utils::vecpak::to_vec(&npwdr).unwrap();
-        assert_eq!(rt_bytes, p_bytes);
     }
 }

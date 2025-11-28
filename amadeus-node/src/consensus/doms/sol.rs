@@ -1,11 +1,7 @@
-use crate::Context;
-use crate::node::protocol::{self, Protocol};
-use crate::utils::misc::Typename;
+use crate::node::protocol::Typename;
 use crate::utils::{Hash, PublicKey, Signature};
 use amadeus_runtime::consensus::bic::sol::SOL_SIZE;
-use amadeus_utils::vecpak;
 use std::convert::TryInto;
-use std::net::Ipv4Addr;
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -94,56 +90,56 @@ impl Typename for Solution {
     }
 }
 
-#[async_trait::async_trait]
-impl Protocol for Solution {
-    fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
-        let bin = map.get_binary(b"sol").ok_or(protocol::Error::Other("sol not found".to_string()))?;
-        Solution::from_bin(bin).map_err(|_| protocol::Error::Other("sol parse failed".to_string()))
-    }
-
-    fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, protocol::Error> {
-        use amadeus_utils::vecpak::encode;
-        let sol_bin = match self {
-            Solution::V2(v2) => {
-                let mut buf = Vec::with_capacity(SOL_SIZE);
-                buf.extend_from_slice(&v2.epoch.to_le_bytes());
-                buf.extend_from_slice(v2.segment_vr_hash.as_ref());
-                buf.extend_from_slice(v2.pk.as_ref());
-                buf.extend_from_slice(v2.pop.as_ref());
-                buf.extend_from_slice(v2.computor.as_ref());
-                buf.extend_from_slice(&v2.nonce);
-                buf.extend_from_slice(&v2.tensor_c);
-                buf
-            }
-            Solution::V1(v1) => {
-                let mut buf = Vec::with_capacity(320);
-                buf.extend_from_slice(&v1.epoch.to_le_bytes());
-                buf.extend_from_slice(v1.pk.as_ref());
-                buf.extend_from_slice(v1.pop.as_ref());
-                buf.extend_from_slice(v1.computor.as_ref());
-                buf.extend_from_slice(v1.segment_vr.as_ref());
-                buf.resize(320, 0);
-                buf
-            }
-            Solution::V0(v0) => {
-                let mut buf = Vec::with_capacity(256);
-                buf.extend_from_slice(&v0.epoch.to_le_bytes());
-                buf.extend_from_slice(v0.pk.as_ref());
-                buf.extend_from_slice(v0.pop.as_ref());
-                buf.extend_from_slice(v0.computor.as_ref());
-                buf.resize(256, 0);
-                buf
-            }
-        };
-
-        let pairs = vec![
-            (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Solution::TYPENAME.as_bytes().to_vec())),
-            (vecpak::Term::Binary(b"sol".to_vec()), vecpak::Term::Binary(sol_bin)),
-        ];
-        Ok(encode(vecpak::Term::PropList(pairs)))
-    }
-
-    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
-        Ok(vec![protocol::Instruction::ReceivedSol { sol: self.clone() }])
-    }
-}
+// #[async_trait::async_trait]
+// impl Handle for Solution {
+//     fn from_vecpak_map_validated(map: amadeus_utils::vecpak::PropListMap) -> Result<Self, protocol::Error> {
+//         let bin = map.get_binary(b"sol").ok_or(protocol::Error::Other("sol not found".to_string()))?;
+//         Solution::from_bin(bin).map_err(|_| protocol::Error::Other("sol parse failed".to_string()))
+//     }
+//
+//     fn to_vecpak_packet_bin(&self) -> Result<Vec<u8>, protocol::Error> {
+//         use amadeus_utils::vecpak::encode;
+//         let sol_bin = match self {
+//             Solution::V2(v2) => {
+//                 let mut buf = Vec::with_capacity(SOL_SIZE);
+//                 buf.extend_from_slice(&v2.epoch.to_le_bytes());
+//                 buf.extend_from_slice(v2.segment_vr_hash.as_ref());
+//                 buf.extend_from_slice(v2.pk.as_ref());
+//                 buf.extend_from_slice(v2.pop.as_ref());
+//                 buf.extend_from_slice(v2.computor.as_ref());
+//                 buf.extend_from_slice(&v2.nonce);
+//                 buf.extend_from_slice(&v2.tensor_c);
+//                 buf
+//             }
+//             Solution::V1(v1) => {
+//                 let mut buf = Vec::with_capacity(320);
+//                 buf.extend_from_slice(&v1.epoch.to_le_bytes());
+//                 buf.extend_from_slice(v1.pk.as_ref());
+//                 buf.extend_from_slice(v1.pop.as_ref());
+//                 buf.extend_from_slice(v1.computor.as_ref());
+//                 buf.extend_from_slice(v1.segment_vr.as_ref());
+//                 buf.resize(320, 0);
+//                 buf
+//             }
+//             Solution::V0(v0) => {
+//                 let mut buf = Vec::with_capacity(256);
+//                 buf.extend_from_slice(&v0.epoch.to_le_bytes());
+//                 buf.extend_from_slice(v0.pk.as_ref());
+//                 buf.extend_from_slice(v0.pop.as_ref());
+//                 buf.extend_from_slice(v0.computor.as_ref());
+//                 buf.resize(256, 0);
+//                 buf
+//             }
+//         };
+//
+//         let pairs = vec![
+//             (vecpak::Term::Binary(b"op".to_vec()), vecpak::Term::Binary(Solution::TYPENAME.as_bytes().to_vec())),
+//             (vecpak::Term::Binary(b"sol".to_vec()), vecpak::Term::Binary(sol_bin)),
+//         ];
+//         Ok(encode(vecpak::Term::PropList(pairs)))
+//     }
+//
+//     async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<protocol::Instruction>, protocol::Error> {
+//         Ok(vec![protocol::Instruction::ReceivedSol { sol: self.clone() }])
+//     }
+// }

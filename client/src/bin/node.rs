@@ -1,5 +1,5 @@
 use amadeus_node::consensus::doms::entry::Entry;
-use amadeus_node::node::protocol::Instruction;
+use amadeus_node::node::protocol::{Instruction, Typename};
 use amadeus_node::{Config, Context};
 use client::{UdpSocketWrapper, get_http_port, init_tracing};
 use http::serve as http_serve;
