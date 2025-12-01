@@ -263,6 +263,12 @@ pub fn eetf_list_of_binaries(list_of_binaries: Vec<Vec<u8>>) -> Result<Vec<u8>, 
     Ok(out)
 }
 
+pub fn list_of_binaries_to_vecpak(list_of_binaries: Vec<Vec<u8>>) -> Vec<u8> {
+    use crate::vecpak::{Term as VecpakTerm, encode};
+    let elements: Vec<VecpakTerm> = list_of_binaries.into_iter().map(VecpakTerm::Binary).collect();
+    encode(VecpakTerm::List(elements))
+}
+
 pub fn bitvec_to_bin(mask: &BitVec<u8, Msb0>) -> Vec<u8> {
     mask.as_raw_slice().to_vec()
 }

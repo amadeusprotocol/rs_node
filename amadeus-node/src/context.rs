@@ -702,7 +702,7 @@ impl Context {
                         self.metrics.add_incoming_proto(proto.typename());
                         return Some(proto);
                     }
-                    Err(e) => warn!("parse error: {e}"),
+                    Err(e) => warn!("parse error: {e} {}", hex::encode(packet)),
                 }
             }
             Ok(None) => {} // waiting for more shards, not an error
@@ -752,18 +752,6 @@ impl Context {
                 // Insert valid transactions into tx pool
                 info!("received {} valid transactions", txs.len());
                 // TODO: implement TXPool.insert(txs) equivalent
-            }
-
-            Instruction::ReceivedSol { sol: _ } => {
-                // Handle received solution
-                info!("received solution");
-                // TODO: validate solution and potentially submit to tx pool
-                // Following Elixir implementation:
-                // - Check epoch matches current epoch
-                // - Verify solution
-                // - Check POP signature
-                // - Add to TXPool as gifted sol
-                // - Build submit_sol transaction
             }
 
             Instruction::ReceivedEntry { entry: _ } => {

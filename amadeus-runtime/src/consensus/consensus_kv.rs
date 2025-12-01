@@ -135,7 +135,6 @@ pub fn kv_get_prev(env: &mut ApplyEnv, prefix: &[u8], key: &[u8]) -> Option<(Vec
         return None;
     }
 
-    // skip the exact match key if found
     if let Some(k) = iter.key() {
         if k == &seek[..] {
             iter.prev();
@@ -144,9 +143,25 @@ pub fn kv_get_prev(env: &mut ApplyEnv, prefix: &[u8], key: &[u8]) -> Option<(Vec
 
     match (iter.key(), iter.value()) {
         (Some(k), Some(v)) if k.starts_with(prefix) => {
-            // return key without prefix
             let prev_key_wo_prefix = k[prefix.len()..].to_vec();
             Some((prev_key_wo_prefix, v.to_vec()))
+        }
+        _ => None,
+    }
+}
+
+pub fn kv_get_prev_or_exact(env: &ApplyEnv, prefix: &[u8], key: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let mut seek = Vec::with_capacity(prefix.len() + key.len());
+    seek.extend_from_slice(prefix);
+    seek.extend_from_slice(key);
+
+    let mut iter = env.txn.raw_iterator_cf(&env.cf);
+    iter.seek_for_prev(&seek);
+
+    match (iter.key(), iter.value()) {
+        (Some(k), Some(v)) if k.starts_with(prefix) => {
+            let key_wo_prefix = k[prefix.len()..].to_vec();
+            Some((key_wo_prefix, v.to_vec()))
         }
         _ => None,
     }

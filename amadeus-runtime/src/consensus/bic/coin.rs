@@ -58,6 +58,13 @@ pub fn paused(env: &ApplyEnv, symbol: &[u8]) -> Result<bool> {
     }
 }
 
+pub fn soulbound(env: &ApplyEnv, symbol: &[u8]) -> Result<bool> {
+    match kv_get(env, &bcat(&[b"coin:", symbol, b":soulbound"]))?.as_deref() {
+        Some(b"true") => Ok(true),
+        _ => Ok(false),
+    }
+}
+
 pub fn total_supply(env: &ApplyEnv, symbol: &[u8]) -> Result<i128> {
     match kv_get(env, &bcat(&[b"bic:coin:totalSupply:", symbol]))? {
         Some(amount) => {
@@ -120,6 +127,9 @@ pub fn call_transfer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()> {
     if paused(env, symbol)? {
         return Err("paused");
     }
+    if soulbound(env, symbol)? {
+        return Err("soulbound");
+    }
 
     kv_increment(env, &bcat(&[b"bic:coin:balance:", env.caller_env.account_caller.as_slice(), b":", symbol]), -amount)?;
     kv_increment(env, &bcat(&[b"bic:coin:balance:", receiver, b":", symbol]), amount)?;
@@ -127,19 +137,21 @@ pub fn call_transfer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()> {
 }
 
 pub fn call_create_and_mint(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()> {
-    if args.len() != 4 {
+    if args.len() < 2 {
         return Err("invalid_args");
     }
     let symbol_original = args[0].as_slice();
     let amount = args[1].as_slice();
-    let mintable = args[2].as_slice();
-    let pausable = args[3].as_slice();
+    let mintable = args.get(2).and_then(|v| if v.is_empty() { None } else { Some(v.as_slice()) }).unwrap_or(b"false");
+    let pausable = args.get(3).and_then(|v| if v.is_empty() { None } else { Some(v.as_slice()) }).unwrap_or(b"false");
+    let soulbound_arg =
+        args.get(4).and_then(|v| if v.is_empty() { None } else { Some(v.as_slice()) }).unwrap_or(b"false");
 
     let symbol: Vec<u8> = symbol_original.iter().copied().filter(u8::is_ascii_alphanumeric).collect();
     if symbol_original != symbol.as_slice() {
         return Err("invalid_symbol");
     }
-    if symbol.len() < 1 {
+    if symbol.is_empty() {
         return Err("symbol_too_short");
     }
     if symbol.len() > 32 {
@@ -171,6 +183,9 @@ pub fn call_create_and_mint(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()
     }
     if pausable == b"true" {
         kv_put(env, &bcat(&[b"bic:coin:pausable:", &symbol]), b"true")?;
+    }
+    if soulbound_arg == b"true" {
+        kv_put(env, &bcat(&[b"coin:", &symbol, b":soulbound"]), b"true")?;
     }
     Ok(())
 }

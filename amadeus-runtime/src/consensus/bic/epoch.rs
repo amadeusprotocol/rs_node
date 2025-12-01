@@ -1,5 +1,5 @@
 use crate::consensus::consensus_apply::ApplyEnv;
-use crate::consensus::consensus_kv::{kv_exists, kv_get, kv_increment, kv_put, kv_set_bit};
+use crate::consensus::consensus_kv::{kv_exists, kv_get, kv_get_prev_or_exact, kv_increment, kv_put, kv_set_bit};
 use crate::{bcat, consensus};
 use amadeus_utils::constants::{CF_CONTRACTSTATE, DST_MOTION};
 use amadeus_utils::{Hash, PublicKey, Signature};
@@ -9,6 +9,11 @@ use bitvec::prelude::BitVec;
 
 pub const EPOCH_EMISSION_BASE: i128 = 1_000_000_000_000_000;
 pub const EPOCH_INTERVAL: i128 = 100_000;
+
+pub const TREASURY_DONATION_ADDRESS: &[u8; 48] = &[
+    140, 71, 6, 83, 31, 185, 171, 240, 47, 5, 14, 246, 98, 23, 105, 24, 183, 118, 193, 92, 66, 82, 64, 5, 239, 255,
+    254, 87, 139, 252, 148, 176, 113, 6, 207, 153, 51, 25, 202, 45, 48, 153, 223, 248, 219, 210, 80, 254,
+];
 
 pub fn epoch_emission(epoch: u64) -> i128 {
     epoch_emission_1(epoch, EPOCH_EMISSION_BASE)
@@ -436,7 +441,7 @@ pub fn call_submit_sol(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), &'s
     Ok(())
 }
 
-pub fn kv_get_trainers(env: &ApplyEnv, key: &[u8]) -> Result<Vec<Vec<u8>>, &'static str> {
+pub fn kv_get_epoch_trainers(env: &ApplyEnv, key: &[u8]) -> Result<Vec<Vec<u8>>, &'static str> {
     match kv_get(env, key)? {
         None => Ok(Vec::new()),
         Some(trainer_list) => {
@@ -447,7 +452,7 @@ pub fn kv_get_trainers(env: &ApplyEnv, key: &[u8]) -> Result<Vec<Vec<u8>>, &'sta
                     let mut out = Vec::with_capacity(term_permission_list.elements.len());
                     for el in term_permission_list.elements {
                         if let eetf::Term::Binary(b) = el {
-                            out.push(b.bytes); // move, no clone
+                            out.push(b.bytes);
                         } else {
                             return Err("invalid_trainer_list_term");
                         }
@@ -455,6 +460,31 @@ pub fn kv_get_trainers(env: &ApplyEnv, key: &[u8]) -> Result<Vec<Vec<u8>>, &'sta
                     Ok(out)
                 }
                 _ => Err("invalid_trainer_list_term"),
+            }
+        }
+    }
+}
+
+pub fn kv_get_height_trainers(env: &ApplyEnv, prefix: &[u8], key: &[u8]) -> Vec<Vec<u8>> {
+    match kv_get_prev_or_exact(env, prefix, key) {
+        None => Vec::new(),
+        Some((_key_suffix, trainer_list)) => {
+            let cursor = std::io::Cursor::new(trainer_list.as_slice());
+            let term_trainer_list = match eetf::Term::decode(cursor) {
+                Ok(t) => t,
+                Err(_) => return Vec::new(),
+            };
+            match term_trainer_list {
+                eetf::Term::List(term_permission_list) => {
+                    let mut out = Vec::with_capacity(term_permission_list.elements.len());
+                    for el in term_permission_list.elements {
+                        if let eetf::Term::Binary(b) = el {
+                            out.push(b.bytes);
+                        }
+                    }
+                    out
+                }
+                _ => Vec::new(),
             }
         }
     }
@@ -477,7 +507,7 @@ pub fn call_slash_trainer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), 
         return Err("invalid_epoch");
     }
 
-    let mut trainers = kv_get_trainers(env, &bcat(&[b"bic:epoch:trainers:", epoch.to_string().as_bytes()]))?;
+    let mut trainers = kv_get_epoch_trainers(env, &bcat(&[b"bic:epoch:trainers:", epoch.to_string().as_bytes()]))?;
     if !trainers.iter().any(|v| v.as_slice() == malicious_pk) {
         return Err("invalid_trainer_pk");
     }
@@ -513,7 +543,7 @@ pub fn call_slash_trainer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), 
     }
 
     let mut trainers_removed =
-        kv_get_trainers(env, &bcat(&[b"bic:epoch:trainers:removed:", epoch.to_string().as_bytes()]))?;
+        kv_get_epoch_trainers(env, &bcat(&[b"bic:epoch:trainers:removed:", epoch.to_string().as_bytes()]))?;
     trainers_removed.push(malicious_pk.to_vec());
     let term_trainers_removed =
         amadeus_utils::misc::eetf_list_of_binaries(trainers_removed).map_err(|_| "eetf_encoding_failed")?;
@@ -549,9 +579,8 @@ fn next_420(env: &mut ApplyEnv) {
     let leaders = get_sorted_leaders_excluding_removed(env, epoch_cur);
 
     let trainers_key = bcat(&[b"bic:epoch:trainers:", &epoch_cur.to_string().as_bytes()]);
-    let trainers: Vec<Vec<u8>> = kv_get_trainers(env, &trainers_key).unwrap_or_default();
+    let trainers: Vec<Vec<u8>> = kv_get_epoch_trainers(env, &trainers_key).unwrap_or_default();
 
-    // filter leaders: current trainers AND not peddlebike
     let trainers_to_recv_emissions: Vec<_> = leaders
         .iter()
         .filter(|(pk, _)| {
@@ -583,7 +612,7 @@ fn next_pre_420(env: &mut ApplyEnv) {
     let leaders = get_sorted_leaders_excluding_removed(env, epoch_cur);
 
     let trainers_key = bcat(&[b"bic:epoch:trainers:", &epoch_cur.to_string().as_bytes()]);
-    let trainers: Vec<Vec<u8>> = kv_get_trainers(env, &trainers_key).unwrap_or_default();
+    let trainers: Vec<Vec<u8>> = kv_get_epoch_trainers(env, &trainers_key).unwrap_or_default();
 
     let trainers_to_recv_emissions: Vec<_> =
         leaders.iter().filter(|(pk, _)| trainers.iter().any(|t| t == pk)).take(99).collect();

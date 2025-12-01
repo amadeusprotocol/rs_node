@@ -2,7 +2,6 @@ use crate::Context;
 use crate::consensus::consensus::{self, Consensus};
 use crate::consensus::doms::attestation::EventAttestation;
 use crate::consensus::doms::entry::{Entry, EventEntry};
-use crate::consensus::doms::sol::Solution;
 use crate::consensus::doms::tx::TxU;
 use crate::consensus::doms::{Attestation, EntrySummary};
 use crate::consensus::fabric::Fabric;
@@ -38,6 +37,8 @@ pub enum Protocol {
     NewPhoneWhoDisReply(NewPhoneWhoDisReply),
     Catchup(Catchup),
     CatchupReply(CatchupReply),
+    SpecialBusiness(SpecialBusiness),
+    SpecialBusinessReply(SpecialBusinessReply),
 }
 
 impl Typename for Protocol {
@@ -55,6 +56,8 @@ impl Typename for Protocol {
             Protocol::NewPhoneWhoDisReply(_) => NewPhoneWhoDisReply::TYPENAME,
             Protocol::Catchup(_) => Catchup::TYPENAME,
             Protocol::CatchupReply(_) => CatchupReply::TYPENAME,
+            Protocol::SpecialBusiness(_) => SpecialBusiness::TYPENAME,
+            Protocol::SpecialBusinessReply(_) => SpecialBusinessReply::TYPENAME,
         }
     }
 }
@@ -111,8 +114,6 @@ pub enum Error {
     #[error(transparent)]
     Fabric(#[from] crate::consensus::fabric::Error),
     #[error(transparent)]
-    Sol(#[from] crate::consensus::doms::sol::Error),
-    #[error(transparent)]
     Att(#[from] crate::consensus::doms::attestation::Error),
     #[error(transparent)]
     Reassembler(#[from] crate::node::reassembler::Error),
@@ -143,7 +144,6 @@ pub enum Instruction {
     SendPingReply { ts_m: u64, dst: Ipv4Addr },
 
     ValidTxs { txs: Vec<Vec<u8>> },
-    ReceivedSol { sol: Solution },
     ReceivedEntry { entry: Entry },
     ReceivedAttestation { attestation: Attestation },
     ReceivedConsensus { consensus: Consensus },
@@ -552,6 +552,63 @@ impl NewPhoneWhoDisReply {
     }
 }
 
+/// Application-specific payload for special business operations.
+/// Used for operations like slash_trainer_tx, slash_trainer_entry.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SpecialBusiness {
+    #[serde(with = "serde_bytes")]
+    pub business: Vec<u8>,
+}
+
+impl SpecialBusiness {
+    pub const TYPENAME: &'static str = "special_business";
+
+    pub fn new(business: Vec<u8>) -> Self {
+        Self { business }
+    }
+}
+
+impl Typename for SpecialBusiness {
+    fn typename(&self) -> &'static str {
+        Self::TYPENAME
+    }
+}
+
+#[async_trait::async_trait]
+impl Handle for SpecialBusiness {
+    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
+        Ok(vec![Instruction::SpecialBusiness { business: self.business.clone() }])
+    }
+}
+
+/// Reply to a special business request.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SpecialBusinessReply {
+    #[serde(with = "serde_bytes")]
+    pub business: Vec<u8>,
+}
+
+impl SpecialBusinessReply {
+    pub const TYPENAME: &'static str = "special_business_reply";
+
+    pub fn new(business: Vec<u8>) -> Self {
+        Self { business }
+    }
+}
+
+impl Typename for SpecialBusinessReply {
+    fn typename(&self) -> &'static str {
+        Self::TYPENAME
+    }
+}
+
+#[async_trait::async_trait]
+impl Handle for SpecialBusinessReply {
+    async fn handle(&self, _ctx: &Context, _src: Ipv4Addr) -> Result<Vec<Instruction>, Error> {
+        Ok(vec![Instruction::SpecialBusinessReply { business: self.business.clone() }])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -723,6 +780,26 @@ mod tests {
         let msg = Protocol::NewPhoneWhoDisReply(NewPhoneWhoDisReply::new(dummy_anr()));
         let rt = roundtrip(&msg);
         assert_eq!(rt.typename(), "new_phone_who_dis_reply");
+    }
+
+    #[test]
+    fn special_business_roundtrip() {
+        let msg = Protocol::SpecialBusiness(SpecialBusiness::new(vec![1, 2, 3, 4, 5]));
+        let rt = roundtrip(&msg);
+        assert_eq!(rt.typename(), "special_business");
+        if let Protocol::SpecialBusiness(sb) = rt {
+            assert_eq!(sb.business, vec![1, 2, 3, 4, 5]);
+        }
+    }
+
+    #[test]
+    fn special_business_reply_roundtrip() {
+        let msg = Protocol::SpecialBusinessReply(SpecialBusinessReply::new(vec![6, 7, 8, 9]));
+        let rt = roundtrip(&msg);
+        assert_eq!(rt.typename(), "special_business_reply");
+        if let Protocol::SpecialBusinessReply(sbr) = rt {
+            assert_eq!(sbr.business, vec![6, 7, 8, 9]);
+        }
     }
 
     #[test]

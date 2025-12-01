@@ -16,7 +16,6 @@ const UDP_PACKETS_LIMIT: u64 = 40_000;
 pub static PROTO_RATE_LIMITS: Lazy<HashMap<&'static str, u64>> = Lazy::new(|| {
     use crate::consensus::doms::attestation::EventAttestation;
     use crate::consensus::doms::entry::Entry;
-    use crate::consensus::doms::sol::Solution;
     use crate::node::protocol::{
         Catchup, CatchupReply, EventTip, EventTx, GetPeerAnrs, GetPeerAnrsReply, NewPhoneWhoDis, NewPhoneWhoDisReply,
         Ping, PingReply,
@@ -37,7 +36,6 @@ pub static PROTO_RATE_LIMITS: Lazy<HashMap<&'static str, u64>> = Lazy::new(|| {
         (CatchupReply::TYPENAME, 20),
         (Entry::TYPENAME, 30),
         (EventAttestation::TYPENAME, 8000),
-        (Solution::TYPENAME, 10_000),
     ]
     .into_iter()
     .collect()
