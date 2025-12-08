@@ -408,7 +408,7 @@ pub fn call_submit_sol(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), &'s
         return Err("sol_exists");
     }
 
-    let usol = consensus::bic::sol::unpack(&sol);
+    let usol = consensus::bic::sol::unpack(&sol)?;
     if env.caller_env.entry_epoch != usol.epoch {
         return Err("invalid_epoch");
     }

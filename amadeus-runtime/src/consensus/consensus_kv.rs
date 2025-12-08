@@ -250,7 +250,7 @@ pub fn revert(env: &mut ApplyEnv) -> Result<()> {
 }
 
 pub fn apply_mutations(db: &RocksDb, cf_name: &str, muts_rev: &[Mutation]) -> Result<()> {
-    let cf = db.inner.cf_handle(cf_name).unwrap(); // the cf must be present!
+    let cf = db.inner.cf_handle(cf_name).ok_or("cf_handle_failed")?;
     let txn = db.begin_transaction();
 
     for m in muts_rev {

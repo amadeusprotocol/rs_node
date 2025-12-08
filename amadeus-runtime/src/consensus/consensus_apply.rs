@@ -1,4 +1,5 @@
 // Consensus application environment and entry processing
+use crate::Result;
 use amadeus_utils::rocksdb::{BoundColumnFamily, MultiThreaded, RocksDb, Transaction, TransactionDB};
 use amadeus_utils::{Hash, PublicKey, Signature};
 use std::collections::HashMap;
@@ -93,8 +94,8 @@ pub fn make_apply_env<'db>(
     entry_vr: &Signature,
     entry_vr_b3: &Hash,
     entry_dr: &Hash,
-) -> ApplyEnv<'db> {
-    ApplyEnv {
+) -> Result<ApplyEnv<'db>> {
+    Ok(ApplyEnv {
         caller_env: make_caller_env(
             entry_signer,
             entry_prev_hash,
@@ -106,7 +107,7 @@ pub fn make_apply_env<'db>(
             entry_vr_b3,
             entry_dr,
         ),
-        cf: db.inner.cf_handle(cf_name).unwrap(), // the cf must be present!
+        cf: db.inner.cf_handle(cf_name).ok_or("cf_handle_failed")?,
         txn: db.begin_transaction(),
         muts_final: Vec::new(),
         muts_final_rev: Vec::new(),
@@ -115,7 +116,7 @@ pub fn make_apply_env<'db>(
         muts_rev: Vec::new(),
         muts_rev_gas: Vec::new(),
         result_log: Vec::new(),
-    }
+    })
 }
 
 pub fn valid_bic_action(contract: Vec<u8>, function: Vec<u8>) -> bool {

@@ -598,4 +598,13 @@ mod tests {
         // Verify it matches the version field directly
         assert_eq!(version_3b, (config.version.major(), config.version.minor(), config.version.patch()));
     }
+
+    #[test]
+    fn create_keypair() {
+        let sk = gen_sk();
+        let pk = get_pk(&sk);
+        let pk_b58 = bs58::encode(pk).into_string();
+        let sk_b58 = bs58::encode(sk).into_string();
+        println!("generated random sk at {sk_b58}, pk {pk_b58}");
+    }
 }

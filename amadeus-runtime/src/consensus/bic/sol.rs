@@ -18,15 +18,15 @@ pub struct Sol {
     pub tensor_c: [u8; 1024],
 }
 
-pub fn unpack(sol: &[u8; SOL_SIZE]) -> Sol {
-    let epoch = u32::from_le_bytes(sol[0..4].try_into().unwrap()) as u64;
-    let segment_vr_hash = Hash::new(sol[4..36].try_into().unwrap());
-    let pk = PublicKey::new(sol[36..84].try_into().unwrap());
-    let pop = Signature::new(sol[84..180].try_into().unwrap());
-    let computor = PublicKey::new(sol[180..228].try_into().unwrap());
-    let nonce: [u8; 12] = sol[228..240].try_into().unwrap();
-    let tensor_c: [u8; 1024] = sol[240..(240 + 1024)].try_into().unwrap();
-    Sol { epoch, segment_vr_hash, pk, pop, computor, nonce, tensor_c }
+pub fn unpack(sol: &[u8; SOL_SIZE]) -> Result<Sol> {
+    let epoch = u32::from_le_bytes(sol[0..4].try_into().map_err(|_| "sol_unpack_failed")?) as u64;
+    let segment_vr_hash = Hash::new(sol[4..36].try_into().map_err(|_| "sol_unpack_failed")?);
+    let pk = PublicKey::new(sol[36..84].try_into().map_err(|_| "sol_unpack_failed")?);
+    let pop = Signature::new(sol[84..180].try_into().map_err(|_| "sol_unpack_failed")?);
+    let computor = PublicKey::new(sol[180..228].try_into().map_err(|_| "sol_unpack_failed")?);
+    let nonce: [u8; 12] = sol[228..240].try_into().map_err(|_| "sol_unpack_failed")?;
+    let tensor_c: [u8; 1024] = sol[240..(240 + 1024)].try_into().map_err(|_| "sol_unpack_failed")?;
+    Ok(Sol { epoch, segment_vr_hash, pk, pop, computor, nonce, tensor_c })
 }
 
 pub fn verify_hash_diff(_epoch: u64, hash: &[u8], diff_bits: u64) -> bool {
@@ -44,7 +44,7 @@ pub fn verify(
     vr_b3: &[u8],
     diff_bits: u64,
 ) -> Result<bool> {
-    let usol = unpack(sol);
+    let usol = unpack(sol)?;
     if segment_vr_hash != &*usol.segment_vr_hash {
         return Err("segment_vr_hash");
     }

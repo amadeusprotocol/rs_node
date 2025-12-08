@@ -19,13 +19,15 @@ pub fn simulate_fpr(n: f64, m: f64, k: f64) -> f64 {
 
 #[inline]
 fn indices_from_digest(digest: &[u8]) -> Vec<u64> {
-    let mut out = Vec::new();
-    //Iterate in reverse
-    for chunk in digest.rchunks_exact(16) {
-        let word = u128::from_le_bytes(chunk.try_into().unwrap());
-        out.push((word % (M as u128)) as u64);
-    }
-    out
+    digest
+        .rchunks_exact(16)
+        .map(|chunk| {
+            let mut buf = [0u8; 16];
+            buf.copy_from_slice(chunk); // lengths match by construction
+            let word = u128::from_le_bytes(buf);
+            (word % (M as u128)) as u64
+        })
+        .collect()
 }
 
 #[inline]

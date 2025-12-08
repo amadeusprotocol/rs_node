@@ -487,7 +487,8 @@ pub fn apply_entry(
         &next_entry.header.vr,
         &Hash::from(entry_vr_b3),
         &next_entry.header.dr,
-    );
+    )
+    .map_err(Error::Runtime)?;
 
     // pre-process transactions (nonce updates, gas deduction)
     call_txs_pre(&mut env, next_entry, txs).map_err(Error::Runtime)?;
