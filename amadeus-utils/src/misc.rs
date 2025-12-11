@@ -254,7 +254,9 @@ impl TermMap {
     }
 }
 
-/// Encode a list of binary values as ETF term
+/// **DEPRECATED**: Encode a list of binary values as ETF term
+/// Use `list_of_binaries_to_vecpak` instead for new code.
+#[deprecated(since = "0.1.0", note = "Use list_of_binaries_to_vecpak instead")]
 pub fn eetf_list_of_binaries(list_of_binaries: Vec<Vec<u8>>) -> Result<Vec<u8>, eetf::EncodeError> {
     let elements: Vec<Term> = list_of_binaries.into_iter().map(|bytes| Term::from(Binary { bytes })).collect();
     let term = Term::from(List::from(elements));

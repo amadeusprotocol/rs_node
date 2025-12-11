@@ -3,11 +3,11 @@
 This initiative aims to create a Rust implementation of
 the [Amadeus Node](https://github.com/amadeus-robot/node.git).
 
-- [amadeus-node](./amadeus-node/): Core library with networking protocol and consensus logic
-- [amadeus-utils](./amadeus-utils/): Utility library with cryptography, serialization, and data persistence
-- [amadeus-runtime](./amadeus-runtime/): Consensus library with WASM execution and BIC contracts
-- [client](./client/): Client library with binaries (cli, node, etc.)
-- [http](./http/): Web dashboard of the Amadeus Node, by default runs on port 3000
+- [amadeus-utils](./amadeus-utils/): Cryptography, encoding, compression, database utilities
+- [amadeus-runtime](./amadeus-runtime/): WASM execution engine and BIC (built-in contracts)
+- [amadeus-node](./amadeus-node/): Core node: networking, consensus, context runtime
+- [client](./client/): CLI tool and full node binaries
+- [http](./http/): Web dashboard and REST API (port 3000)
 
 ## Prerequisites
 

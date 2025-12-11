@@ -84,16 +84,15 @@ pub fn exists(env: &ApplyEnv, symbol: &[u8]) -> Result<bool> {
 }
 
 pub fn has_permission(env: &ApplyEnv, symbol: &[u8], signer: &[u8]) -> Result<bool> {
+    use amadeus_utils::vecpak::{decode, Term};
     match kv_get(env, &bcat(&[b"bic:coin:permission:", symbol]))? {
         None => Ok(false),
         Some(permission_list) => {
-            let cursor = std::io::Cursor::new(permission_list.as_slice());
-            let term_permission_list = eetf::Term::decode(cursor).map_err(|_| "invalid_eetf")?;
-            match term_permission_list {
-                eetf::Term::List(term_permission_list) => Ok(term_permission_list
-                    .elements
+            let term = decode(permission_list.as_slice()).map_err(|_| "invalid_vecpak")?;
+            match term {
+                Term::List(term_list) => Ok(term_list
                     .iter()
-                    .any(|el| matches!(el, eetf::Term::Binary(b) if b.bytes.as_slice() == signer))),
+                    .any(|el| matches!(el, Term::Binary(b) if b.as_slice() == signer))),
                 _ => Ok(false),
             }
         }
@@ -175,7 +174,7 @@ pub fn call_create_and_mint(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()
 
     let mut admin = Vec::new();
     admin.push(env.caller_env.account_caller.to_vec());
-    let term_admins = amadeus_utils::misc::eetf_list_of_binaries(admin).map_err(|_| "eetf_encoding_failed")?;
+    let term_admins = amadeus_utils::misc::list_of_binaries_to_vecpak(admin);
     kv_put(env, &bcat(&[b"bic:coin:permission:", &symbol]), &term_admins)?;
 
     if mintable == b"true" {

@@ -1,16 +1,14 @@
 # Amadeus Node Library
 
-Core library for the Amadeus blockchain node, containing networking protocol,
-consensus logic, and the Context runtime container.
+Core library for the Amadeus blockchain node.
 
 ## Features
 
-- Network protocol implementation with Protocol trait
+- Network protocol: ping, catchup, events, attestations
 - Peer management and handshake tracking
 - ANR (Amadeus Network Record) handling
 - Transaction pool management
-- Consensus logic and chain fabric
-- BIC (Blockchain-in-a-coin) modules
-- WebAssembly runtime and contract execution
-- Configuration management
-- Performance metrics collection
+- Chain fabric (RocksDB storage)
+- Context runtime container
+- Reed-Solomon message reassembly
+- Configuration and metrics

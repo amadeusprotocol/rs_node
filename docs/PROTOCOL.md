@@ -11,8 +11,7 @@ three-byte semantic version.
 - `ping`/`ping_reply` – handshake with chain tips and timestamp
 - `event_tip` – announces temporal and rooted chain state
 - `event_tx` – broadcasts transactions
-- `sol` – propagates proof-of-work solutions
-- `entry` – delivers chain entry
+- `event_entry` – delivers chain entry
 - `event_attestation` – sends attestations
 - `catchup`/`catchup_reply` – requests/provides entries at specific heights
 - `get_peer_anrs`/`get_peer_anrs_reply` – exchanges peer identity info

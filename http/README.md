@@ -1,12 +1,12 @@
-# Amadeus native web dashboard
+# Amadeus Web Dashboard
 
-The icons set used for `/advanced` dashboard
-is [tabler](https://icones.js.org/collection/tabler).
+Web dashboard and REST API for the Amadeus node.
 
-## Features
+## Endpoints
 
-- [x] Dashboard at /
-- [x] OpenAPI at /api/openapi.yaml
-- [x] REST API at /api/* (peer, chain, wallet, transaction, contract, epoch endpoints)
-- [x] Prometheus metrics at /metrics
-- [x] Health check at /health
+- `/` - Dashboard
+- `/advanced` - Advanced dashboard (uses [tabler](https://icones.js.org/collection/tabler) icons)
+- `/api/*` - REST API (peer, chain, wallet, tx, contract, epoch)
+- `/api/openapi.yaml` - OpenAPI spec
+- `/metrics` - Prometheus metrics
+- `/health` - Health check

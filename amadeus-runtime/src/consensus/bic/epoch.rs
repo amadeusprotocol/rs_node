@@ -442,17 +442,17 @@ pub fn call_submit_sol(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), &'s
 }
 
 pub fn kv_get_epoch_trainers(env: &ApplyEnv, key: &[u8]) -> Result<Vec<Vec<u8>>, &'static str> {
+    use amadeus_utils::vecpak::{decode, Term};
     match kv_get(env, key)? {
         None => Ok(Vec::new()),
         Some(trainer_list) => {
-            let cursor = std::io::Cursor::new(trainer_list.as_slice());
-            let term_trainer_list = eetf::Term::decode(cursor).map_err(|_| "invalid_eetf")?;
-            match term_trainer_list {
-                eetf::Term::List(term_permission_list) => {
-                    let mut out = Vec::with_capacity(term_permission_list.elements.len());
-                    for el in term_permission_list.elements {
-                        if let eetf::Term::Binary(b) = el {
-                            out.push(b.bytes);
+            let term = decode(trainer_list.as_slice()).map_err(|_| "invalid_vecpak")?;
+            match term {
+                Term::List(term_list) => {
+                    let mut out = Vec::with_capacity(term_list.len());
+                    for el in term_list {
+                        if let Term::Binary(b) = el {
+                            out.push(b);
                         } else {
                             return Err("invalid_trainer_list_term");
                         }
@@ -466,20 +466,20 @@ pub fn kv_get_epoch_trainers(env: &ApplyEnv, key: &[u8]) -> Result<Vec<Vec<u8>>,
 }
 
 pub fn kv_get_height_trainers(env: &ApplyEnv, prefix: &[u8], key: &[u8]) -> Vec<Vec<u8>> {
+    use amadeus_utils::vecpak::{decode, Term};
     match kv_get_prev_or_exact(env, prefix, key) {
         None => Vec::new(),
         Some((_key_suffix, trainer_list)) => {
-            let cursor = std::io::Cursor::new(trainer_list.as_slice());
-            let term_trainer_list = match eetf::Term::decode(cursor) {
+            let term = match decode(trainer_list.as_slice()) {
                 Ok(t) => t,
                 Err(_) => return Vec::new(),
             };
-            match term_trainer_list {
-                eetf::Term::List(term_permission_list) => {
-                    let mut out = Vec::with_capacity(term_permission_list.elements.len());
-                    for el in term_permission_list.elements {
-                        if let eetf::Term::Binary(b) = el {
-                            out.push(b.bytes);
+            match term {
+                Term::List(term_list) => {
+                    let mut out = Vec::with_capacity(term_list.len());
+                    for el in term_list {
+                        if let Term::Binary(b) = el {
+                            out.push(b);
                         }
                     }
                     out
@@ -545,8 +545,7 @@ pub fn call_slash_trainer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), 
     let mut trainers_removed =
         kv_get_epoch_trainers(env, &bcat(&[b"bic:epoch:trainers:removed:", epoch.to_string().as_bytes()]))?;
     trainers_removed.push(malicious_pk.to_vec());
-    let term_trainers_removed =
-        amadeus_utils::misc::eetf_list_of_binaries(trainers_removed).map_err(|_| "eetf_encoding_failed")?;
+    let term_trainers_removed = amadeus_utils::misc::list_of_binaries_to_vecpak(trainers_removed);
     kv_put(
         env,
         &bcat(&[b"bic:epoch:trainers:removed:", epoch.to_string().as_bytes()]),
@@ -554,7 +553,7 @@ pub fn call_slash_trainer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<(), 
     )?;
 
     trainers.retain(|pk| pk.as_slice() != malicious_pk);
-    let term_trainers = amadeus_utils::misc::eetf_list_of_binaries(trainers).map_err(|_| "eetf_encoding_failed")?;
+    let term_trainers = amadeus_utils::misc::list_of_binaries_to_vecpak(trainers);
     kv_put(env, &bcat(&[b"bic:epoch:trainers:", epoch.to_string().as_bytes()]), term_trainers.as_slice())?;
 
     let height = format!("{:012}", env.caller_env.entry_height.saturating_add(1)).into_bytes();
@@ -629,14 +628,14 @@ fn next_pre_420(env: &mut ApplyEnv) {
 
 fn get_sorted_leaders_excluding_removed(env: &ApplyEnv, epoch: u64) -> Vec<(Vec<u8>, i128)> {
     use crate::consensus::consensus_kv::kv_get_prefix;
-    use amadeus_utils::misc::TermExt;
+    use amadeus_utils::vecpak::{decode, VecpakExt};
 
     let removed_key = bcat(&[b"bic:epoch:trainers:removed:", &epoch.to_string().as_bytes()]);
     let removed_trainers: Vec<Vec<u8>> = kv_get(env, &removed_key)
         .ok()
         .flatten()
         .and_then(|bytes| {
-            let term = eetf::Term::decode(&bytes[..]).ok()?;
+            let term = decode(&bytes[..]).ok()?;
             let list = term.get_list()?;
             Some(list.iter().filter_map(|t| t.get_binary()).map(|b| b.to_vec()).collect())
         })
@@ -704,7 +703,7 @@ fn build_and_shuffle_new_validators(env: &ApplyEnv, leaders: &[(Vec<u8>, i128)])
 
 fn store_new_trainers_for_next_epoch(env: &mut ApplyEnv, epoch_next: u64, new_validators: Vec<Vec<u8>>) {
     use crate::consensus::consensus_kv::kv_put;
-    let term = amadeus_utils::misc::eetf_list_of_binaries(new_validators).unwrap_or_default();
+    let term = amadeus_utils::misc::list_of_binaries_to_vecpak(new_validators);
 
     let trainers_next_key = bcat(&[b"bic:epoch:trainers:", &epoch_next.to_string().as_bytes()]);
     let _ = kv_put(env, &trainers_next_key, &term);
@@ -810,8 +809,7 @@ impl Epoch {
                 args.push(mask_bytes);
                 if let Some(t) = trainers {
                     args.push(
-                        amadeus_utils::misc::eetf_list_of_binaries(t.into_iter().map(|pk| pk.to_vec()).collect())
-                            .unwrap_or_default(),
+                        amadeus_utils::misc::list_of_binaries_to_vecpak(t.into_iter().map(|pk| pk.to_vec()).collect()),
                     );
                 }
                 call_slash_trainer(env, args).map_err(|_| EpochError::InvalidEpoch)
@@ -825,7 +823,7 @@ impl Epoch {
 }
 
 pub fn trainers_for_height(db: &amadeus_utils::rocksdb::RocksDb, height: u64) -> Option<Vec<PublicKey>> {
-    use amadeus_utils::misc::TermExt;
+    use amadeus_utils::vecpak::{decode, VecpakExt};
 
     let value: Option<Vec<u8>> = if (3_195_570..=3_195_575).contains(&height) {
         match db.get(CF_CONTRACTSTATE, b"bic:epoch:trainers:height:000000319557") {
@@ -842,7 +840,7 @@ pub fn trainers_for_height(db: &amadeus_utils::rocksdb::RocksDb, height: u64) ->
     };
 
     let bytes = value?;
-    let term = eetf::Term::decode(&bytes[..]).ok()?;
+    let term = decode(&bytes[..]).ok()?;
     let list = term.get_list()?;
     let mut out = Vec::with_capacity(list.len());
     for t in list {
