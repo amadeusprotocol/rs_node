@@ -638,7 +638,7 @@ impl Context {
     /// Get all balances for a wallet using prefix scan
     pub fn get_all_wallet_balances(&self, public_key: &PublicKey) -> Vec<(Vec<u8>, i128)> {
         use amadeus_utils::constants::CF_CONTRACTSTATE;
-        let prefix = [b"bic:coin:balance:" as &[u8], public_key.as_ref() as &[u8], b":" as &[u8]].concat();
+        let prefix = [b"account:" as &[u8], public_key.as_ref() as &[u8], b":balance:" as &[u8]].concat();
         self.fabric
             .db()
             .iter_prefix(CF_CONTRACTSTATE, &prefix)

@@ -672,9 +672,9 @@ fn distribute_emissions_to_trainers(
         let emission_address = kv_get(env, &emission_addr_key).ok().flatten();
 
         let balance_key = if let Some(addr) = emission_address {
-            bcat(&[b"bic:coin:balance:", &addr, b":AMA"])
+            bcat(&[b"account:", &addr, b":balance:AMA"])
         } else {
-            bcat(&[b"bic:coin:balance:", trainer, b":AMA"])
+            bcat(&[b"account:", trainer, b":balance:AMA"])
         };
 
         let _ = kv_increment(env, &balance_key, coins);
@@ -730,9 +730,9 @@ fn distribute_peddlebike67_community_fund(env: &mut ApplyEnv, total_emission: i1
         let emission_address = kv_get(env, &emission_addr_key).ok().flatten();
 
         let balance_key = if let Some(addr) = emission_address {
-            bcat(&[b"bic:coin:balance:", &addr, b":AMA"])
+            bcat(&[b"account:", &addr, b":balance:AMA"])
         } else {
-            bcat(&[b"bic:coin:balance:", peddle_pk.as_slice(), b":AMA"])
+            bcat(&[b"account:", peddle_pk.as_slice(), b":balance:AMA"])
         };
 
         let _ = kv_increment(env, &balance_key, coins);

@@ -839,7 +839,7 @@ impl Fabric {
             Some(cf) => cf,
             None => return 0,
         };
-        let key = format!("bic:coin:balance:{}:AMA", hex::encode(public_key));
+        let key = format!("account:{}:balance:AMA", hex::encode(public_key));
         self.db
             .inner
             .get_cf(&cf, key.as_bytes())
@@ -876,7 +876,7 @@ impl Fabric {
             Some(cf) => cf,
             None => return 0,
         };
-        let key = format!("bic:coin:balance:{}:{}", hex::encode(public_key), std::str::from_utf8(symbol).unwrap_or(""));
+        let key = format!("account:{}:balance:{}", hex::encode(public_key), std::str::from_utf8(symbol).unwrap_or(""));
         self.db
             .inner
             .get_cf(&cf, key.as_bytes())
@@ -923,7 +923,7 @@ pub mod chain_queries {
             Some(cf) => cf,
             None => return 0,
         };
-        let key = format!("bic:coin:balance:{}:AMA", hex::encode(public_key));
+        let key = format!("account:{}:balance:AMA", hex::encode(public_key));
         db.inner
             .get_cf(&cf, key.as_bytes())
             .ok()

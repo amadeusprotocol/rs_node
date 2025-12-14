@@ -1,10 +1,10 @@
 use crate::consensus::consensus_apply::ApplyEnv;
 use crate::consensus::consensus_kv::{kv_get, kv_increment, kv_put};
 use crate::{Result, bcat, consensus};
-use amadeus_utils::{Hash, PublicKey, Signature};
+use amadeus_utils::vecpak::{self, Term};
 
 pub const DECIMALS: u32 = 9;
-pub const BURN_ADDRESS: PublicKey = PublicKey::new([0u8; 48]);
+pub const BURN_ADDRESS: [u8; 48] = [0u8; 48];
 
 pub fn to_flat(coins: i128) -> i128 {
     coins.saturating_mul(1_000_000_000)
@@ -23,11 +23,11 @@ pub fn from_flat(coins: i128) -> f64 {
 }
 
 pub fn balance_burnt(env: &ApplyEnv, symbol: &[u8]) -> Result<i128> {
-    balance(env, BURN_ADDRESS.as_ref(), symbol)
+    balance(env, &BURN_ADDRESS, symbol)
 }
 
 pub fn balance(env: &ApplyEnv, address: &[u8], symbol: &[u8]) -> Result<i128> {
-    match kv_get(env, &bcat(&[b"bic:coin:balance:", address, b":", symbol]))? {
+    match kv_get(env, &bcat(&[b"account:", address, b":balance:", symbol]))? {
         Some(amount) => {
             let s = std::str::from_utf8(&amount).map_err(|_| "invalid_utf8")?;
             let parsed = s.parse::<i128>().map_err(|_| "invalid_balance")?;
@@ -38,21 +38,21 @@ pub fn balance(env: &ApplyEnv, address: &[u8], symbol: &[u8]) -> Result<i128> {
 }
 
 pub fn mintable(env: &ApplyEnv, symbol: &[u8]) -> Result<bool> {
-    match kv_get(env, &bcat(&[b"bic:coin:mintable:", symbol]))?.as_deref() {
+    match kv_get(env, &bcat(&[b"coin:", symbol, b":mintable"]))?.as_deref() {
         Some(b"true") => Ok(true),
         _ => Ok(false),
     }
 }
 
 pub fn pausable(env: &ApplyEnv, symbol: &[u8]) -> Result<bool> {
-    match kv_get(env, &bcat(&[b"bic:coin:pausable:", symbol]))?.as_deref() {
+    match kv_get(env, &bcat(&[b"coin:", symbol, b":pausable"]))?.as_deref() {
         Some(b"true") => Ok(true),
         _ => Ok(false),
     }
 }
 
 pub fn paused(env: &ApplyEnv, symbol: &[u8]) -> Result<bool> {
-    match kv_get(env, &bcat(&[b"bic:coin:paused:", symbol]))?.as_deref() {
+    match kv_get(env, &bcat(&[b"coin:", symbol, b":paused"]))?.as_deref() {
         Some(b"true") => pausable(env, symbol),
         _ => Ok(false),
     }
@@ -66,7 +66,7 @@ pub fn soulbound(env: &ApplyEnv, symbol: &[u8]) -> Result<bool> {
 }
 
 pub fn total_supply(env: &ApplyEnv, symbol: &[u8]) -> Result<i128> {
-    match kv_get(env, &bcat(&[b"bic:coin:totalSupply:", symbol]))? {
+    match kv_get(env, &bcat(&[b"coin:", symbol, b":totalSupply"]))? {
         Some(amount) => {
             let s = std::str::from_utf8(&amount).map_err(|_| "invalid_utf8")?;
             let parsed = s.parse::<i128>().map_err(|_| "invalid_total_supply")?;
@@ -77,18 +77,17 @@ pub fn total_supply(env: &ApplyEnv, symbol: &[u8]) -> Result<i128> {
 }
 
 pub fn exists(env: &ApplyEnv, symbol: &[u8]) -> Result<bool> {
-    match kv_get(env, &bcat(&[b"bic:coin:totalSupply:", symbol]))? {
+    match kv_get(env, &bcat(&[b"coin:", symbol, b":totalSupply"]))? {
         Some(_) => Ok(true),
         None => Ok(false),
     }
 }
 
 pub fn has_permission(env: &ApplyEnv, symbol: &[u8], signer: &[u8]) -> Result<bool> {
-    use amadeus_utils::vecpak::{decode, Term};
-    match kv_get(env, &bcat(&[b"bic:coin:permission:", symbol]))? {
+    match kv_get(env, &bcat(&[b"coin:", symbol, b":permission"]))? {
         None => Ok(false),
         Some(permission_list) => {
-            let term = decode(permission_list.as_slice()).map_err(|_| "invalid_vecpak")?;
+            let term = vecpak::decode(permission_list.as_slice()).map_err(|_| "invalid_vecpak")?;
             match term {
                 Term::List(term_list) => Ok(term_list
                     .iter()
@@ -111,15 +110,13 @@ pub fn call_transfer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()> {
     if receiver.len() != 48 {
         return Err("invalid_receiver_pk");
     }
-    if !(amadeus_utils::bls12_381::validate_public_key(receiver).is_ok()
-        || receiver == AsRef::<[u8]>::as_ref(&BURN_ADDRESS))
-    {
+    if !(amadeus_utils::bls12_381::validate_public_key(receiver).is_ok() || receiver == &BURN_ADDRESS) {
         return Err("invalid_receiver_pk");
     }
     if amount <= 0 {
         return Err("invalid_amount");
     }
-    if amount > balance(env, env.caller_env.account_caller.as_slice(), &symbol)? {
+    if amount > balance(env, env.caller_env.account_caller.as_slice(), symbol)? {
         return Err("insufficient_funds");
     }
 
@@ -130,8 +127,13 @@ pub fn call_transfer(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()> {
         return Err("soulbound");
     }
 
-    kv_increment(env, &bcat(&[b"bic:coin:balance:", env.caller_env.account_caller.as_slice(), b":", symbol]), -amount)?;
-    kv_increment(env, &bcat(&[b"bic:coin:balance:", receiver, b":", symbol]), amount)?;
+    kv_increment(env, &bcat(&[b"account:", env.caller_env.account_caller.as_slice(), b":balance:", symbol]), -amount)?;
+    kv_increment(env, &bcat(&[b"account:", receiver, b":balance:", symbol]), amount)?;
+
+    // Account burnt coins
+    if symbol != b"AMA" && receiver == &BURN_ADDRESS {
+        kv_increment(env, &bcat(&[b"coin:", symbol, b":totalSupply"]), -amount)?;
+    }
     Ok(())
 }
 
@@ -141,10 +143,10 @@ pub fn call_create_and_mint(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()
     }
     let symbol_original = args[0].as_slice();
     let amount = args[1].as_slice();
-    let mintable = args.get(2).and_then(|v| if v.is_empty() { None } else { Some(v.as_slice()) }).unwrap_or(b"false");
-    let pausable = args.get(3).and_then(|v| if v.is_empty() { None } else { Some(v.as_slice()) }).unwrap_or(b"false");
-    let soulbound_arg =
-        args.get(4).and_then(|v| if v.is_empty() { None } else { Some(v.as_slice()) }).unwrap_or(b"false");
+    let decimals = args.get(2).and_then(|v| if v.is_empty() { None } else { Some(v.as_slice()) }).unwrap_or(b"9");
+    let mintable = args.get(3).and_then(|v| if v.is_empty() { None } else { Some(v.as_slice()) }).unwrap_or(b"false");
+    let pausable = args.get(4).and_then(|v| if v.is_empty() { None } else { Some(v.as_slice()) }).unwrap_or(b"false");
+    let soulbound_arg = args.get(5).and_then(|v| if v.is_empty() { None } else { Some(v.as_slice()) }).unwrap_or(b"false");
 
     let symbol: Vec<u8> = symbol_original.iter().copied().filter(u8::is_ascii_alphanumeric).collect();
     if symbol_original != symbol.as_slice() {
@@ -157,11 +159,6 @@ pub fn call_create_and_mint(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()
         return Err("symbol_too_long");
     }
 
-    let amount = std::str::from_utf8(&amount).ok().and_then(|s| s.parse::<i128>().ok()).ok_or("invalid_amount")?;
-    if amount <= 0 {
-        return Err("invalid_amount");
-    }
-
     if !consensus::bic::coin_symbol_reserved::is_free(&symbol, &env.caller_env.account_caller) {
         return Err("symbol_reserved");
     }
@@ -169,19 +166,28 @@ pub fn call_create_and_mint(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()
         return Err("symbol_exists");
     }
 
-    kv_increment(env, &bcat(&[b"bic:coin:balance:", env.caller_env.account_caller.as_slice(), b":", &symbol]), amount)?;
-    kv_increment(env, &bcat(&[b"bic:coin:totalSupply:", &symbol]), amount)?;
+    let amount = std::str::from_utf8(&amount).ok().and_then(|s| s.parse::<i128>().ok()).ok_or("invalid_amount")?;
+    if amount <= 0 {
+        return Err("invalid_amount");
+    }
 
-    let mut admin = Vec::new();
-    admin.push(env.caller_env.account_caller.to_vec());
-    let term_admins = amadeus_utils::misc::list_of_binaries_to_vecpak(admin);
-    kv_put(env, &bcat(&[b"bic:coin:permission:", &symbol]), &term_admins)?;
+    let decimals = std::str::from_utf8(decimals).ok().and_then(|s| s.parse::<u64>().ok()).ok_or("invalid_decimals")?;
+    if decimals >= 10 {
+        return Err("invalid_decimals");
+    }
+
+    kv_increment(env, &bcat(&[b"account:", env.caller_env.account_caller.as_slice(), b":balance:", &symbol]), amount)?;
+    kv_increment(env, &bcat(&[b"coin:", &symbol, b":totalSupply"]), amount)?;
+
+    let admin = vec![Term::Binary(env.caller_env.account_caller.to_vec())];
+    let buf = vecpak::encode(Term::List(admin));
+    kv_put(env, &bcat(&[b"coin:", &symbol, b":permission"]), &buf)?;
 
     if mintable == b"true" {
-        kv_put(env, &bcat(&[b"bic:coin:mintable:", &symbol]), b"true")?;
+        kv_put(env, &bcat(&[b"coin:", &symbol, b":mintable"]), b"true")?;
     }
     if pausable == b"true" {
-        kv_put(env, &bcat(&[b"bic:coin:pausable:", &symbol]), b"true")?;
+        kv_put(env, &bcat(&[b"coin:", &symbol, b":pausable"]), b"true")?;
     }
     if soulbound_arg == b"true" {
         kv_put(env, &bcat(&[b"coin:", &symbol, b":soulbound"]), b"true")?;
@@ -190,32 +196,44 @@ pub fn call_create_and_mint(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()
 }
 
 pub fn call_mint(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()> {
-    if args.len() != 2 {
+    if args.len() != 3 {
         return Err("invalid_args");
     }
     let symbol = args[0].as_slice();
     let amount = args[1].as_slice();
-
     let amount = std::str::from_utf8(&amount).ok().and_then(|s| s.parse::<i128>().ok()).ok_or("invalid_amount")?;
+    let receiver = args[2].as_slice();
+    if receiver.len() != 48 {
+        return Err("invalid_receiver_pk");
+    }
+
+    if !has_permission(env, symbol, env.caller_env.account_caller.as_slice())? {
+        return Err("no_permissions");
+    }
+
+    mint(env, symbol, amount, receiver)
+}
+
+pub fn mint(env: &mut ApplyEnv, symbol: &[u8], amount: i128, receiver: &[u8]) -> Result<()> {
+    if !amadeus_utils::bls12_381::validate_public_key(receiver).is_ok() {
+        return Err("invalid_receiver_pk");
+    }
     if amount <= 0 {
         return Err("invalid_amount");
     }
 
-    if !exists(env, &symbol)? {
+    if !exists(env, symbol)? {
         return Err("symbol_doesnt_exist");
     }
-    if !has_permission(env, &symbol, env.caller_env.account_caller.as_slice())? {
-        return Err("no_permissions");
-    }
-    if !mintable(env, &symbol)? {
+    if !mintable(env, symbol)? {
         return Err("not_mintable");
     }
-    if paused(env, &symbol)? {
+    if paused(env, symbol)? {
         return Err("paused");
     }
 
-    kv_increment(env, &bcat(&[b"bic:coin:balance:", env.caller_env.account_caller.as_slice(), b":", symbol]), amount)?;
-    kv_increment(env, &bcat(&[b"bic:coin:totalSupply:", symbol]), amount)?;
+    kv_increment(env, &bcat(&[b"account:", receiver, b":balance:", symbol]), amount)?;
+    kv_increment(env, &bcat(&[b"coin:", symbol, b":totalSupply"]), amount)?;
     Ok(())
 }
 
@@ -230,22 +248,21 @@ pub fn call_pause(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()> {
         return Err("invalid_direction");
     }
 
-    if !exists(env, &symbol)? {
+    if !exists(env, symbol)? {
         return Err("symbol_doesnt_exist");
     }
-    if !has_permission(env, &symbol, env.caller_env.account_caller.as_slice())? {
+    if !has_permission(env, symbol, env.caller_env.account_caller.as_slice())? {
         return Err("no_permissions");
     }
-    if !pausable(env, &symbol)? {
+    if !pausable(env, symbol)? {
         return Err("not_pausable");
     }
 
-    kv_put(env, &bcat(&[b"bic:coin:paused:", &symbol]), &direction)?;
+    kv_put(env, &bcat(&[b"coin:", symbol, b":paused"]), direction)?;
     Ok(())
 }
 
-// Compatibility wrappers for amadeus-node
-pub fn burn_address() -> PublicKey {
+pub fn burn_address() -> [u8; 48] {
     BURN_ADDRESS
 }
 

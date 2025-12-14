@@ -269,15 +269,15 @@ fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txs: &[TxU]) -> Result<(
     let epoch = next_entry.header.height / 100_000;
 
     let entry_signer_key =
-        crate::utils::misc::bcat(&[b"bic:coin:balance:", next_entry.header.signer.as_ref(), b":AMA"]);
+        crate::utils::misc::bcat(&[b"account:", next_entry.header.signer.as_ref(), b":balance:AMA"]);
     let burn_address_key = crate::utils::misc::bcat(&[
-        b"bic:coin:balance:",
-        amadeus_runtime::consensus::bic::coin::BURN_ADDRESS.as_ref(),
-        b":AMA",
+        b"account:",
+        &amadeus_runtime::consensus::bic::coin::BURN_ADDRESS,
+        b":balance:AMA",
     ]);
 
     for tx in txs {
-        let nonce_key = crate::utils::misc::bcat(&[b"bic:base:nonce:", tx.tx.signer.as_ref()]);
+        let nonce_key = crate::utils::misc::bcat(&[b"account:", tx.tx.signer.as_ref(), b":attribute:nonce"]);
         let nonce_i64 = i64::try_from(tx.tx.nonce).unwrap_or(i64::MAX);
         consensus_kv::kv_put(env, &nonce_key, &nonce_i64.to_string().into_bytes())?;
 
@@ -288,7 +288,7 @@ fn call_txs_pre(env: &mut ApplyEnv, next_entry: &Entry, txs: &[TxU]) -> Result<(
             amadeus_runtime::consensus::bic::coin::to_cents((3 + bytes / 256 * 3) as i128)
         };
 
-        let signer_balance_key = crate::utils::misc::bcat(&[b"bic:coin:balance:", tx.tx.signer.as_ref(), b":AMA"]);
+        let signer_balance_key = crate::utils::misc::bcat(&[b"account:", tx.tx.signer.as_ref(), b":balance:AMA"]);
         consensus_kv::kv_increment(env, &signer_balance_key, -exec_cost)?;
 
         consensus_kv::kv_increment(env, &entry_signer_key, exec_cost / 2)?;

@@ -100,10 +100,7 @@ impl TxU {
 }
 
 pub fn valid_pk(pk: &[u8]) -> bool {
-    if pk.len() == 48
-        && let Ok(arr) = <PublicKey>::try_from(pk)
-        && &arr == &amadeus_runtime::consensus::bic::coin::burn_address()
-    {
+    if pk.len() == 48 && pk == amadeus_runtime::consensus::bic::coin::BURN_ADDRESS {
         return true;
     }
     bls12_381::validate_public_key(pk).is_ok()

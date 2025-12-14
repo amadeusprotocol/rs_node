@@ -28,12 +28,12 @@ pub fn call_deploy(env: &mut ApplyEnv, args: Vec<Vec<u8>>) -> Result<()> {
     // Validate WASM before storing
     validate(wasmbytes)?;
 
-    kv_put(env, &bcat(&[b"bic:contract:account:", env.caller_env.account_caller.as_slice(), b":bytecode"]), wasmbytes)?;
+    kv_put(env, &bcat(&[b"account:", env.caller_env.account_caller.as_slice(), b":attribute:bytecode"]), wasmbytes)?;
     Ok(())
 }
 
 pub fn bytecode(env: &mut ApplyEnv, account: &[u8]) -> Result<Option<Vec<u8>>> {
-    kv_get(env, &bcat(&[b"bic:contract:account:", &account, b":bytecode"]))
+    kv_get(env, &bcat(&[b"account:", &account, b":attribute:bytecode"]))
 }
 
 /// Dispatch contract module calls
