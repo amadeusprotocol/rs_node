@@ -132,6 +132,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "amadeus-sdk"
+version = "1.2.5"
+
+[[package]]
 name = "amadeus-utils"
 version = "1.2.5"
 dependencies = [
@@ -700,6 +704,7 @@ name = "client"
 version = "1.2.5"
 dependencies = [
  "amadeus-node",
+ "amadeus-utils",
  "anyhow",
  "async-trait",
  "bincode",
@@ -711,6 +716,8 @@ dependencies = [
  "jemalloc-ctl",
  "jemallocator",
  "reqwest",
+ "serde",
+ "serde_bytes",
  "serde_json",
  "tokio",
  "tracing",
