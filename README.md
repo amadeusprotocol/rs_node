@@ -60,27 +60,7 @@ cargo test-all
 
 ### CLI
 
-CLI is a client that can deploy contracts and send transactions via HTTP.
-
-```bash
-# Generate a new secret key
-cargo cli gen-sk sk.local
-
-# Get public key from secret key file
-cargo cli get-pk --sk sk.local
-
-# Build a transaction (prints base58-encoded tx, doesn't send)
-cargo cli tx --sk sk.local Contract test "[]"
-
-# Build and send a transaction via HTTP
-cargo cli tx --sk sk.local Contract test "[]" --url http://localhost
-
-# Deploy a contract (prints base58-encoded tx)
-cargo cli contract-tx --sk sk.local assets/contracts/simple_counter.wasm
-
-# Deploy a contract and send via HTTP to a specific node
-cargo cli contract-tx --sk sk.local assets/contracts/simple_counter.wasm --url http://72.9.144.110
-```
+See [client/README.md](./client/README.md) for CLI documentation.
 
 ### Node debugging
 
