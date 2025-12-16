@@ -248,8 +248,10 @@ async fn submit_or_print(tx_packed: Vec<u8>, url: Option<&str>) -> Result<()> {
 }
 
 pub async fn send_transaction(tx_packed: Vec<u8>, url: &str) -> Result<()> {
+    let tx_hash = extract_tx_hash(&tx_packed);
     let tx_base58 = bs58::encode(&tx_packed).into_string();
-    let endpoint = format!("{}/api/tx/submit", url.trim_end_matches('/'));
+    let base_url = url.trim_end_matches('/');
+    let endpoint = format!("{}/api/tx/submit", base_url);
 
     let response = reqwest::Client::new()
         .post(&endpoint)
@@ -268,6 +270,71 @@ pub async fn send_transaction(tx_packed: Vec<u8>, url: &str) -> Result<()> {
     match result.get("error") {
         Some(e) if e == "ok" => {
             println!("Transaction submitted successfully.");
+
+            // Wait a bit for the transaction to be processed
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+            // Fetch and display transaction result
+            let tx_url = format!("{}/api/chain/tx/{}", base_url, tx_hash);
+            match reqwest::get(&tx_url).await {
+                Ok(tx_response) => {
+                    if let Ok(tx_data) = tx_response.json::<JsonValue>().await {
+                        println!("\nTransaction Result:");
+                        if let Some(result) = tx_data.get("result") {
+                            println!("  Success: {}", result.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+
+                            // Handle result field (might be string or binary)
+                            if let Some(result_val) = result.get("result") {
+                                match result_val.as_str() {
+                                    Some(s) if s.chars().all(|c| c == '?') => {
+                                        // All question marks = binary data that couldn't be decoded as UTF-8
+                                        println!("  Result: (binary data, {} bytes)", s.len());
+                                    }
+                                    Some(s) if !s.is_empty() && s.chars().all(|c| !c.is_control() || c.is_whitespace()) => {
+                                        println!("  Result: {}", s);
+                                    }
+                                    Some(s) if !s.is_empty() => {
+                                        // Contains control chars, show as hex
+                                        println!("  Result (hex): {}", s.as_bytes().iter().map(|b| format!("{:02x}", b)).collect::<String>());
+                                    }
+                                    _ => {
+                                        println!("  Result: (empty)");
+                                    }
+                                }
+                            }
+
+                            // Handle logs (might contain binary data)
+                            if let Some(logs) = result.get("logs").and_then(|v| v.as_array()) {
+                                if !logs.is_empty() {
+                                    println!("  Logs:");
+                                    for (i, log) in logs.iter().enumerate() {
+                                        if let Some(s) = log.as_str() {
+                                            if s.chars().all(|c| c == '?') {
+                                                println!("    [{}] (binary data, {} bytes)", i, s.len());
+                                            } else if s.chars().all(|c| !c.is_control() || c.is_whitespace()) {
+                                                println!("    [{}] {}", i, s);
+                                            } else {
+                                                println!("    [{}] (hex) {}", i, s.as_bytes().iter().map(|b| format!("{:02x}", b)).collect::<String>());
+                                            }
+                                        } else {
+                                            println!("    [{}] {:?}", i, log);
+                                        }
+                                    }
+                                }
+                            }
+
+                            if let Some(exec_used) = result.get("exec_used").and_then(|v| v.as_str()) {
+                                println!("  Gas used: {}", exec_used);
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    println!("\nCouldn't fetch transaction result. Check manually:");
+                    println!("  {}", tx_url);
+                }
+            }
+
             Ok(())
         }
         Some(e) => Err(Error::msg(format!("Transaction failed: {:?}", e))),

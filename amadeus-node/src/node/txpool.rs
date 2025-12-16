@@ -97,7 +97,7 @@ impl TxPool {
         args.batch_state.balances.insert(signer_vec, new_balance);
 
         let action = &txu.tx.action;
-        if action.function == "submit_sol" && !action.args.is_empty() {
+        if action.function.as_slice() == b"submit_sol" && !action.args.is_empty() {
             let sol_bytes = &action.args[0];
             if sol_bytes.len() >= 36 {
                 let sol_epoch = u32::from_le_bytes([sol_bytes[0], sol_bytes[1], sol_bytes[2], sol_bytes[3]]);

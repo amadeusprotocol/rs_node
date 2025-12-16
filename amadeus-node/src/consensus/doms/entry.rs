@@ -465,7 +465,7 @@ impl Entry {
     }
 
     pub fn contains_tx(&self, tx_function: &str) -> bool {
-        self.txs.iter().any(|tx| tx.tx.action.function == tx_function)
+        self.txs.iter().any(|tx| tx.tx.action.function.as_slice() == tx_function.as_bytes())
     }
 }
 
@@ -532,8 +532,8 @@ mod tests {
             tx: EntryTxInner {
                 action: EntryTxAction {
                     args: vec![vec![1, 2, 3]],
-                    contract: "TestContract".to_string(),
-                    function: "test_func".to_string(),
+                    contract: b"TestContract".to_vec(),
+                    function: b"test_func".to_vec(),
                     op: "call".to_string(),
                     attached_symbol: None,
                     attached_amount: None,
@@ -690,7 +690,7 @@ mod tests {
         // Verify
         assert_eq!(decoded.entry_packed.header.height, 41939338);
         assert_eq!(decoded.entry_packed.txs.len(), 1);
-        assert_eq!(decoded.entry_packed.txs[0].tx.action.function, "test_func");
+        assert_eq!(decoded.entry_packed.txs[0].tx.action.function.as_slice(), b"test_func");
 
         println!("Successfully roundtripped EntryProto!");
     }

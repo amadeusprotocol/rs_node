@@ -17,16 +17,32 @@ mod args_serde {
     }
 }
 
+mod serde_bytes_option {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    pub fn serialize<S: Serializer>(opt: &Option<Vec<u8>>, ser: S) -> Result<S::Ok, S::Error> {
+        match opt {
+            Some(v) => serde_bytes::ByteBuf::from(v.clone()).serialize(ser),
+            None => ser.serialize_none(),
+        }
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Option<Vec<u8>>, D::Error> {
+        let opt: Option<serde_bytes::ByteBuf> = Deserialize::deserialize(de)?;
+        Ok(opt.map(|b| b.into_vec()))
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TxAction {
     #[serde(with = "args_serde")]
     pub args: Vec<Vec<u8>>,
-    pub contract: String,
-    pub function: String,
+    #[serde(with = "serde_bytes")]
+    pub contract: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    pub function: Vec<u8>,
     pub op: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", with = "serde_bytes_option", default)]
     pub attached_symbol: Option<Vec<u8>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", with = "serde_bytes_option", default)]
     pub attached_amount: Option<Vec<u8>>,
 }
 
@@ -95,7 +111,7 @@ impl TxU {
     }
 
     pub fn contract_bytes(&self) -> Vec<u8> {
-        self.tx.action.contract.as_bytes().to_vec()
+        self.tx.action.contract.clone()
     }
 }
 
@@ -108,11 +124,11 @@ pub fn valid_pk(pk: &[u8]) -> bool {
 
 pub fn known_receivers(txu: &TxU) -> Vec<Vec<u8>> {
     let a = &txu.tx.action;
-    let c = &a.contract;
-    let f = &a.function;
-    match (c.as_str(), f.as_str(), a.args.as_slice()) {
-        ("Coin", "transfer", [receiver, _amount, _symbol]) if valid_pk(receiver) => vec![receiver.clone()],
-        ("Epoch", "slash_trainer", [_epoch, malicious_pk, _sig, _mask_size, _mask]) if valid_pk(malicious_pk) => {
+    let c = a.contract.as_slice();
+    let f = a.function.as_slice();
+    match (c, f, a.args.as_slice()) {
+        (b"Coin", b"transfer", [receiver, _amount, _symbol]) if valid_pk(receiver) => vec![receiver.clone()],
+        (b"Epoch", b"slash_trainer", [_epoch, malicious_pk, _sig, _mask_size, _mask]) if valid_pk(malicious_pk) => {
             vec![malicious_pk.clone()]
         }
         _ => vec![],
@@ -152,10 +168,10 @@ pub fn validate_basic(tx_packed: &[u8], is_special_meeting_block: bool) -> Resul
     }
 
     if is_special_meeting_block {
-        if a.contract != "Epoch" {
+        if a.contract.as_slice() != b"Epoch" {
             return Err(Error::InvalidModuleForSpecial);
         }
-        if a.function != "slash_trainer" {
+        if a.function.as_slice() != b"slash_trainer" {
             return Err(Error::InvalidFunctionForSpecial);
         }
     }
@@ -199,8 +215,8 @@ pub fn build(
 
     let action = TxAction {
         op: "call".to_string(),
-        contract: String::from_utf8_lossy(contract).to_string(),
-        function: function.to_string(),
+        contract: contract.to_vec(),
+        function: function.as_bytes().to_vec(),
         args: args.to_vec(),
         attached_symbol: attached_symbol.map(|s| s.to_vec()),
         attached_amount: attached_amount.map(|a| a.to_vec()),
@@ -227,7 +243,7 @@ pub fn chain_valid_txu(fabric: &crate::consensus::fabric::Fabric, txu: &TxU) -> 
 
     let action = &txu.tx.action;
     let mut epoch_sol_valid = true;
-    if action.function == "submit_sol" {
+    if action.function.as_slice() == b"submit_sol" {
         if let Some(first_arg) = action.args.first() {
             if first_arg.len() >= 4 {
                 let sol_epoch = u32::from_le_bytes([first_arg[0], first_arg[1], first_arg[2], first_arg[3]]);

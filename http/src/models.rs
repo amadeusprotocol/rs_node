@@ -136,7 +136,7 @@ impl From<&amadeus_node::consensus::doms::tx::TxU> for Transaction {
             nonce: txu.tx.nonce as u64,
             timestamp: 0,
             signature: bs58::encode(&txu.signature).into_string(),
-            tx_type: action.function.clone(),
+            tx_type: String::from_utf8_lossy(&action.function).to_string(),
         }
     }
 }

@@ -182,11 +182,12 @@ fn execute_transaction(
     env.caller_env.attached_amount = action.attached_amount.clone().unwrap_or_default();
 
     let contract_bytes = txu.contract_bytes();
+    let function_str = std::str::from_utf8(&action.function).unwrap_or("");
     let (error, logs) = match contract_bytes.as_slice() {
-        b"Epoch" => execute_epoch_call(env, &action.function, &action.args),
-        b"Coin" => execute_coin_call(env, &action.function, &action.args),
-        b"Contract" => execute_contract_call(env, &action.function, &action.args),
-        contract if contract.len() == 48 => execute_wasm_call(env, db, contract, &action.function, &action.args),
+        b"Epoch" => execute_epoch_call(env, function_str, &action.args),
+        b"Coin" => execute_coin_call(env, function_str, &action.args),
+        b"Contract" => execute_contract_call(env, function_str, &action.args),
+        contract if contract.len() == 48 => execute_wasm_call(env, db, contract, function_str, &action.args),
         _ => ("invalid_contract".to_string(), vec![]),
     };
 

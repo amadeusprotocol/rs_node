@@ -666,8 +666,8 @@ mod tests {
                 tx: EntryTxInner {
                     action: EntryTxAction {
                         args: vec![],
-                        contract: "C".into(),
-                        function: "f".into(),
+                        contract: b"C".to_vec(),
+                        function: b"f".to_vec(),
                         op: "call".into(),
                         attached_symbol: None,
                         attached_amount: None,
@@ -686,8 +686,8 @@ mod tests {
             tx: Tx {
                 action: TxAction {
                     args: vec![],
-                    contract: "C".into(),
-                    function: "f".into(),
+                    contract: b"C".to_vec(),
+                    function: b"f".to_vec(),
                     op: "call".into(),
                     attached_symbol: None,
                     attached_amount: None,
