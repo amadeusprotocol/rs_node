@@ -1,11 +1,12 @@
 [package]
 name = "amadeus-utils"
-publish = false
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Utility library for the Amadeus blockchain including cryptography, serialization, and data persistence"
+keywords = ["blockchain", "cryptography", "amadeus", "bls", "database"]
+categories = ["cryptography", "database"]
 
 [lib]
 doctest = false
@@ -34,16 +35,16 @@ num-bigint = "0.4.6"
 num-traits = "0.2.19"
 bincode = { version = "=2.0.1", features = ["derive"] }
 bs58 = "0.5.1"
-vecpak = { git = "https://github.com/amadeusprotocol/chain", package = "vecpak" }
 
 [dependencies.rust-rocksdb]
+version = "0.43"
 git = "https://github.com/vans163/rust-rocksdb"
 rev = "b3e3f248ecc1b47be3e77aa99e5aa60129e606b8"
 default-features = false
 features = ["zstd", "zstd-static-linking-only", "multi-threaded-cf"]
 
-
 [dependencies.rust-librocksdb-sys]
+version = "0.39"
 git = "https://github.com/vans163/rust-rocksdb"
 rev = "b3e3f248ecc1b47be3e77aa99e5aa60129e606b8"
 

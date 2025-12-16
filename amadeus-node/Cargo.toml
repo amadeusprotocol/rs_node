@@ -5,13 +5,15 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "The core library for the Amadeus blockchain node, containing consensus, networking and runtime"
+keywords = ["blockchain", "node", "amadeus", "consensus", "networking"]
+categories = ["cryptography::cryptocurrencies", "network-programming"]
 
 [lib]
 doctest = false
 
 [dependencies]
-amadeus-utils = { path = "../amadeus-utils", features = ["system-metrics"] }
-amadeus-runtime = { path = "../amadeus-runtime" }
+amadeus-utils = { path = "../amadeus-utils", version = "1.2.5", features = ["system-metrics"] }
+amadeus-runtime = { path = "../amadeus-runtime", version = "1.2.5" }
 eetf = "0.11.0"
 once_cell = "1.19.0"
 blake3 = "1.8.2"

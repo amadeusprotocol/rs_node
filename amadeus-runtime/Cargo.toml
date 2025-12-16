@@ -1,17 +1,18 @@
 [package]
 name = "amadeus-runtime"
-publish = false
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Consensus library for Amadeus blockchain including WASM execution, BIC contracts, and state management"
+keywords = ["blockchain", "consensus", "wasm", "amadeus", "smart-contracts"]
+categories = ["cryptography::cryptocurrencies", "wasm"]
 
 [lib]
 doctest = false
 
 [dependencies]
 atoi = "2"
-amadeus-utils = { path = "../amadeus-utils" }
+amadeus-utils = { path = "../amadeus-utils", version = "1.2.5" }
 thiserror = "2.0.17"
 bitvec = "1.0.1"
