@@ -139,12 +139,6 @@ dependencies = [
  "amadeus-utils",
  "atoi",
  "bitvec",
- "bls12_381",
- "blst",
- "bs58",
- "eetf",
- "group",
- "rand 0.9.2",
  "thiserror",
 ]
 
