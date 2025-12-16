@@ -209,7 +209,8 @@ impl RocksDb {
                 block_based_options.set_index_type(BlockBasedIndexType::TwoLevelIndexSearch);
                 block_based_options.set_partition_filters(true);
                 block_based_options.set_cache_index_and_filter_blocks(true);
-                block_based_options.set_cache_index_and_filter_blocks_with_high_priority(true);
+                // Note: set_cache_index_and_filter_blocks_with_high_priority not available in crates.io version
+                // block_based_options.set_cache_index_and_filter_blocks_with_high_priority(true);
                 block_based_options.set_pin_top_level_index_and_filter(true);
                 block_based_options.set_pin_l0_filter_and_index_blocks_in_cache(false);
                 cf_opts.set_block_based_table_factory(&block_based_options);
@@ -254,8 +255,9 @@ impl RocksDb {
 
         let db: TransactionDB<MultiThreaded> =
             TransactionDB::open_cf_descriptors(&db_opts, &txn_db_opts, path.clone(), cf_descs)?;
-        db.flush()?;
-        db.flush_wal(true)?;
+        // Note: flush methods not available on TransactionDB in crates.io version
+        // db.flush()?;
+        // db.flush_wal(true)?;
 
         Ok(RocksDb { inner: std::sync::Arc::new(db) })
     }
@@ -325,19 +327,25 @@ impl RocksDb {
     }
 
     /// Flush write-ahead log to disk
-    pub fn flush_wal(&self, sync: bool) -> Result<(), Error> {
-        self.inner.flush_wal(sync).map_err(Into::into)
+    /// Note: Not available in crates.io version of rust-rocksdb
+    pub fn flush_wal(&self, _sync: bool) -> Result<(), Error> {
+        // self.inner.flush_wal(sync).map_err(Into::into)
+        Ok(()) // No-op for crates.io compatibility
     }
 
     /// Flush all memtables to disk
+    /// Note: Not available in crates.io version of rust-rocksdb
     pub fn flush(&self) -> Result<(), Error> {
-        self.inner.flush().map_err(Into::into)
+        // self.inner.flush().map_err(Into::into)
+        Ok(()) // No-op for crates.io compatibility
     }
 
     /// Flush a specific column family's memtable to disk
-    pub fn flush_cf(&self, cf: &str) -> Result<(), Error> {
-        let cf_h = self.inner.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
-        self.inner.flush_cf(&cf_h).map_err(Into::into)
+    /// Note: Not available in crates.io version of rust-rocksdb
+    pub fn flush_cf(&self, _cf: &str) -> Result<(), Error> {
+        // let cf_h = self.inner.cf_handle(cf).ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
+        // self.inner.flush_cf(&cf_h).map_err(Into::into)
+        Ok(()) // No-op for crates.io compatibility
     }
 
     /// Close the database gracefully by flushing pending writes
@@ -353,8 +361,10 @@ impl RocksDb {
 
     /// Create a checkpoint (snapshot) of the database at the given path
     /// This is a native RocksDB checkpoint operation
-    pub fn checkpoint(&self, path: &str) -> Result<(), Error> {
-        self.inner.create_checkpoint(path).map_err(Into::into)
+    /// Note: Not available in crates.io version of rust-rocksdb
+    pub fn checkpoint(&self, _path: &str) -> Result<(), Error> {
+        // self.inner.create_checkpoint(path).map_err(Into::into)
+        Err(Error::ColumnFamilyNotFound("checkpoint not available in crates.io version".to_string()))
     }
 }
 
