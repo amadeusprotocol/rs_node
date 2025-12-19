@@ -1,7 +1,7 @@
 # amadeus-cli
 
 [![Crates.io](https://img.shields.io/crates/v/amadeus-cli.svg)](https://crates.io/crates/amadeus-cli)
-[![Documentation](https://docs.rs/amadeus-cli/badge.svg)](https://docs.rs/amadeus-cli)
+[![Downloads](https://img.shields.io/crates/d/amadeus-cli)](https://crates.io/crates/amadeus-cli)
 
 Command-line interface for interacting with the Amadeus blockchain.
 
@@ -9,6 +9,14 @@ Command-line interface for interacting with the Amadeus blockchain.
 
 ```bash
 cargo install amadeus-cli
+```
+
+Or from source:
+
+```bash
+git clone https://github.com/amadeusprotocol/rs_node
+cd rs_node
+cargo install --path amadeus-cli
 ```
 
 ## Usage
@@ -43,23 +51,19 @@ Arguments are passed as JSON arrays:
 
 - **String** → UTF-8 bytes (`"hello"`)
 - **Number** → String bytes (`100` → `"100"`)
-- **`{"b58": "..."}`** → Base58-decoded bytes
+- **`{"b58": "..."}`** → Base58-decoded bytes (for addresses)
 - **`{"hex": "..."}`** → Hex-decoded bytes
 - **`{"utf8": "..."}`** → Explicit UTF-8 bytes
 
 ## Environment Variables
 
-- `AMADEUS_URL` - Default node URL
+- `AMADEUS_URL` - Default node URL (overridden by `--url`)
 
 ## Built-in Contracts
 
 - **Coin** - `transfer`, `create_and_mint`, `mint`, `pause`
 - **Contract** - `deploy`
 - **Epoch** - `submit_sol`, `set_emission_address`, `slash_trainer`
-
-## Documentation
-
-For detailed documentation, see [docs.rs/amadeus-cli](https://docs.rs/amadeus-cli).
 
 ## License
 
