@@ -17,5 +17,5 @@ tower-http = { version = "0.6", features = ["fs", "trace", "timeout"] }
 bs58 = "0.5"
 amadeus-node = { path = "../amadeus-node" }
 utoipa = { version = "5.4.0", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+#utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 serde_yaml = "0.9"

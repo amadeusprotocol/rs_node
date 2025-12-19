@@ -1,125 +1,134 @@
 # Amadeus Client
 
-Client binaries for the Amadeus blockchain.
+Full node implementation for the Amadeus blockchain network.
 
-## CLI
+## Overview
 
-Command-line tool for transactions and contract deployment.
+This crate provides the `amadeusd` binary - a complete blockchain node that
+participates in consensus, validates transactions, maintains chain state, and
+serves the web dashboard.
 
-### Quick Start
+## Installation
 
-```bash
-cargo cli gen-sk wallet.sk                # Generate wallet
-cargo cli get-pk --sk wallet.sk           # Get public key
-export AMADEUS_URL=http://testnet.ama.one # Set default node
-```
-
-### Using CLI to test Smart Contracts
-
-You can find and build example wasm files that are used below in the
-`contract_samples` of the [amadeus node](https://github.com/amadeusprotocol/node).
-
+Build from source:
 
 ```bash
-cargo cli gen-sk wallet.sk
-cargo cli get-pk --sk wallet.sk
-
-# Claim testnet AMA to the pk at https://mcp.ama.one/testnet-faucet
-
-cargo cli gen-sk counter.sk
-export COUNTER_PK=$(cargo cli get-pk --sk counter.sk)
-cargo cli tx --sk wallet.sk --url http://testnet.ama.one Coin transfer '[{"b58": "'$COUNTER_PK'"}, "2000000000", "AMA"]'
-cargo cli deploy-tx --sk counter.sk counter.wasm --url http://testnet.ama.one
-cargo cli tx --sk counter.sk --url http://testnet.ama.one $COUNTER_PK init '[]'
-curl "http://testnet.ama.one/api/contract/view/$COUNTER_PK/get"
-cargo cli tx --sk wallet.sk --url http://testnet.ama.one $COUNTER_PK increment '["5"]'
-curl "http://testnet.ama.one/api/contract/view/$COUNTER_PK/get"
-
-cargo cli gen-sk deposit.sk
-export DEPOSIT_PK=$(cargo cli get-pk --sk deposit.sk)
-cargo cli tx --sk wallet.sk Coin transfer '[{"b58": "'$DEPOSIT_PK'"}, "2000000000", "AMA"]' --url http://testnet.ama.one
-cargo cli deploy-tx --sk deposit.sk deposit.wasm --url http://testnet.ama.one
-cargo cli tx --sk wallet.sk $DEPOSIT_PK balance '["AMA"]' --url http://testnet.ama.one
-cargo cli tx --sk wallet.sk $DEPOSIT_PK deposit '[]' AMA 1500000000 --url http://testnet.ama.one
-cargo cli tx --sk wallet.sk $DEPOSIT_PK balance '["AMA"]' --url http://testnet.ama.one
-
-cargo cli gen-sk coin.sk
-export COIN_PK=$(cargo cli get-pk --sk coin.sk)
-cargo cli tx --sk wallet.sk Coin transfer '[{"b58": "'$COIN_PK'"}, "2000000000", "AMA"]' --url http://testnet.ama.one
-cargo cli deploy-tx --sk coin.sk coin.wasm --url http://testnet.ama.one
-cargo cli tx --sk wallet.sk $COIN_PK deposit '[]' AMA 1500000000 --url http://testnet.ama.one
-cargo cli tx --sk wallet.sk $COIN_PK withdraw '["AMA", "500000000"]' --url http://testnet.ama.one
-cargo cli tx --sk wallet.sk $COIN_PK withdraw '["AMA", "1000000000"]' --url http://testnet.ama.one
-
-cargo cli gen-sk nft.sk
-export NFT_PK=$(cargo cli get-pk --sk nft.sk)
-cargo cli tx --sk wallet.sk Coin transfer '[{"b58": "'$NFT_PK'"}, "2000000000", "AMA"]' --url http://testnet.ama.one
-cargo cli deploy-tx --sk nft.sk nft.wasm --url http://testnet.ama.one
-cargo cli tx --sk wallet.sk $NFT_PK init '[]' --url http://testnet.ama.one
-cargo cli tx --sk wallet.sk $NFT_PK claim '[]' --url http://testnet.ama.one
-cargo cli tx --sk wallet.sk $NFT_PK view_nft '["AGENTIC", "1"]' --url http://testnet.ama.one
-cargo cli tx --sk wallet.sk $NFT_PK claim '[]' --url http://testnet.ama.one
+git clone https://github.com/amadeusprotocol/rs_node
+cd rs_node
+cargo build --release --bin amadeusd
 ```
 
-### Transferring Tokens
+Binary location: `target/release/amadeusd`
 
-```bash
-# Transfer 99 AMA (amount in flat units: 99 * 10^9)
-cargo cli tx --sk wallet.sk --url http://testnet.ama.one \
-  Coin transfer '[{"b58": "7VZBw2Jf6csTtjb7jNL3QrwYa3vboWF7CdNw4ro1RNAhYfySj8Ze1Uyte81Bw3WCwP"}, "99000000000", "AMA"]'
+## Running the Node
 
-# tx_hash: BKx2kchRPDUSQv2k2zNhwRbcaQdg7QJZDgY56qSM6bKv
-
-# Verify on chain
-curl http://testnet.ama.one/api/chain/tx/BKx2kchRPDUSQv2k2zNhwRbcaQdg7QJZDgY56qSM6bKv
-```
-
-### Deploying Smart Contracts
-
-```bash
-# Deploy contract
-cargo cli deploy-tx --sk wallet.sk contract.wasm --url http://testnet.ama.one
-
-# Contract address = your public key
-MY_PK=$(cargo cli get-pk --sk wallet.sk)
-
-# Call your contract
-cargo cli tx --sk wallet.sk $MY_PK my_function '["arg1", 42]' --url http://testnet.ama.one
-```
-
-### Argument Format
-
-JSON array where each element is:
-
-- `"string"` - UTF-8 bytes
-- `123` - Number as string bytes
-- `{"b58": "..."}` - Base58-decoded bytes (addresses)
-- `{"hex": "..."}` - Hex-decoded bytes
-
-```bash
-'[]'                                    # Empty
-'["hello", 42]'                         # String and number
-'[{"b58": "7VZBw2..."}, "100", "AMA"]'  # Address, amount, symbol
-```
-
-### Built-in Contracts
-
-| Contract | Functions                                       |
-|----------|-------------------------------------------------|
-| Coin     | transfer, create_and_mint, mint, pause          |
-| Contract | deploy                                          |
-| Epoch    | submit_sol, set_emission_address, slash_trainer |
-
-### Environment Variables
-
-- `AMADEUS_URL` - Default node URL
-
-Run `cargo cli --help` for full documentation.
-
-## Node
-
-Full Amadeus node that syncs and gossips with the network.
+Start a full node:
 
 ```bash
 cargo node
 ```
+
+Or with custom configuration:
+
+```bash
+UDP_ADDR=0.0.0.0:36969 HTTP_PORT=3000 cargo node
+```
+
+## Environment Variables
+
+- `UDP_ADDR` - P2P network address (default: `127.0.0.1:36969`)
+- `HTTP_PORT` - Web dashboard and API port (default: `3000`)
+- `UDP_DUMP` - File path to record network traffic for debugging
+- `UDP_REPLAY` - File path to replay recorded network traffic
+- `RUST_LOG` - Logging level (`debug`, `info`, `warn`, `error`)
+
+## Features
+
+### Consensus Participation
+
+- Validates and propagates entries and transactions
+- Maintains rooted and temporal chains with BFT consensus
+- Processes attestations from validators
+- Syncs with peer nodes via catchup protocol
+
+### State Management
+
+- Persistent RocksDB storage at `~/.amadeusd-rs/fabric/db`
+- Transaction pool and mempool management
+- Entry and transaction indexing
+- Contract state storage
+
+### Networking
+
+- UDP-based peer-to-peer protocol
+- Encrypted and compressed messaging (AES-256-GCM + zstd)
+- Reed-Solomon erasure coding for large messages
+- Automatic peer discovery and handshake
+
+### Web Dashboard
+
+Access at `http://localhost:3000`:
+
+- Chain explorer and block viewer
+- Transaction history and status
+- Peer network visualization
+- Contract deployment and interaction
+- Wallet management
+
+### REST API
+
+Programmatic access at `http://localhost:3000/api`:
+
+- `/api/chain/*` - Chain queries (entries, transactions, state)
+- `/api/tx/submit` - Submit signed transactions
+- `/api/contract/*` - Contract deployment and calls
+- `/api/peer/*` - Peer network information
+- `/api/wallet/*` - Wallet operations
+- `/api/epoch/*` - Epoch and validator data
+- `/api/metrics` - Prometheus metrics
+- `/api/health` - Health check endpoint
+
+OpenAPI spec: `http://localhost:3000/api/openapi.yaml`
+
+## Configuration Files
+
+Node configuration stored in: `~/.amadeusd-rs/`
+
+- `config.json` - Node settings and validator identity
+- `node.sk` - Secret key for node identity (if validator)
+- `fabric/db/` - RocksDB chain database
+
+## CLI Tool
+
+For wallet management and transaction submission, use the separate CLI tool:
+
+```bash
+cargo install amadeus-cli
+ama --help
+```
+
+See [amadeus-cli](https://crates.io/crates/amadeus-cli) for details.
+
+## Debugging
+
+### Network Traffic Recording
+
+```bash
+UDP_DUMP=traffic.bin cargo node
+```
+
+### Replay Recorded Traffic
+
+```bash
+UDP_REPLAY=traffic.bin cargo node
+```
+
+### Enable Debug Logs
+
+```bash
+RUST_LOG=debug cargo node
+```
+
+## License
+
+Apache-2.0

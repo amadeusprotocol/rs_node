@@ -159,10 +159,10 @@ If installed on MacOS using brew, the commands are `rocksdb_ldb` and
 if manually - then the commands are `ldb` and `sst_dump` respectively.
 
 ```bash
-rocksdb_ldb --db=.config/amadeusd/fabric/db list_column_families
-rocksdb_ldb --db=.config/amadeusd/fabric/db --column_family=sysconf scan
-rocksdb_ldb --db=.config/amadeusd/fabric/db --column_family=entry_by_height scan
-rocksdb_ldb --db=.config/amadeusd/fabric/db --column_family=sysconf get rooted_tip
+rocksdb_ldb --db=.amadeusd-rs/fabric/db list_column_families
+rocksdb_ldb --db=.amadeusd-rs/fabric/db --column_family=sysconf scan
+rocksdb_ldb --db=.amadeusd-rs/fabric/db --column_family=entry_by_height scan
+rocksdb_ldb --db=.amadeusd-rs/fabric/db --column_family=sysconf get rooted_tip
 ```
 
 ## Debugging on Elixir Node

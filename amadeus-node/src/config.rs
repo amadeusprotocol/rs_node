@@ -179,7 +179,7 @@ impl Config {
         // work folder from env or default
         let work_folder = std::env::var("WORKFOLDER").unwrap_or_else(|_| {
             let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
-            format!("{}/.cache/rs_amadeusd", home)
+            format!("{}/.amadeusd-rs", home)
         });
 
         // override with provided root if given
@@ -396,7 +396,7 @@ impl Config {
         let seed_ips = SEED_NODES.iter().map(|s| s.parse()).collect::<Result<Vec<Ipv4Addr>, _>>().unwrap_or_default();
 
         Self {
-            work_folder: ".config/rs_amadeusd".to_string(),
+            work_folder: ".amadeusd-rs".to_string(),
             version: VERSION,
             offline: false,
             http_ipv4: Ipv4Addr::new(0, 0, 0, 0),
