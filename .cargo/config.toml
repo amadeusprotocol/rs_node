@@ -1,6 +1,6 @@
 [alias]
-node = ["run", "-p", "client", "--bin", "amadeusd", "--release"]
-test-all = ["test", "--workspace", "--all-targets", "--no-fail-fast", "--exclude", "client"]
+node = ["run", "-p", "amadeusd", "--bin", "amadeusd", "--release"]
+test-all = ["test", "--workspace", "--all-targets", "--no-fail-fast", "--exclude", "amadeusd"]
 lint = ["clippy", "--workspace", "--all-targets", "--", "-Dwarnings"]
 
 [net]

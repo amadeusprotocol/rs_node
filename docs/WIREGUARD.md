@@ -1,5 +1,7 @@
 # WireGuard setup
 
+> **Use Case**: This configuration enables running an Amadeus node on local hardware (e.g., home server with powerful specs) while exposing it through a remote server's public IP via WireGuard VPN. Ideal for leveraging beefy local hardware without requiring a public IP address at home.
+
 Following are configs to create a wireguard tunnel to get a public IP address for local
 Amadeus node development, testing and hosting. Note the `PostUp` and `PostDown` rules, first
 three are needed so that your laptop can access the internet through the VPN, second two

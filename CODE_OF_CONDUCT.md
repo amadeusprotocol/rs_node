@@ -2,7 +2,8 @@
 
 We commit to a community where people can contribute productively and safely.
 
-This project adopts the [**Contributor Covenant (v2.1)**](https://www.contributor-covenant.org/version/2/1/code_of_conduct/)
+This project adopts the [**Contributor Covenant (v2.1)
+**](https://www.contributor-covenant.org/version/2/1/code_of_conduct/)
 as our Code of Conduct.
 
 ## Our Pledge
@@ -43,8 +44,8 @@ represents the project in public spaces.
 
 ## Enforcement
 
-Report violations to **valy@faychuk.com**. All reports will be reviewed and 
-investigated promptly and fairly.
+Report violations to **vans@ama.one** and **valy@ama.one**. All reports will be
+reviewed and investigated promptly and fairly.
 
 ## Enforcement Guidelines
 
@@ -60,7 +61,8 @@ investigated promptly and fairly.
 
 This Code of Conduct is adapted from
 the [Contributor Covenant](https://www.contributor-covenant.org), version 2.1,
-available at https://www.contributor-covenant.org/version/2/1/code_of_conduct.html.
+available
+at https://www.contributor-covenant.org/version/2/1/code_of_conduct.html.
 
 Community Impact Guidelines were inspired
 by [Mozilla’s enforcement ladder](https://github.com/mozilla/diversity).

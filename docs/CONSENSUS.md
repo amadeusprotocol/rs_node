@@ -8,7 +8,7 @@ network.
 ## Epoch
 
 An epoch is 100,000 entries (blocks). Emission starts at 1,000,000 AMA and
-decreases by 33.3% each epoch. Logic changes occur at epoch boundaries.
+decreases by 0.0333% each epoch. Logic changes occur at epoch boundaries.
 
 ## Contractstate
 

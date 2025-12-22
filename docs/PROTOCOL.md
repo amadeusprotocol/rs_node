@@ -31,4 +31,4 @@ Encrypted frames include:
 - Original payload size (4 bytes)
 - Encrypted payload (nonce + tag + ciphertext)
 
-Large payloads (>1.3 KB) use Reed-Solomon sharding.
+Large payloads (≥1300 bytes) use Reed-Solomon sharding.

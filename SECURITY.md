@@ -6,7 +6,7 @@ please follow this policy so we can fix it quickly and responsibly.
 ## Reporting a Vulnerability
 
 - **Private, responsible disclosure only. Do not file public issues.**
-- Email: **valy@faychuk.com**, or open a **GitHub Security Advisory** (private).
+- Email: **valy@ama.one**, or open a **GitHub Security Advisory** (private).
 
 Include:
 
