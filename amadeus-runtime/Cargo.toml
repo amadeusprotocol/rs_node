@@ -13,6 +13,6 @@ doctest = false
 
 [dependencies]
 atoi = "2"
-amadeus-utils = { path = "../amadeus-utils", version = "1.3.2" }
+amadeus-utils = { path = "../amadeus-utils", version = "1.3.3" }
 thiserror = "2.0.17"
 bitvec = "1.0.1"
