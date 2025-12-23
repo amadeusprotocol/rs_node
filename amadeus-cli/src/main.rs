@@ -279,57 +279,7 @@ pub async fn send_transaction(tx_packed: Vec<u8>, url: &str) -> Result<()> {
             match reqwest::get(&tx_url).await {
                 Ok(tx_response) => {
                     if let Ok(tx_data) = tx_response.json::<JsonValue>().await {
-                        println!("\nTransaction Result:");
-
-                        // The actual execution result is in "receipt", not "result"
-                        if let Some(receipt) = tx_data.get("receipt") {
-                            let success = receipt.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-                            println!("  Success: {}", success);
-
-                            // Handle result field (might be string or binary)
-                            if let Some(result_val) = receipt.get("result") {
-                                match result_val.as_str() {
-                                    Some(s) if s.chars().all(|c| c == '?') => {
-                                        // All question marks = binary data that couldn't be decoded as UTF-8
-                                        println!("  Result: (binary data, {} bytes)", s.len());
-                                    }
-                                    Some(s) if !s.is_empty() && s.chars().all(|c| !c.is_control() || c.is_whitespace()) => {
-                                        println!("  Result: {}", s);
-                                    }
-                                    Some(s) if !s.is_empty() => {
-                                        // Contains control chars, show as hex
-                                        println!("  Result (hex): {}", s.as_bytes().iter().map(|b| format!("{:02x}", b)).collect::<String>());
-                                    }
-                                    _ => {
-                                        println!("  Result: (empty)");
-                                    }
-                                }
-                            }
-
-                            // Handle logs (might contain binary data)
-                            if let Some(logs) = receipt.get("logs").and_then(|v| v.as_array()) {
-                                if !logs.is_empty() {
-                                    println!("  Logs:");
-                                    for (i, log) in logs.iter().enumerate() {
-                                        if let Some(s) = log.as_str() {
-                                            if s.chars().all(|c| c == '?') {
-                                                println!("    [{}] (binary data, {} bytes)", i, s.len());
-                                            } else if s.chars().all(|c| !c.is_control() || c.is_whitespace()) {
-                                                println!("    [{}] {}", i, s);
-                                            } else {
-                                                println!("    [{}] (hex) {}", i, s.as_bytes().iter().map(|b| format!("{:02x}", b)).collect::<String>());
-                                            }
-                                        } else {
-                                            println!("    [{}] {:?}", i, log);
-                                        }
-                                    }
-                                }
-                            }
-
-                            if let Some(exec_used) = receipt.get("exec_used").and_then(|v| v.as_str()) {
-                                println!("  Gas used: {}", exec_used);
-                            }
-                        }
+                        println!("\n{}", serde_json::to_string_pretty(&tx_data).unwrap_or_else(|_| format!("{:?}", tx_data)));
                     }
                 }
                 Err(_) => {
