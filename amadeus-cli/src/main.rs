@@ -280,11 +280,14 @@ pub async fn send_transaction(tx_packed: Vec<u8>, url: &str) -> Result<()> {
                 Ok(tx_response) => {
                     if let Ok(tx_data) = tx_response.json::<JsonValue>().await {
                         println!("\nTransaction Result:");
-                        if let Some(result) = tx_data.get("result") {
-                            println!("  Success: {}", result.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+
+                        // The actual execution result is in "receipt", not "result"
+                        if let Some(receipt) = tx_data.get("receipt") {
+                            let success = receipt.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+                            println!("  Success: {}", success);
 
                             // Handle result field (might be string or binary)
-                            if let Some(result_val) = result.get("result") {
+                            if let Some(result_val) = receipt.get("result") {
                                 match result_val.as_str() {
                                     Some(s) if s.chars().all(|c| c == '?') => {
                                         // All question marks = binary data that couldn't be decoded as UTF-8
@@ -304,7 +307,7 @@ pub async fn send_transaction(tx_packed: Vec<u8>, url: &str) -> Result<()> {
                             }
 
                             // Handle logs (might contain binary data)
-                            if let Some(logs) = result.get("logs").and_then(|v| v.as_array()) {
+                            if let Some(logs) = receipt.get("logs").and_then(|v| v.as_array()) {
                                 if !logs.is_empty() {
                                     println!("  Logs:");
                                     for (i, log) in logs.iter().enumerate() {
@@ -323,7 +326,7 @@ pub async fn send_transaction(tx_packed: Vec<u8>, url: &str) -> Result<()> {
                                 }
                             }
 
-                            if let Some(exec_used) = result.get("exec_used").and_then(|v| v.as_str()) {
+                            if let Some(exec_used) = receipt.get("exec_used").and_then(|v| v.as_str()) {
                                 println!("  Gas used: {}", exec_used);
                             }
                         }
