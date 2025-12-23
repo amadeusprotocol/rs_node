@@ -281,3 +281,27 @@ pub fn apply_mutations(db: &RocksDb, cf_name: &str, muts_rev: &[Mutation]) -> Re
 
     Ok(())
 }
+
+pub fn exec_budget_decr(env: &mut ApplyEnv, cost: i128) {
+    env.exec_left -= cost;
+    if env.exec_left < 0 {
+        std::panic::panic_any("exec_budget_exceeded");
+    }
+}
+
+pub fn storage_budget_decr(env: &mut ApplyEnv, cost: i128) {
+    env.exec_left -= cost;
+    if env.exec_left < 0 {
+        std::panic::panic_any("storage_budget_exceeded");
+    }
+}
+
+pub fn kv_get_prev_or_first(env: &ApplyEnv, prefix: &[u8], key: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    match kv_get_prev_or_exact(env, prefix, key) {
+        Some(result) => Some(result),
+        None => {
+            let results = kv_get_prefix(env, prefix);
+            results.into_iter().next()
+        }
+    }
+}

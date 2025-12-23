@@ -8,3 +8,4 @@ pub mod protocol;
 pub mod sol;
 pub mod sol_bloom;
 pub mod sol_difficulty;
+pub mod wasm;

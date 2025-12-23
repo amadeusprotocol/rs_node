@@ -18,6 +18,9 @@ pub struct ApplyEnv<'db> {
     pub muts_rev: Vec<consensus_muts::Mutation>,
     pub muts_rev_gas: Vec<consensus_muts::Mutation>,
     pub result_log: Vec<HashMap<&'static str, &'static str>>,
+    pub exec_left: i128,
+    pub logs: Vec<Vec<u8>>,
+    pub logs_size: usize,
 }
 
 pub struct CallerEnv {
@@ -43,6 +46,8 @@ pub struct CallerEnv {
     pub call_counter: u32,
     pub call_exec_points: u64,
     pub call_exec_points_remaining: u64,
+    pub call_return_value: Vec<u8>,
+    pub tx_nonce: u64,
 }
 
 pub fn make_caller_env(
@@ -79,6 +84,8 @@ pub fn make_caller_env(
         call_counter: 0,
         call_exec_points: 10_000_000,
         call_exec_points_remaining: 10_000_000,
+        call_return_value: vec![],
+        tx_nonce: 0,
     }
 }
 
@@ -116,6 +123,9 @@ pub fn make_apply_env<'db>(
         muts_rev: Vec::new(),
         muts_rev_gas: Vec::new(),
         result_log: Vec::new(),
+        exec_left: 0,
+        logs: Vec::new(),
+        logs_size: 0,
     })
 }
 
@@ -125,11 +135,42 @@ pub fn valid_bic_action(contract: Vec<u8>, function: Vec<u8>) -> bool {
 
     (c == b"Epoch" || c == b"Coin" || c == b"Contract")
         && (f == b"submit_sol"
-            || f == b"transfer"
             || f == b"set_emission_address"
             || f == b"slash_trainer"
-            || f == b"deploy"
-            || f == b"create_and_mint"
-            || f == b"mint"
-            || f == b"pause")
+            || f == b"transfer"
+            || f == b"deploy")
+}
+
+pub fn call_bic(env: &mut ApplyEnv, contract: Vec<u8>, function: Vec<u8>, args: Vec<Vec<u8>>, _attached_symbol: Option<Vec<u8>>, _attached_amount: Option<Vec<u8>>) {
+    use crate::consensus::bic::{coin, contract as contract_bic, epoch, protocol};
+    use crate::consensus::consensus_kv;
+
+    match (contract.as_slice(), function.as_slice()) {
+        (b"Epoch", b"submit_sol") => {
+            consensus_kv::exec_budget_decr(env, protocol::COST_PER_SOL);
+            let _ = epoch::call_submit_sol(env, args);
+        },
+        (b"Epoch", b"set_emission_address") => { let _ = epoch::call_set_emission_address(env, args); },
+        (b"Epoch", b"slash_trainer") => { let _ = epoch::call_slash_trainer(env, args); },
+        (b"Coin", b"transfer") => { let _ = coin::call_transfer(env, args); },
+        (b"Contract", b"deploy") => {
+            consensus_kv::exec_budget_decr(env, protocol::COST_PER_DEPLOY);
+            let _ = contract_bic::call_deploy(env, args);
+        },
+        _ => std::panic::panic_any("invalid_bic_action")
+    }
+}
+
+pub fn call_wasmvm(env: &mut ApplyEnv, contract: Vec<u8>, function: Vec<u8>, args: Vec<Vec<u8>>, _attached_symbol: Option<Vec<u8>>, _attached_amount: Option<Vec<u8>>) -> Vec<u8> {
+    use crate::consensus::bic::wasm;
+    use crate::consensus::consensus_kv;
+
+    let contract_key = crate::bcat(&[b"account:", contract.as_slice(), b":bytecode"]);
+    let wasm_bytes = match consensus_kv::kv_get(env, &contract_key) {
+        Ok(Some(bytes)) => bytes,
+        _ => return b"contract_not_found".to_vec(),
+    };
+
+    let function_name = String::from_utf8_lossy(&function).to_string();
+    wasm::call_contract(env, &wasm_bytes, function_name, args)
 }

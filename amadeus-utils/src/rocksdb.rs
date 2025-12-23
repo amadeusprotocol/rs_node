@@ -69,6 +69,7 @@ fn cf_names() -> &'static [&'static str] {
         "entry_meta",
         "attestation",
         "tx",
+        "tx_filter",
         "tx_account_nonce",
         "tx_receiver_nonce",
         "contractstate",
@@ -138,6 +139,17 @@ pub fn init_for_test(base: &str) -> Result<TestDbGuard, Error> {
             cf_opts.set_level_zero_slowdown_writes_trigger(40);
             cf_opts.set_level_zero_stop_writes_trigger(100);
             cf_opts.set_max_subcompactions(2);
+
+            // Configure prefix extractors for efficient range queries
+            if name == "tx" {
+                cf_opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(8));
+                cf_opts.set_memtable_prefix_bloom_ratio(0.1);
+            }
+            if name == "tx_filter" {
+                cf_opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(16));
+                cf_opts.set_memtable_prefix_bloom_ratio(0.1);
+            }
+
             ColumnFamilyDescriptor::new(name, cf_opts)
         })
         .collect();
@@ -243,6 +255,16 @@ impl RocksDb {
                 cf_opts.set_level_zero_slowdown_writes_trigger(40);
                 cf_opts.set_level_zero_stop_writes_trigger(100);
                 cf_opts.set_max_subcompactions(2);
+
+                // Configure prefix extractors for efficient range queries
+                if name == "tx" {
+                    cf_opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(8));
+                    cf_opts.set_memtable_prefix_bloom_ratio(0.1);
+                }
+                if name == "tx_filter" {
+                    cf_opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(16));
+                    cf_opts.set_memtable_prefix_bloom_ratio(0.1);
+                }
 
                 ColumnFamilyDescriptor::new(name, cf_opts)
             })

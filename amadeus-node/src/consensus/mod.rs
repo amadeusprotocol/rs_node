@@ -3,6 +3,7 @@ pub mod consensus;
 pub mod doms;
 pub mod fabric;
 pub mod genesis;
+pub mod tx_filter;
 
 // Re-export DST constants from amadeus_utils
 pub use amadeus_utils::constants::{

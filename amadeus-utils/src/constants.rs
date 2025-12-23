@@ -17,6 +17,7 @@ pub const CF_ENTRY: &str = "entry";
 pub const CF_ENTRY_META: &str = "entry_meta";
 pub const CF_ATTESTATION: &str = "attestation";
 pub const CF_TX: &str = "tx";
+pub const CF_TX_FILTER: &str = "tx_filter";
 pub const CF_TX_ACCOUNT_NONCE: &str = "tx_account_nonce";
 pub const CF_TX_RECEIVER_NONCE: &str = "tx_receiver_nonce";
 pub const CF_CONTRACTSTATE: &str = "contractstate";
