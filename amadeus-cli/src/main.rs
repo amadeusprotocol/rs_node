@@ -12,10 +12,13 @@ use std::fs;
 #[command(author, version, about = "Amadeus CLI tool")]
 #[command(long_about = r#"CLI tool for Amadeus blockchain operations.
 
+FLAGS:
+  -v, --verbose         Show full transaction details (default: receipt only)
+
 WORKFLOW - Deploy and Call a Contract:
   1. Generate a wallet:     cli gen-sk wallet.sk
   2. Get your public key:   cli get-pk --sk wallet.sk
-  3. Deploy contract:       cli deploy-tx --sk wallet.sk contract.wasm --url https://node.url
+  3. Deploy contract:       cli deploy-tx --sk wallet.sk contract.wasm init '[]' --url https://node.url
   4. Call your contract:    cli tx --sk wallet.sk <YOUR_PK> <function> '[args]' --url https://node.url
 
 ARGUMENT FORMAT (args_json):
@@ -44,6 +47,8 @@ BUILT-IN CONTRACTS:
 Environment variables:
   AMADEUS_URL - Default node URL (e.g., https://testnet.ama.one)"#)]
 struct Cli {
+    #[arg(short, long, global = true)]
+    verbose: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -87,6 +92,14 @@ enum Commands {
         sk: String,
         /// Path to WASM file (compiled AssemblyScript or Rust contract)
         wasm_path: String,
+        /// Optional init function name to call after deployment (e.g., "init")
+        init_function: Option<String>,
+        /// Optional init function arguments as JSON array (requires init_function)
+        init_args: Option<String>,
+        /// Token symbol to attach during init (e.g., AMA)
+        attach_symbol: Option<String>,
+        /// Token amount to attach in flat units (requires attach_symbol)
+        attach_amount: Option<String>,
         /// HTTP endpoint URL for sending transaction (falls back to AMADEUS_URL env var)
         #[arg(long = "url")]
         url: Option<String>,
@@ -96,6 +109,7 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let verbose = cli.verbose;
 
     match cli.command {
         Commands::GenSk { out_file } => handle_gen_sk(&out_file).await?,
@@ -112,14 +126,23 @@ async fn main() -> Result<()> {
                 attach_symbol.as_deref(),
                 attach_amount.as_deref(),
                 get_url(url.as_deref()).as_deref(),
+                verbose,
             )
             .await?;
         }
-        Commands::DeployTx { sk, wasm_path, url } => {
+        Commands::DeployTx { sk, wasm_path, init_function, init_args, attach_symbol, attach_amount, url } => {
+            if attach_symbol.is_some() != attach_amount.is_some() {
+                return Err(Error::msg("attach_amount and attach_symbol must go together"));
+            }
             handle_deploy_tx(
                 &config_from_sk(&sk).await?,
                 &wasm_path,
+                init_function.as_deref(),
+                init_args.as_deref(),
+                attach_symbol.as_deref(),
+                attach_amount.as_deref(),
                 get_url(url.as_deref()).as_deref(),
+                verbose,
             )
             .await?;
         }
@@ -156,6 +179,7 @@ async fn handle_tx(
     attach_symbol: Option<&str>,
     attach_amount: Option<&str>,
     url: Option<&str>,
+    verbose: bool,
 ) -> Result<()> {
     let contract_bytes = parse_contract(contract);
     let args_vec = parse_args(args_json)?;
@@ -174,15 +198,45 @@ async fn handle_tx(
         attach_amount_bytes.as_deref(),
     );
 
-    submit_or_print(tx_packed, url).await
+    submit_or_print(tx_packed, url, verbose).await
 }
 
-async fn handle_deploy_tx(config: &Config, wasm_path: &str, url: Option<&str>) -> Result<()> {
+async fn handle_deploy_tx(
+    config: &Config,
+    wasm_path: &str,
+    init_function: Option<&str>,
+    init_args: Option<&str>,
+    attach_symbol: Option<&str>,
+    attach_amount: Option<&str>,
+    url: Option<&str>,
+    verbose: bool,
+) -> Result<()> {
     let wasm_bytes = fs::read(wasm_path)?;
     contract::validate(&wasm_bytes).map_err(|e| anyhow::anyhow!(e))?;
 
-    let tx_packed = tx::build(config, b"Contract", "deploy", &[wasm_bytes], None, None, None);
-    submit_or_print(tx_packed, url).await
+    let mut args = vec![wasm_bytes];
+    if let Some(func) = init_function {
+        args.push(func.as_bytes().to_vec());
+        let args_json = init_args.unwrap_or("[]");
+        let parsed_args = parse_args(args_json)?;
+        args.extend(parsed_args);
+    }
+
+    let (attach_symbol_bytes, attach_amount_bytes) = match (attach_symbol, attach_amount) {
+        (Some(sym), Some(amt)) => (Some(sym.as_bytes().to_vec()), Some(amt.as_bytes().to_vec())),
+        _ => (None, None),
+    };
+
+    let tx_packed = tx::build(
+        config,
+        b"Contract",
+        "deploy",
+        &args,
+        None,
+        attach_symbol_bytes.as_deref(),
+        attach_amount_bytes.as_deref(),
+    );
+    submit_or_print(tx_packed, url, verbose).await
 }
 
 fn parse_contract(contract: &str) -> Vec<u8> {
@@ -235,11 +289,11 @@ fn extract_tx_hash(tx_packed: &[u8]) -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-async fn submit_or_print(tx_packed: Vec<u8>, url: Option<&str>) -> Result<()> {
+async fn submit_or_print(tx_packed: Vec<u8>, url: Option<&str>, verbose: bool) -> Result<()> {
     println!("tx_hash: {}", extract_tx_hash(&tx_packed));
 
     match url {
-        Some(url) => send_transaction(tx_packed, url).await,
+        Some(url) => send_transaction(tx_packed, url, verbose).await,
         None => {
             println!("{}", bs58::encode(&tx_packed).into_string());
             Ok(())
@@ -247,7 +301,7 @@ async fn submit_or_print(tx_packed: Vec<u8>, url: Option<&str>) -> Result<()> {
     }
 }
 
-pub async fn send_transaction(tx_packed: Vec<u8>, url: &str) -> Result<()> {
+pub async fn send_transaction(tx_packed: Vec<u8>, url: &str, verbose: bool) -> Result<()> {
     let tx_hash = extract_tx_hash(&tx_packed);
     let tx_base58 = bs58::encode(&tx_packed).into_string();
     let base_url = url.trim_end_matches('/');
@@ -269,21 +323,21 @@ pub async fn send_transaction(tx_packed: Vec<u8>, url: &str) -> Result<()> {
     let result: JsonValue = response.json().await?;
     match result.get("error") {
         Some(e) if e == "ok" => {
-            println!("Transaction submitted successfully.");
-
-            // Wait a bit for the transaction to be processed
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-            // Fetch and display transaction result
             let tx_url = format!("{}/api/chain/tx/{}", base_url, tx_hash);
             match reqwest::get(&tx_url).await {
                 Ok(tx_response) => {
                     if let Ok(tx_data) = tx_response.json::<JsonValue>().await {
-                        println!("\n{}", serde_json::to_string_pretty(&tx_data).unwrap_or_else(|_| format!("{:?}", tx_data)));
+                        if verbose {
+                            println!("{}", serde_json::to_string_pretty(&tx_data).unwrap_or_else(|_| format!("{:?}", tx_data)));
+                        } else if let Some(receipt) = tx_data.get("receipt") {
+                            println!("{}", serde_json::to_string_pretty(receipt).unwrap_or_else(|_| format!("{:?}", receipt)));
+                        }
                     }
                 }
                 Err(_) => {
-                    println!("\nCouldn't fetch transaction result. Check manually:");
+                    println!("Couldn't fetch transaction result. Check manually:");
                     println!("  {}", tx_url);
                 }
             }
