@@ -613,6 +613,11 @@ impl Context {
         self.fabric.trainers_for_height(height)
     }
 
+    /// Get node's public key
+    pub fn get_public_key(&self) -> PublicKey {
+        self.config.get_pk()
+    }
+
     /// Get wallet balance - wrapper around fabric.chain_balance_symbol
     pub fn get_wallet_balance(&self, public_key: &PublicKey, symbol: &[u8]) -> i128 {
         self.fabric.chain_balance_symbol(public_key.as_ref(), symbol)

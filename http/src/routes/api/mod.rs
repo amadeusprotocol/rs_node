@@ -7,6 +7,7 @@ use axum::{
 use serde_json::Value;
 use std::sync::Arc;
 
+pub mod attestation;
 pub mod chain;
 pub mod contract;
 pub mod epoch;
@@ -16,6 +17,9 @@ pub mod wallet;
 
 pub fn api_router(ctx: Arc<Context>) -> Router {
     Router::new()
+        .route("/attestation/available", get(attestation::get_attestation_availability))
+        .route("/attestation/quote", get(attestation::get_attestation_quote))
+        .route("/attestation/quote/raw", get(attestation::get_raw_attestation_quote))
         .route("/peer/anr/{publicKey}", get(peer::get_peer_anr))
         .route("/peer/anr_validators", get(peer::get_validator_anrs))
         .route("/peer/anr", get(peer::get_all_anrs))

@@ -1,0 +1,100 @@
+# Gramine manifest for Amadeus Node
+# Documentation: https://gramine.readthedocs.io/en/stable/manifest-syntax.html
+
+[loader]
+entrypoint.uri = "file:{{ gramine.libos }}"
+log_level = "warning"
+argv = ["/amadeusd"]
+
+[loader.env]
+LD_LIBRARY_PATH = "/lib:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu"
+HOME = "/home/amadeus"
+RUST_LOG = { passthrough = true }
+UDP_ADDR = { passthrough = true }
+HTTP_PORT = { passthrough = true }
+WORKFOLDER = "/home/amadeus/.amadeusd-rs"
+
+[libos]
+entrypoint = "/amadeusd"
+
+# Root filesystem
+[[fs.mounts]]
+path = "/lib"
+uri = "file:{{ gramine.runtimedir }}"
+
+[[fs.mounts]]
+path = "/lib/x86_64-linux-gnu"
+uri = "file:/lib/x86_64-linux-gnu"
+
+[[fs.mounts]]
+path = "/usr/lib/x86_64-linux-gnu"
+uri = "file:/usr/lib/x86_64-linux-gnu"
+
+# Amadeus binary
+[[fs.mounts]]
+path = "/amadeusd"
+uri = "file:target/release/amadeusd"
+
+# Network configuration files
+[[fs.mounts]]
+path = "/etc"
+uri = "file:/etc"
+
+# Temporary filesystem for runtime data
+[[fs.mounts]]
+path = "/tmp"
+type = "tmpfs"
+
+# Amadeus data directory - writable persistent storage
+# This is where node stores config, keys, and database
+[[fs.mounts]]
+path = "/home/amadeus/.amadeusd-rs"
+uri = "file:.amadeusd-rs"
+
+# Home directory mount
+[[fs.mounts]]
+path = "/home/amadeus"
+uri = "file:."
+
+[sgx]
+# Enclave configuration
+enclave_size = "2G"  # Increased for RocksDB and runtime memory
+max_threads = 64     # Tokio async runtime + networking needs many threads
+edmm_enable = false
+debug = false
+isvprodid = 0
+isvsvn = 0
+
+# Remote attestation configuration
+remote_attestation = "dcap"
+
+# Trusted files (cryptographically verified, read-only)
+trusted_files = [
+    "file:target/release/amadeusd",
+    "file:{{ gramine.runtimedir }}/",
+    "file:/lib/x86_64-linux-gnu/",
+    "file:/usr/lib/x86_64-linux-gnu/",
+]
+
+# Allowed files (untrusted, can be read/written)
+# Network and DNS configuration
+allowed_files = [
+    "file:/etc/resolv.conf",
+    "file:/etc/hosts",
+    "file:/etc/nsswitch.conf",
+    "file:/etc/host.conf",
+    "file:/etc/hostname",
+    "file:/etc/gai.conf",
+    # Amadeus data directory - config, keys, database
+    "file:.amadeusd-rs/",
+]
+
+[sys]
+# System configuration
+enable_sigterm_injection = true
+insecure__allow_eventfd = true
+stack.size = "2M"  # Increased stack for async runtime
+brk.max_size = "32M"  # Increased heap
+
+# Enable DNS resolution at runtime
+enable_extra_runtime_domain_names_conf = true
