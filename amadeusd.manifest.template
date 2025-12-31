@@ -58,9 +58,11 @@ uri = "file:."
 
 [sgx]
 # Enclave configuration
-enclave_size = "2G"  # Increased for RocksDB and runtime memory
-max_threads = 64     # Tokio async runtime + networking needs many threads
-edmm_enable = false
+# With EDMM enabled, this is the MAXIMUM size, not pre-allocated
+# Memory is allocated on-demand as needed (like normal programs)
+enclave_size = "64G"  # Max size - only actual usage is allocated
+max_threads = 64      # Tokio async runtime + networking needs many threads
+edmm_enable = true    # Enable dynamic memory management (requires Linux 6.0+)
 debug = false
 isvprodid = 0
 isvsvn = 0
