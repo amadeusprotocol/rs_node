@@ -28,21 +28,49 @@ ama gen-sk wallet.sk
 ama get-pk --sk wallet.sk
 ```
 
-### Send Transaction
+### Create Transaction (Offline)
 
 ```bash
-# Transfer tokens
+# Print Base58 transaction to stdout
+ama tx --sk wallet.sk Coin transfer '[{"b58": "RECIPIENT_PK"}, "100000000000", "AMA"]'
+
+# Save as JSON file for later submission
 ama tx --sk wallet.sk Coin transfer '[{"b58": "RECIPIENT_PK"}, "100000000000", "AMA"]' \
-  --url https://testnet-rpc.ama.one
+  --save-json tx.json
+
+# Submit saved transaction
+curl -H "Content-Type: text/plain" \
+  --data "$(jq -r .tx_base58 tx.json)" \
+  https://testnet-rpc.ama.one/api/tx/submit
+```
+
+### Send Transaction (Online)
+
+```bash
+# Send to testnet
+ama tx --sk wallet.sk Coin transfer '[{"b58": "RECIPIENT_PK"}, "100000000000", "AMA"]' \
+  --send testnet
+
+# Send to mainnet
+ama tx --sk wallet.sk Coin transfer '[{"b58": "RECIPIENT_PK"}, "100000000000", "AMA"]' \
+  --send mainnet
+
+# Send to custom node
+ama tx --sk wallet.sk Coin transfer '[{"b58": "RECIPIENT_PK"}, "100000000000", "AMA"]' \
+  --send http://localhost:3000
 
 # Call contract
-ama tx --sk wallet.sk Contract test "[]" --url https://testnet-rpc.ama.one
+ama tx --sk wallet.sk Contract test "[]" --send testnet
 ```
 
 ### Deploy Contract
 
 ```bash
-ama deploy-tx --sk wallet.sk contract.wasm --url https://testnet-rpc.ama.one
+# Send to testnet
+ama deploy-tx --sk wallet.sk contract.wasm --send testnet
+
+# Save offline for later submission
+ama deploy-tx --sk wallet.sk contract.wasm --save-json deploy.json
 ```
 
 ## Argument Format
@@ -55,9 +83,10 @@ Arguments are passed as JSON arrays:
 - **`{"hex": "..."}`** → Hex-decoded bytes
 - **`{"utf8": "..."}`** → Explicit UTF-8 bytes
 
-## Environment Variables
+## Network Endpoints
 
-- `AMADEUS_URL` - Default node URL (overridden by `--url`)
+- **Testnet**: `https://testnet-rpc.ama.one` (use `--send testnet`)
+- **Mainnet**: `https://mainnet-rpc.ama.one` (use `--send mainnet`)
 
 ## Built-in Contracts
 

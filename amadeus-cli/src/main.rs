@@ -5,7 +5,6 @@ use amadeus_utils::vecpak;
 use anyhow::{Error, Result};
 use clap::{Parser, Subcommand};
 use serde_json::Value as JsonValue;
-use std::env;
 use std::fs;
 
 #[derive(Parser)]
@@ -18,8 +17,8 @@ FLAGS:
 WORKFLOW - Deploy and Call a Contract:
   1. Generate a wallet:     cli gen-sk wallet.sk
   2. Get your public key:   cli get-pk --sk wallet.sk
-  3. Deploy contract:       cli deploy-tx --sk wallet.sk contract.wasm init '[]' --url https://node.url
-  4. Call your contract:    cli tx --sk wallet.sk <YOUR_PK> <function> '[args]' --url https://node.url
+  3. Deploy contract:       cli deploy-tx --sk wallet.sk contract.wasm init '[]' --send testnet
+  4. Call your contract:    cli tx --sk wallet.sk <YOUR_PK> <function> '[args]' --send testnet
 
 ARGUMENT FORMAT (args_json):
   JSON array where each element is:
@@ -29,23 +28,45 @@ ARGUMENT FORMAT (args_json):
     * {"hex": "..."}    => Hex-decoded bytes (with or without 0x)
     * {"utf8": "..."}   => Explicit UTF-8 bytes
 
+OFFLINE WORKFLOW:
+  # Create offline (print Base58 to stdout)
+  cli tx --sk wallet.sk Coin transfer '[...]'
+
+  # Save as JSON for later submission
+  cli tx --sk wallet.sk Coin transfer '[...]' --save-json tx.json
+
+  # Submit saved transaction
+  curl -H "Content-Type: text/plain" \
+    --data "$(jq -r .tx_base58 tx.json)" \
+    https://testnet-rpc.ama.one/api/tx/submit
+
+NETWORK SUBMISSION:
+  # Send to testnet
+  cli tx --sk wallet.sk Coin transfer '[...]' --send testnet
+
+  # Send to mainnet
+  cli tx --sk wallet.sk Coin transfer '[...]' --send mainnet
+
+  # Send to custom node
+  cli tx --sk wallet.sk Coin transfer '[...]' --send http://localhost:3000
+
+  # Send AND save a copy
+  cli tx --sk wallet.sk Coin transfer '[...]' --send testnet --save-json tx.json
+
 EXAMPLES:
   # Transfer 100 AMA (flat units = 100 * 10^9)
-  cli tx --sk wallet.sk Coin transfer '[{"b58": "RECIPIENT_PK"}, "100000000000", "AMA"]' --url URL
+  cli tx --sk wallet.sk Coin transfer '[{"b58": "RECIPIENT_PK"}, "100000000000", "AMA"]' --send testnet
 
   # Call deployed contract function
-  cli tx --sk wallet.sk YOUR_PK my_function '["arg1", 42]' --url URL
+  cli tx --sk wallet.sk YOUR_PK my_function '["arg1", 42]' --send testnet
 
   # Call contract with token attachment
-  cli tx --sk wallet.sk YOUR_PK deposit '[]' AMA 1000000000 --url URL
+  cli tx --sk wallet.sk YOUR_PK deposit '[]' AMA 1000000000 --send testnet
 
 BUILT-IN CONTRACTS:
   Coin      - transfer, create_and_mint, mint, pause
   Contract  - deploy
-  Epoch     - submit_sol, set_emission_address, slash_trainer
-
-Environment variables:
-  AMADEUS_URL - Default node URL (e.g., https://testnet.ama.one)"#)]
+  Epoch     - submit_sol, set_emission_address, slash_trainer"#)]
 struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
@@ -81,9 +102,12 @@ enum Commands {
         attach_symbol: Option<String>,
         /// Token amount to attach in flat units (requires attach_symbol)
         attach_amount: Option<String>,
-        /// HTTP endpoint URL for sending transaction (falls back to AMADEUS_URL env var)
-        #[arg(long = "url")]
-        url: Option<String>,
+        /// Send transaction to network: mainnet, testnet, or custom URL
+        #[arg(long = "send")]
+        send: Option<String>,
+        /// Save transaction as JSON file
+        #[arg(long = "save-json")]
+        save_json: Option<String>,
     },
     /// Build a transaction to deploy a WASM smart contract
     DeployTx {
@@ -100,9 +124,12 @@ enum Commands {
         attach_symbol: Option<String>,
         /// Token amount to attach in flat units (requires attach_symbol)
         attach_amount: Option<String>,
-        /// HTTP endpoint URL for sending transaction (falls back to AMADEUS_URL env var)
-        #[arg(long = "url")]
-        url: Option<String>,
+        /// Send transaction to network: mainnet, testnet, or custom URL
+        #[arg(long = "send")]
+        send: Option<String>,
+        /// Save transaction as JSON file
+        #[arg(long = "save-json")]
+        save_json: Option<String>,
     },
 }
 
@@ -114,7 +141,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::GenSk { out_file } => handle_gen_sk(&out_file).await?,
         Commands::GetPk { sk } => handle_get_pk(&config_from_sk(&sk).await?),
-        Commands::Tx { sk, contract, function, args_json, attach_symbol, attach_amount, url } => {
+        Commands::Tx { sk, contract, function, args_json, attach_symbol, attach_amount, send, save_json } => {
             if attach_symbol.is_some() != attach_amount.is_some() {
                 return Err(Error::msg("attach_amount and attach_symbol must go together"));
             }
@@ -125,12 +152,13 @@ async fn main() -> Result<()> {
                 &args_json,
                 attach_symbol.as_deref(),
                 attach_amount.as_deref(),
-                get_url(url.as_deref()).as_deref(),
+                resolve_send_url(send.as_deref()).as_deref(),
+                save_json.as_deref(),
                 verbose,
             )
             .await?;
         }
-        Commands::DeployTx { sk, wasm_path, init_function, init_args, attach_symbol, attach_amount, url } => {
+        Commands::DeployTx { sk, wasm_path, init_function, init_args, attach_symbol, attach_amount, send, save_json } => {
             if attach_symbol.is_some() != attach_amount.is_some() {
                 return Err(Error::msg("attach_amount and attach_symbol must go together"));
             }
@@ -141,7 +169,8 @@ async fn main() -> Result<()> {
                 init_args.as_deref(),
                 attach_symbol.as_deref(),
                 attach_amount.as_deref(),
-                get_url(url.as_deref()).as_deref(),
+                resolve_send_url(send.as_deref()).as_deref(),
+                save_json.as_deref(),
                 verbose,
             )
             .await?;
@@ -156,8 +185,12 @@ pub async fn config_from_sk(path: &str) -> Result<Config> {
     Ok(Config::new_daemonless(sk))
 }
 
-fn get_url(url_arg: Option<&str>) -> Option<String> {
-    url_arg.map(|s| s.to_string()).or_else(|| env::var("AMADEUS_URL").ok())
+fn resolve_send_url(send_arg: Option<&str>) -> Option<String> {
+    send_arg.map(|s| match s {
+        "mainnet" => "https://mainnet-rpc.ama.one".to_string(),
+        "testnet" => "https://testnet-rpc.ama.one".to_string(),
+        url => url.to_string(),
+    })
 }
 
 async fn handle_gen_sk(path: &str) -> Result<()> {
@@ -178,7 +211,8 @@ async fn handle_tx(
     args_json: &str,
     attach_symbol: Option<&str>,
     attach_amount: Option<&str>,
-    url: Option<&str>,
+    send_url: Option<&str>,
+    save_json: Option<&str>,
     verbose: bool,
 ) -> Result<()> {
     let contract_bytes = parse_contract(contract);
@@ -198,7 +232,7 @@ async fn handle_tx(
         attach_amount_bytes.as_deref(),
     );
 
-    submit_or_print(tx_packed, url, verbose).await
+    submit_or_print(tx_packed, send_url, save_json, verbose).await
 }
 
 async fn handle_deploy_tx(
@@ -208,7 +242,8 @@ async fn handle_deploy_tx(
     init_args: Option<&str>,
     attach_symbol: Option<&str>,
     attach_amount: Option<&str>,
-    url: Option<&str>,
+    send_url: Option<&str>,
+    save_json: Option<&str>,
     verbose: bool,
 ) -> Result<()> {
     let wasm_bytes = fs::read(wasm_path)?;
@@ -236,7 +271,7 @@ async fn handle_deploy_tx(
         attach_symbol_bytes.as_deref(),
         attach_amount_bytes.as_deref(),
     );
-    submit_or_print(tx_packed, url, verbose).await
+    submit_or_print(tx_packed, send_url, save_json, verbose).await
 }
 
 fn parse_contract(contract: &str) -> Vec<u8> {
@@ -289,16 +324,64 @@ fn extract_tx_hash(tx_packed: &[u8]) -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-async fn submit_or_print(tx_packed: Vec<u8>, url: Option<&str>, verbose: bool) -> Result<()> {
-    println!("tx_hash: {}", extract_tx_hash(&tx_packed));
-
-    match url {
-        Some(url) => send_transaction(tx_packed, url, verbose).await,
-        None => {
-            println!("{}", bs58::encode(&tx_packed).into_string());
-            Ok(())
-        }
+async fn submit_or_print(
+    tx_packed: Vec<u8>,
+    send_url: Option<&str>,
+    save_json: Option<&str>,
+    verbose: bool,
+) -> Result<()> {
+    #[derive(serde::Deserialize)]
+    struct TxU {
+        tx: Tx,
     }
+
+    #[derive(serde::Deserialize)]
+    struct Tx {
+        #[serde(with = "serde_bytes")]
+        signer: Vec<u8>,
+        nonce: u64,
+        action: Action,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Action {
+        #[serde(with = "serde_bytes")]
+        contract: Vec<u8>,
+        #[serde(with = "serde_bytes")]
+        function: Vec<u8>,
+    }
+
+    let tx_hash = extract_tx_hash(&tx_packed);
+    println!("tx_hash: {}", tx_hash);
+
+    // Save JSON if requested
+    if let Some(json_path) = save_json {
+        let txu: TxU = vecpak::from_slice(&tx_packed)
+            .map_err(|_| Error::msg("Failed to parse transaction"))?;
+
+        let json_obj = serde_json::json!({
+            "tx_hash": tx_hash,
+            "tx_base58": bs58::encode(&tx_packed).into_string(),
+            "signer": bs58::encode(&txu.tx.signer).into_string(),
+            "nonce": txu.tx.nonce,
+            "contract": String::from_utf8_lossy(&txu.tx.action.contract),
+            "function": String::from_utf8_lossy(&txu.tx.action.function),
+            "created_at": chrono::Utc::now().to_rfc3339(),
+        });
+
+        fs::write(json_path, serde_json::to_string_pretty(&json_obj)?)?;
+        println!("Transaction saved to: {}", json_path);
+    }
+
+    // Send to network if requested
+    if let Some(url) = send_url {
+        send_transaction(tx_packed, url, verbose).await?;
+    } else if save_json.is_none() {
+        // Neither send nor save: print Base58 to stdout
+        println!("{}", bs58::encode(&tx_packed).into_string());
+    }
+
+    Ok(())
 }
 
 pub async fn send_transaction(tx_packed: Vec<u8>, url: &str, verbose: bool) -> Result<()> {
